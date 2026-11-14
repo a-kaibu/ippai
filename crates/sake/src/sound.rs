@@ -233,11 +233,13 @@ fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
             o[1] += (r0 + (r1 - r0) * t) * gr;
             b.pos += step;
             if b.pos >= frames as f64 {
+                // (by the remainder: a step longer than a short looping buffer, or a position
+                // set past its end, left pos past the end and the mixer read whatever followed)
                 if b.looping {
-                    b.pos -= frames as f64;
+                    b.pos %= frames as f64;
                 } else if b.repeats > 0 {
                     b.repeats -= 1;
-                    b.pos -= frames as f64;
+                    b.pos %= frames as f64;
                 } else {
                     b.pos = 0.0;
                     b.playing = false;
@@ -387,7 +389,8 @@ pub(crate) fn music_set(key: u32, pos: Option<f64>, playing: Option<bool>) {
     with(|d| {
         if let Some(b) = d.bufs.get_mut(&key) {
             if let Some(p) = pos {
-                b.pos = p.max(0.0);
+                let frames = (b.size / b.fmt.block().max(1)) as f64;
+                b.pos = if frames > 0.0 { p.clamp(0.0, frames - 1.0) } else { 0.0 };
             }
             if let Some(on) = playing {
                 b.playing = on;
@@ -469,19 +472,24 @@ fn mix_waves(d: &mut Dev, out: &mut [f32]) -> bool {
         let block = w.fmt.block().max(1);
         let step = w.fmt.rate as f64 / RATE as f64;
         let (gl, gr) = ((w.volume & 0xffff) as f32 / 65535.0, (w.volume >> 16) as f32 / 65535.0);
-        for o in out.chunks_exact_mut(2) {
-            let Some(&h) = w.queue.front() else { break };
-            let frames = (hlen(h) / block) as usize;
-            let i = w.pos as usize;
-            if i >= frames {
+        'frames: for o in out.chunks_exact_mut(2) {
+            // (the header that has this frame: one that ran out hands on to the next for the
+            // same output frame, which was left silent, a click at each boundary off a step)
+            let (h, i) = loop {
+                let Some(&h) = w.queue.front() else { break 'frames };
+                let frames = (hlen(h) / block) as usize;
+                let i = w.pos as usize;
+                if i < frames {
+                    break (h, i);
+                }
                 w.queue.pop_front();
                 set_hflags(h, (hflags(h) | WHDR_DONE) & !WHDR_INQUEUE);
                 w.done.push(h);
                 w.played += hlen(h) as u64;
-                w.pos = 0.0;
+                // (the part of a step past its end, into the next header)
+                w.pos = (w.pos - frames as f64).max(0.0);
                 finished = true;
-                continue;
-            }
+            };
             let data = if w.w16.is_some() { crate::w16::lin(r32(h)) } else { mem::rp(h) };
             let (l, r) = sample_at(data, &w.fmt, i);
             o[0] += l * gl;
@@ -490,12 +498,13 @@ fn mix_waves(d: &mut Dev, out: &mut [f32]) -> bool {
         }
         // a header that ended exactly on this step
         if let Some(&h) = w.queue.front() {
-            if w.pos as usize >= (hlen(h) / block) as usize {
+            let frames = (hlen(h) / block) as usize;
+            if w.pos as usize >= frames {
                 w.queue.pop_front();
                 set_hflags(h, (hflags(h) | WHDR_DONE) & !WHDR_INQUEUE);
                 w.done.push(h);
                 w.played += hlen(h) as u64;
-                w.pos = 0.0;
+                w.pos = (w.pos - frames as f64).max(0.0);
                 finished = true;
             }
         }
@@ -711,10 +720,19 @@ fn waveOutOpen(c: &mut Ctx) -> u32 {
 }
 fn waveOutClose(c: &mut Ctx) -> u32 {
     let hwo = c.a(0);
+    // (headers still queued: WAVERR_STILLPLAYING and the device stays, as Windows; it closed,
+    // and the mixer went on writing WHDR_DONE into headers the program had freed)
     let Some(cb) = with(|d| d.waves.get_mut(&hwo).map(|w| {
+        if !w.queue.is_empty() {
+            return Err(33);
+        }
         w.closing = true;
-        w.cb
+        Ok(w.cb)
     })) else { return 5 };
+    let cb = match cb {
+        Ok(cb) => cb,
+        Err(e) => return e,
+    };
     WAVE_CV.notify_all();
     wave_notify(c, hwo, cb, WOM_CLOSE, 0);
     // (the device thread drops it on its next look)
@@ -1140,10 +1158,23 @@ fn DS_AddRef(c: &mut Ctx) -> u32 {
     *r
 }
 fn DS_Release(c: &mut Ctx) -> u32 {
-    let mut g = DS_REFS.lock().unwrap();
-    let r = g.get_or_insert_with(HashMap::default).entry(c.a(0)).or_insert(1);
-    *r = r.saturating_sub(1);
-    *r
+    let o = c.a(0);
+    let left = {
+        let mut g = DS_REFS.lock().unwrap();
+        let m = g.get_or_insert_with(HashMap::default);
+        let Some(r) = m.get_mut(&o) else { return 0 };
+        *r = r.saturating_sub(1);
+        let left = *r;
+        if left == 0 {
+            m.remove(&o);
+        }
+        left
+    };
+    // (the device object goes with its last reference: one per DirectSoundCreate was kept)
+    if left == 0 {
+        mem::heap_free(o);
+    }
+    left
 }
 fn DS_CreateSoundBuffer(c: &mut Ctx) -> u32 {
     let (desc, out) = (c.a(1), c.a(2));
@@ -1440,8 +1471,15 @@ fn B_Play(c: &mut Ctx) -> u32 {
 }
 fn B_SetCurrentPosition(c: &mut Ctx) -> u32 {
     let (this, p) = (c.a(0), c.a(1));
-    with_buf(this, |b| b.pos = (p / b.fmt.block().max(1)) as f64);
-    0
+    // (past the end: DSERR_INVALIDPARAM, as Windows; the mixer read past the buffer)
+    with_buf(this, |b| {
+        if p >= b.size && b.size != 0 {
+            return DSERR_INVALIDPARAM;
+        }
+        b.pos = (p / b.fmt.block().max(1)) as f64;
+        0
+    })
+    .unwrap_or(0)
 }
 fn B_SetFormat(c: &mut Ctx) -> u32 {
     let (this, wfx) = (c.a(0), c.a(1));
@@ -1673,8 +1711,13 @@ fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
         return 1;
     }
     let image = if flags & SND_RESOURCE != SND_RESOURCE && flags & SND_MEMORY != 0 {
-        // (a RIFF image: its length from its header)
-        mem::slice(name, 8 + r32(name + 4)).to_vec()
+        // (a RIFF image: its length from its header, at most what is mapped there; anything
+        // else is no sound: a garbage length asked for up to 4 GiB)
+        if mem::accessible(name, 12, false, true) < 12 || r32(name) != u32::from_le_bytes(*b"RIFF") {
+            return 0;
+        }
+        let n = (8 + r32(name + 4) as u64).min(u32::MAX as u64) as u32;
+        mem::slice(name, mem::accessible(name, n, false, true)).to_vec()
     } else {
         match sound_image(name, module, flags, wide) {
             Some(b) => b,
@@ -1684,6 +1727,9 @@ fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
     let image = adpcm_to_pcm(image);
     let Some((fmt, data, size)) = wave_chunks(&image) else { return 0 };
     let p = mem::heap_alloc(image.len() as u32, false);
+    if p == 0 {
+        return 0;
+    }
     mem::slice_mut(p, image.len() as u32).copy_from_slice(&image);
     let f = Fmt::read(p + fmt as u32);
     if f.bits == 0 || f.rate == 0 {
@@ -1716,9 +1762,19 @@ fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
         )
     });
     if flags & SND_ASYNC == 0 && flags & SND_LOOP == 0 {
-        // synchronous: back when it has played
+        // synchronous: back when it has played, or another thread stopped it (PlaySound(NULL));
+        // waiting in steps that are save-state points and see TerminateThread
         let ms = size as u64 * 1000 / (f.rate * f.block()).max(1) as u64;
-        std::thread::sleep(Duration::from_millis(ms));
+        let end = std::time::Instant::now() + Duration::from_millis(ms);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= end || !with(|d| d.bufs.get(&PLAY_SOUND).is_some_and(|b| b.owner == p && b.playing)) {
+                break;
+            }
+            std::thread::sleep((end - now).min(Duration::from_millis(50)));
+            crate::snap::point();
+            crate::k32::check_terminate();
+        }
     }
     1
 }
@@ -2268,5 +2324,127 @@ mod lifetime_tests {
             prop_assert!(!alive(b));
             prop_assert!(!mem::heap_owns(data));
         }
+    }
+}
+
+#[cfg(test)]
+mod review_b09_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    fn dev() -> Dev {
+        Dev { bufs: HashMap::default(), waves: HashMap::default(), stream: -1 }
+    }
+    /// A WAVEHDR (32-bit) over `frames` 16-bit mono samples numbered from `first`.
+    fn header(first: u32, frames: u32) -> u32 {
+        let data = mem::heap_alloc(frames * 2 + 2, true);
+        for i in 0..frames {
+            w16(data + 2 * i, (first + i + 1) as u16);
+        }
+        let h = mem::heap_alloc(32, true);
+        w32(h, data);
+        w32(h + 4, frames * 2);
+        set_hflags(h, WHDR_PREPARED | WHDR_INQUEUE);
+        h
+    }
+    fn wave(rate: u32, queue: &[u32]) -> Wave {
+        Wave { fmt: Fmt { rate, channels: 1, bits: 16, float: false, law: 0 }, queue: queue.iter().copied().collect(), pos: 0.0, done: Vec::new(), paused: false, closing: false, played: 0, cb: (0, 0, 0), volume: 0xffff_ffff, device: 0, w16: None }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        /// Headers of any lengths at any rate play as one stream: output frame k is sample
+        /// floor(k * rate / 44100) of all the headers' samples one after the other, no silent
+        /// frame where one header hands over to the next, and each header is done in order.
+        #[test]
+        fn headers_play_as_one_stream(lens in proptest::collection::vec(0u32..40, 1..6), rate in prop::sample::select(vec![8000u32, 11025, 22050, 44100, 48000, 96000])) {
+            let _g = enter();
+            let mut first = 0;
+            let mut hs = Vec::new();
+            for &n in &lens { hs.push(header(first, n)); first += n; }
+            let total = first;
+            let mut d = dev();
+            d.waves.insert(1, wave(rate, &hs));
+            let mut out = vec![0f32; 2 * 600];
+            mix_waves(&mut d, &mut out);
+            let step = rate as f64 / RATE as f64;
+            for (k, o) in out.chunks_exact(2).enumerate() {
+                let p = (k as f64 * step) as u32;
+                let want = if p < total { (p + 1) as f32 / 32768.0 } else { 0.0 };
+                prop_assert_eq!(o[0], want, "frame {} (sample {} of {})", k, p, total);
+            }
+            let w = &d.waves[&1];
+            prop_assert_eq!(&w.done, &hs[..w.done.len()].to_vec());
+            if (600.0 * step) as u32 > total + 1 { prop_assert_eq!(w.done.len(), hs.len()); }
+            for h in hs { mem::heap_free(mem::rp(h)); mem::heap_free(h); }
+        }
+
+        /// A looping buffer of 1 or 2 frames played much faster than the output (or set past
+        /// its end) stays inside its frames.
+        #[test]
+        fn looping_position_stays_inside(frames in 1u32..4, freq in 44100u32..400_000, start in 0f64..10.0) {
+            let _g = enter();
+            let data = mem::heap_alloc(frames * 2, true);
+            let mut d = dev();
+            let fmt = Fmt { rate: RATE, channels: 1, bits: 16, float: false, law: 0 };
+            let mut b = music_buf(1, data, frames * 2, fmt, 0, 0);
+            b.freq = freq;
+            b.looping = true;
+            b.playing = true;
+            b.pos = start % frames as f64;
+            d.bufs.insert(1, b);
+            let mut out = vec![0f32; 2 * 200];
+            mix(&mut d, &mut out);
+            prop_assert!(d.bufs[&1].pos < frames as f64, "pos {}", d.bufs[&1].pos);
+            mem::heap_free(data);
+        }
+    }
+
+    /// waveOutClose with headers queued is WAVERR_STILLPLAYING and the device stays.
+    #[test]
+    fn close_with_queued_headers_is_still_playing() {
+        let _g = enter();
+        let h = header(0, 10);
+        let hwo = 0x7a_0001;
+        with(|d| d.waves.insert(hwo, wave(RATE, &[h])));
+        assert_eq!(call(waveOutClose, &[hwo]), 33);
+        assert!(with(|d| d.waves.get(&hwo).is_some_and(|w| !w.closing)));
+        assert_eq!(call(waveOutReset, &[hwo]), 0);
+        with(|d| d.waves.remove(&hwo));
+        mem::heap_free(mem::rp(h));
+        mem::heap_free(h);
+    }
+
+    /// PlaySound(SND_MEMORY) of what is no RIFF image, or one whose length runs past mapped
+    /// memory, plays nothing and asks for no more than is there.
+    #[test]
+    fn memory_sounds_need_a_riff_header() {
+        let _g = enter();
+        let p = mem::heap_alloc(64, true);
+        mem::write(p, b"JUNK\xf0\xff\xff\xff");
+        assert_eq!(play_sound(p, 0, SND_MEMORY | SND_ASYNC, false), 0);
+        mem::write(p, b"RIFF\xf0\xff\xff\x7fWAVE");
+        assert_eq!(play_sound(p, 0, SND_MEMORY | SND_ASYNC, false), 0);
+        mem::heap_free(p);
+    }
+
+    /// SetCurrentPosition past the buffer: DSERR_INVALIDPARAM, the position unchanged.
+    #[test]
+    fn position_past_the_end_is_refused() {
+        let _g = enter();
+        let data = mem::heap_alloc(400, true);
+        let fmt = Fmt { rate: RATE, channels: 2, bits: 16, float: false, law: 0 };
+        let key = 0x7b_0001;
+        with(|d| d.bufs.insert(key, music_buf(key, data, 400, fmt, 0, 0)));
+        assert_eq!(call(B_SetCurrentPosition, &[key, 396]), 0);
+        assert_eq!(with(|d| d.bufs[&key].pos), 99.0);
+        assert_eq!(call(B_SetCurrentPosition, &[key, 400]), DSERR_INVALIDPARAM);
+        assert_eq!(with(|d| d.bufs[&key].pos), 99.0);
+        music_set(key, Some(1e9), None);
+        assert_eq!(with(|d| d.bufs[&key].pos), 99.0);
+        with(|d| d.bufs.remove(&key));
+        mem::heap_free(data);
     }
 }

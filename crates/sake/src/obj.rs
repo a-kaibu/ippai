@@ -109,7 +109,7 @@ pub fn add_at(h: u32, o: Obj, inherit: bool) {
         if inherit {
             t.objs.inherit.insert(h);
         }
-        t.next = t.next.max(h + 4);
+        t.next = t.next.max(h.saturating_add(4));
     })
 }
 
@@ -118,14 +118,48 @@ pub struct Table {
     next: u32,
     /// named objects: name -> handle of the first one
     pub names: HashMap<String, u32>,
+    /// the objects `names` has (an object's last close looks the names through only for these:
+    /// it scanned every name at the close of every file and thread handle)
+    named: std::collections::HashSet<u32>,
+    /// the handle numbers have passed HANDLE_LIMIT: closed ones are given again
+    reuse: u32,
     pub gen: u64,
     /// the waiting threads, by the object keys they wait on, and each one's condition variable
     waits: waits::wake::WaitList<u32>,
     cvs: HashMap<u64, Arc<Condvar>>,
 }
+/// Handle numbers are new ones up to here (Windows' handle table holds 2^24 of them), then
+/// the lowest closed ones above 0x100 again: `+= 4` wrapped at 2^32 into the pseudo-handles
+/// and live handles (a find-per-file or event-per-frame loop in a long session).
+const HANDLE_LIMIT: u32 = 0x0400_0000;
+
 impl Table {
+    /// `name` names object `k` (its first handle)
+    pub fn add_name(&mut self, name: String, k: u32) {
+        self.names.insert(name, k);
+        self.named.insert(k);
+    }
+    /// A handle number nothing uses.
+    fn new_handle(&mut self) -> u32 {
+        if self.next < HANDLE_LIMIT {
+            let h = self.next;
+            self.next += 4;
+            return h;
+        }
+        loop {
+            if self.reuse < 0x100 || self.reuse >= HANDLE_LIMIT {
+                self.reuse = 0x100;
+            }
+            let h = self.reuse;
+            self.reuse += 4;
+            // (an object's key is its first handle's number: neither may be taken again)
+            if !self.objs.handles.contains_key(&h) && !self.objs.map.contains_key(&h) {
+                return h;
+            }
+        }
+    }
     fn new() -> Self {
-        Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0, waits: Default::default(), cvs: HashMap::default() }
+        Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), named: Default::default(), reuse: 0, gen: 0, waits: Default::default(), cvs: HashMap::default() }
     }
     fn notify(&self, ids: &[u64]) {
         for id in ids {
@@ -207,8 +241,7 @@ pub const CURRENT_THREAD: u32 = 0xffff_fffe;
 
 pub fn add(o: Obj) -> u32 {
     with(|t| {
-        let h = t.next;
-        t.next += 4;
+        let h = t.new_handle();
         t.objs.map.insert(h, (o, 1));
         t.objs.handles.insert(h, h);
         h
@@ -220,8 +253,7 @@ pub fn dup(h: u32) -> u32 {
     with(|t| {
         let Some(k) = t.objs.key(&h) else { return 0 };
         t.objs.map.get_mut(&k).unwrap().1 += 1;
-        let n = t.next;
-        t.next += 4;
+        let n = t.new_handle();
         t.objs.handles.insert(n, k);
         n
     })
@@ -250,7 +282,9 @@ fn unref(t: &mut Table, k: u32) -> Option<Obj> {
     let rc = &mut t.objs.map.get_mut(&k)?.1;
     *rc -= 1;
     if *rc == 0 {
-        t.names.retain(|_, v| *v != k);
+        if t.named.remove(&k) {
+            t.names.retain(|_, v| *v != k);
+        }
         if let Some(m) = SIGNALS.lock().unwrap().as_mut() {
             m.remove(&k);
         }
@@ -488,11 +522,18 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
         }).collect()
     });
     let held: Vec<u32> = handles.iter().zip(&keys).map(|(&h, k)| k.unwrap_or(h)).collect();
-    let r = wait_held(&held, all, ms, extra);
-    let gone: Vec<(u32, Obj)> = with(|t| keys.iter().flatten().filter_map(|&k| unref(t, k).map(|o| (k, o))).collect());
-    for (k, o) in gone {
-        gone_object(k, Some(o));
-    }
+    let release = std::cell::Cell::new(Some(keys));
+    // (the wait's references go when it ends, or before TerminateThread ends the thread in
+    // it: check_terminate does not come back, and they kept the objects for good)
+    let let_go = || {
+        let Some(keys) = release.take() else { return };
+        let gone: Vec<(u32, Obj)> = with(|t| keys.iter().flatten().filter_map(|&k| unref(t, k).map(|o| (k, o))).collect());
+        for (k, o) in gone {
+            gone_object(k, Some(o));
+        }
+    };
+    let r = wait_held_then(&held, all, ms, extra, &let_go);
+    let_go();
     r
 }
 
@@ -542,6 +583,11 @@ fn attempt(t: &mut Table, handles: &[u32], all: bool, tid: u32, blocked: bool) -
 }
 
 fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>) -> u32 {
+    wait_held_then(handles, all, ms, extra, &|| {})
+}
+
+/// wait_held, `ending` run before this thread ends in it (TerminateThread).
+fn wait_held_then(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool>, ending: &dyn Fn()) -> u32 {
     let tid = crate::cur().tid;
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let cv = CV.with(Arc::clone);
@@ -563,6 +609,9 @@ fn wait_held(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> boo
                 g.as_mut().unwrap().leave(id);
             }
             drop(g);
+            if crate::k32::terminated_here() {
+                ending();
+            }
             crate::k32::check_terminate();
             g = lock();
         }
@@ -782,5 +831,79 @@ mod wait_tests {
         assert_eq!(wait(&[e], false, 30, None), WAIT_TIMEOUT);
         close(e);
         close(d);
+    }
+}
+
+#[cfg(test)]
+mod table_review_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        /// Opens (add), duplicates and closes on a table whose numbers start just below
+        /// HANDLE_LIMIT, against a model of the live handles: a new handle is never a live
+        /// one, an object key, a pseudo-handle or below 0x100; names go with their object's
+        /// last handle and only then.
+        #[test]
+        fn handles_are_never_live_ones(ops in proptest::collection::vec((0u8..4, 0usize..16), 1..300), start in 0u32..64) {
+            let mut t = Table::new();
+            t.next = HANDLE_LIMIT - 4 * start;
+            // (model: handle -> key)
+            let mut live: std::collections::BTreeMap<u32, u32> = Default::default();
+            let mut names: std::collections::BTreeMap<String, u32> = Default::default();
+            for (op, k) in ops {
+                match op {
+                    0 | 1 => {
+                        let h = t.new_handle();
+                        prop_assert!(h >= 0x100 && h < HANDLE_LIMIT && h % 4 == 0, "{:#x}", h);
+                        prop_assert!(!live.contains_key(&h) && !live.values().any(|&v| v == h), "{:#x} in use", h);
+                        t.objs.map.insert(h, (Obj::Event { manual: false, set: false }, 1));
+                        t.objs.handles.insert(h, h);
+                        live.insert(h, h);
+                        if op == 1 {
+                            let n = format!("n{h:x}");
+                            t.add_name(n.clone(), h);
+                            names.insert(n, h);
+                        }
+                    }
+                    2 if !live.is_empty() => {
+                        let (&_, &key) = live.iter().nth(k % live.len()).unwrap();
+                        let n = t.new_handle();
+                        prop_assert!(!live.contains_key(&n) && !live.values().any(|&v| v == n));
+                        t.objs.map.get_mut(&key).unwrap().1 += 1;
+                        t.objs.handles.insert(n, key);
+                        live.insert(n, key);
+                    }
+                    _ if !live.is_empty() => {
+                        let (&h, &key) = live.iter().nth(k % live.len()).unwrap();
+                        live.remove(&h);
+                        t.objs.handles.remove(&h);
+                        let gone = unref(&mut t, key).is_some();
+                        prop_assert_eq!(gone, !live.values().any(|&v| v == key));
+                        if gone { names.retain(|_, v| *v != key); }
+                    }
+                    _ => {}
+                }
+                let got: std::collections::BTreeMap<String, u32> = t.names.iter().map(|(a, b)| (a.clone(), *b)).collect();
+                prop_assert_eq!(&got, &names);
+            }
+        }
+    }
+
+    /// 2^30 handles opened and closed one after the other (a find handle per file) stay below
+    /// the limit and never reach the pseudo-handles.
+    #[test]
+    fn numbers_do_not_wrap() {
+        let mut t = Table::new();
+        t.next = HANDLE_LIMIT - 8;
+        let mut seen = Vec::new();
+        for _ in 0..10_000 {
+            let h = t.new_handle();
+            assert!(h < HANDLE_LIMIT && h >= 0x100);
+            seen.push(h);
+        }
+        assert_eq!(&seen[..2], &[HANDLE_LIMIT - 8, HANDLE_LIMIT - 4]);
+        assert_eq!(seen[2], 0x100, "the lowest number again");
     }
 }

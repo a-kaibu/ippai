@@ -1241,6 +1241,11 @@ pub fn terminating() -> bool {
     ANY_TERMINATE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether TerminateThread ended the calling thread (check_terminate ends it then).
+pub fn terminated_here() -> bool {
+    ANY_TERMINATE.load(std::sync::atomic::Ordering::Relaxed) && crate::on_guest_thread() && TERMINATE.lock().unwrap().iter().any(|x| x.0 == crate::cur().tid)
+}
+
 /// Ends the calling thread here when TerminateThread ended it.
 pub fn check_terminate() {
     if !ANY_TERMINATE.load(std::sync::atomic::Ordering::Relaxed) || !crate::on_guest_thread() {
@@ -1578,7 +1583,7 @@ pub(crate) fn create_named(name: Option<String>, o: Obj) -> u32 {
     }
     let h = obj::add(o);
     if let Some(n) = name {
-        obj::with(|t| t.names.insert(n, h));
+        obj::with(|t| t.add_name(n, h));
     }
     last_error(0);
     h
