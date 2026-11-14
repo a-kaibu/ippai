@@ -337,6 +337,22 @@ fn mem16_ok(ins: &Instruction) -> bool {
     ok(b) && ok(x) && (b != Register::None || x != Register::None || ins.memory_displ_size() < 4)
 }
 
+/// Whether the F2 / F3 prefix of `ins` does nothing: before a near branch, call or return it
+/// is MPX's BND (a no-op while MPX is off, which it always is here; MSVC's CRT has `bnd ret`
+/// and `bnd jne` in memcpy and __security_check_cookie) or AMD's `rep ret` idiom. Such an
+/// instruction is translated as if it had none (else every call of those CRT functions left
+/// the region for the interpreter: Unity's Vorbis decoding ran ~30x slower).
+pub fn rep_ignored(ins: &Instruction) -> bool {
+    matches!(
+        ins.flow_control(),
+        FlowControl::Return | FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch | FlowControl::Call | FlowControl::IndirectBranch | FlowControl::IndirectCall
+    ) && !ins.is_jmp_far()
+        && !ins.is_call_far()
+        && !ins.is_jmp_far_indirect()
+        && !ins.is_call_far_indirect()
+        && !matches!(ins.mnemonic(), Mnemonic::Retf | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq | Mnemonic::Loop | Mnemonic::Loope | Mnemonic::Loopne | Mnemonic::Jrcxz | Mnemonic::Jecxz | Mnemonic::Jcxz)
+}
+
 /// Whether the generator translates 16-bit instruction `ins` (see [`SEG16`]); the others are
 /// stepped by the interpreter.
 pub fn ok16(ins: &Instruction) -> bool {
@@ -5912,6 +5928,109 @@ mod tests {
         ];
         for (name, bytes, want) in cases {
             assert_eq!(callee_reads(&mut Code(bytes.to_vec()), 0x10_0000), want, "{name}");
+        }
+    }
+
+    /// rep_ignored over every one-byte opcode and the two-byte Jcc forms, F2 and F3 in front,
+    /// both modes: exactly the near branches, calls and returns (not LOOP / JRCXZ, far ones,
+    /// IRET, string instructions, or anything else).
+    #[test]
+    fn rep_ignored_is_near_branches_only() {
+        use Mnemonic::*;
+        for bits in [32, 64] {
+            for pre in [0xf2u8, 0xf3] {
+                let mut ops: Vec<Vec<u8>> = (0..=0xffu8).filter(|&b| b != 0x0f).map(|b| alloc::vec![b]).collect();
+                ops.extend((0x80..=0x8fu8).map(|b| alloc::vec![0x0f, b]));
+                // (FF /2 call r/m, /3 call far, /4 jmp r/m, /5 jmp far)
+                ops.extend((0..8u8).map(|r| alloc::vec![0xff, 0xc0 | r << 3]));
+                ops.extend((0..8u8).map(|r| alloc::vec![0xff, 0x00 | r << 3]));
+                for op in ops {
+                    let mut b = alloc::vec![pre];
+                    b.extend(&op);
+                    b.extend([0u8; 8]);
+                    let ins = Decoder::with_ip(bits, &b, 0x1000, DecoderOptions::NONE).decode();
+                    if ins.is_invalid() {
+                        continue;
+                    }
+                    let near = match ins.mnemonic() {
+                        Call | Jmp => !ins.is_call_far() && !ins.is_jmp_far() && !ins.is_call_far_indirect() && !ins.is_jmp_far_indirect(),
+                        Ret => true,
+                        m => ins.is_jcc_short_or_near() && !matches!(m, Loop | Loope | Loopne | Jrcxz | Jecxz | Jcxz),
+                    };
+                    assert_eq!(rep_ignored(&ins), near, "{bits}-bit {b:02x?}: {:?} {:?}", ins.code(), ins.flow_control());
+                }
+            }
+        }
+    }
+
+    mod proptests {
+        extern crate std;
+        use super::*;
+        use proptest::prelude::*;
+
+        struct Flat(Vec<u8>);
+        impl Memory for Flat {
+            fn read8(&mut self, a: u32) -> Result<u8, crate::Fault> {
+                self.0.get(a as usize).copied().ok_or(crate::Fault { addr: a, write: false })
+            }
+            fn write8(&mut self, a: u32, v: u8) -> Result<(), crate::Fault> {
+                match self.0.get_mut(a as usize) {
+                    Some(b) => {
+                        *b = v;
+                        Ok(())
+                    }
+                    None => Err(crate::Fault { addr: a, write: true }),
+                }
+            }
+        }
+
+        /// Branches, calls and returns of both modes (bytes after the prefix; rel / imm bytes
+        /// random)
+        fn branch() -> impl Strategy<Value = Vec<u8>> {
+            prop_oneof![
+                Just(alloc::vec![0xc3]),
+                any::<u16>().prop_map(|i| alloc::vec![0xc2, i as u8, (i >> 8) as u8]),
+                any::<i8>().prop_map(|r| alloc::vec![0xeb, r as u8]),
+                (0x70..=0x7fu8, any::<i8>()).prop_map(|(o, r)| alloc::vec![o, r as u8]),
+                (0x80..=0x8fu8, -0x800..0x800i32).prop_map(|(o, r)| [&[0x0f, o][..], &r.to_le_bytes()].concat()),
+                (-0x800..0x800i32).prop_map(|r| [&[0xe8][..], &r.to_le_bytes()].concat()),
+                (-0x800..0x800i32).prop_map(|r| [&[0xe9][..], &r.to_le_bytes()].concat()),
+                (0..8u8).prop_map(|r| alloc::vec![0xff, 0xd0 | r]),
+                (0..8u8).prop_map(|r| alloc::vec![0xff, 0xe0 | r]),
+            ]
+        }
+
+        proptest! {
+            /// The CPU ignores an F2 / F3 prefix on these: the interpreter runs `pre ins` at A
+            /// as it runs `ins` at A + 1 (the same next address, so the same targets), which is
+            /// what lets the JIT translate them as if unprefixed.
+            #[test]
+            fn ignored_prefix_runs_as_none(bits64 in any::<bool>(), pre in prop_oneof![Just(0xf2u8), Just(0xf3u8)], ins in branch(), regs in proptest::array::uniform16(0x8000u64..0x9000), flags in any::<u16>(), stack in any::<[u8; 16]>()) {
+                const AT: u32 = 0x4000;
+                let mut bytes = alloc::vec![pre];
+                bytes.extend(&ins);
+                let dec = Decoder::with_ip(if bits64 { 64 } else { 32 }, &bytes, AT as u64, DecoderOptions::NONE).decode();
+                prop_assume!(!dec.is_invalid());
+                prop_assert!(rep_ignored(&dec), "{:?}", dec.code());
+                let run = |from: u32| {
+                    let mut m = Flat(alloc::vec![0u8; 0x10000]);
+                    m.0[AT as usize..AT as usize + bytes.len()].copy_from_slice(&bytes);
+                    let sp = 0x9800usize;
+                    m.0[sp..sp + 16].copy_from_slice(&stack);
+                    let mut cpu = crate::Cpu { mode64: bits64 as u32, eip: from, ..crate::Cpu::default() };
+                    for (i, &r) in regs.iter().enumerate().take(if bits64 { 16 } else { 8 }) {
+                        cpu.set_gpr(i, r);
+                    }
+                    cpu.set_gpr(4, sp as u64);
+                    cpu.eflags = 2 | flags as u32 & crate::flags::STATUS;
+                    let e = crate::step(&mut cpu, &mut m);
+                    (e, cpu.eip, cpu.rip_hi, (0..16).map(|i| cpu.gpr(i)).collect::<Vec<_>>(), cpu.eflags, m.0)
+                };
+                let (a, b) = (run(AT), run(AT + 1));
+                prop_assert_eq!(a.0, b.0);
+                prop_assert_eq!((a.1, a.2, &a.3, a.4), (b.1, b.2, &b.3, b.4));
+                prop_assert!(a.5 == b.5, "memory");
+            }
         }
     }
 }

@@ -1161,10 +1161,11 @@ impl<'a> Gen<'a> {
         let ins = self.ins;
         self.temps = 0;
         let xchg_mem = ins.mnemonic() == Mnemonic::Xchg && self.has_mem();
-        if (ins.has_lock_prefix() || xchg_mem) && !ins.has_rep_prefix() && !ins.has_repne_prefix() && self.locked() {
+        let rep = (ins.has_rep_prefix() || ins.has_repne_prefix()) && !super::rep_ignored(&ins);
+        if (ins.has_lock_prefix() || xchg_mem) && !rep && self.locked() {
             return true;
         }
-        if ins.has_lock_prefix() || ins.has_rep_prefix() || ins.has_repne_prefix() || xchg_mem {
+        if ins.has_lock_prefix() || rep || xchg_mem {
             let ends = ins.flow_control() != FlowControl::Next;
             self.fallback(ends);
             return !ends;

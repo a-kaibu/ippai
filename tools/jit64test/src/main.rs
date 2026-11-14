@@ -612,6 +612,19 @@ fn inner(list: &[Instruction], k: usize) -> bool {
     k < list.len() && (1..=3).any(|d| k >= d && list[k - d].code() == Code::Stmxcsr_m32)
 }
 
+/// Sometimes an F2 (BND, as in MSVC's CRT) or F3 (AMD's `rep ret`) prefix on a branch, call or
+/// return: one the CPU ignores, which the JIT translates as if it had none.
+fn bnd(rng: &mut Rng, mut i: Instruction) -> Instruction {
+    // (JNOBND: none, the same programs otherwise)
+    match rng.below(6) {
+        _ if std::env::var("JNOBND").is_ok() => {}
+        0 => i.set_has_repne_prefix(true),
+        1 => i.set_has_rep_prefix(true),
+        _ => {}
+    }
+    i
+}
+
 fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_hi: u32) -> Vec<Instruction> {
     let mut id = 0u64;
     let mut label = |mut i: Instruction| {
@@ -629,7 +642,7 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
         if !inner(&list, i) && !inner(&list, j) {
             let head = list[i].ip();
             let dec = label(Instruction::with1(Code::Dec_rm32, cnt).unwrap());
-            let jne = label(Instruction::with_branch(Code::Jne_rel32_64, head).unwrap());
+            let jne = label(bnd(rng, Instruction::with_branch(Code::Jne_rel32_64, head).unwrap()));
             list.insert(j, jne);
             list.insert(j, dec);
             let init = label(Instruction::with2(Code::Mov_rm32_imm32, cnt, 1 + rng.below(3) as u32).unwrap());
@@ -658,12 +671,12 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
         if inner(&list, i) {
             continue;
         }
-        let jcc = label(Instruction::with_branch(code, target).unwrap());
+        let jcc = label(bnd(rng, Instruction::with_branch(code, target).unwrap()));
         list.insert(i, jcc);
     }
     let sub: Vec<Instruction> = sub.into_iter().map(&mut label).collect();
     if let Some(first) = sub.first().map(|i| i.ip()) {
-        let call = label(Instruction::with_branch(Code::Call_rel32_64, first).unwrap());
+        let call = label(bnd(rng, Instruction::with_branch(Code::Call_rel32_64, first).unwrap()));
         let push = label(Instruction::with1(Code::Push_r64, Register::RAX).unwrap());
         let mut at = rng.below(list.len() as u64 + 1) as usize;
         if let Some((_, b)) = lp {
@@ -679,13 +692,13 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
         list.insert(at, push);
     }
     let end = END as u64 | (rip_hi as u64) << 32;
-    let mut jmp = Instruction::with_branch(Code::Jmp_rel32_64, end).unwrap();
+    let mut jmp = bnd(rng, Instruction::with_branch(Code::Jmp_rel32_64, end).unwrap());
     jmp.set_ip(1); // (kept by the shrinker)
     list.push(jmp);
     let has_sub = !sub.is_empty();
     list.extend(sub);
     if has_sub {
-        let ret = label(Instruction::with1(Code::Retnq_imm16, 8u32).unwrap());
+        let ret = label(bnd(rng, Instruction::with1(Code::Retnq_imm16, 8u32).unwrap()));
         list.push(ret);
     }
     list
@@ -716,6 +729,10 @@ fn fresh(_: u32) -> bool {
 }
 /// Regions entered and found stale (Cpu::jit_stale) in this run.
 static STALE_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    /// instructions regions handed to the interpreter (the `step` import), on this thread
+    static STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// The translated code's byte ranges (kura's CODE_RANGES), and whether the interpreter wrote
 /// into them since last asked.
@@ -753,6 +770,7 @@ impl Jit {
             .func_wrap("env", "step", move |cpu: i32| -> i32 {
                 let m = base as *mut u8;
                 assert_eq!(cpu as u32, CPU);
+                STEPS.set(STEPS.get() + 1);
                 let mut c = unsafe { get_cpu(m) };
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
@@ -856,7 +874,9 @@ impl Jit {
     fn run(&mut self, base: usize) -> Result<usize, String> {
         let m = base as *mut u8;
         let mut regions = 0;
-        for _ in 0..100_000 {
+        // (a program's store can raise a loop count it runs once rewritten, one interpreter
+        // step a round: 0x20001 iterations of a three-instruction loop fit)
+        for _ in 0..1_000_000 {
             let c = unsafe { get_cpu(m) };
             if c.eip == END {
                 if std::env::var("JRING").is_ok() {
@@ -1497,4 +1517,54 @@ fn self_modifying_code_in_a_region() {
     assert_eq!(self_modifying(true), 6);
     // (unwatched, the region runs its translation of the code as it was: the test sees it)
     assert_eq!(self_modifying(false), 3);
+}
+
+/// MSVC's CRT has `bnd ret` / `bnd jne` (F2: MPX's BND, ignored with MPX off) in memcpy and
+/// __security_check_cookie, and AMD's idiom is `rep ret` (F3): the JIT translates them as
+/// branches, calls and returns without the prefix. They went to the interpreter one by one
+/// before, and Unity's Vorbis decoding (a cookie check per call) ran some 30 times slower.
+#[test]
+fn ignored_prefixes_on_branches_stay_translated() {
+    let mut config = Config::new();
+    config.wasm_threads(true).consume_fuel(true);
+    let engine = Engine::new(&config).unwrap();
+    let pages = koji::jit::wasm::memory_min_pages();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(pages, pages)).unwrap();
+    let base = memory.data().as_ptr() as *mut u8 as usize;
+    let jmp = (END - (CODE + 26)).to_le_bytes();
+    #[rustfmt::skip]
+    let code: Vec<u8> = [
+        &[0xb9, 100, 0, 0, 0][..],          // 0: mov ecx, 100
+        &[0xe8, 16, 0, 0, 0],               // 5: call f (26)
+        &[0xe8, 17, 0, 0, 0],               // 10: call g (32)
+        &[0xff, 0xc9],                      // 15: dec ecx
+        &[0xf2, 0x75, 0xf1],                // 17: bnd jne 5
+        &[0xf2, 0xe9], &jmp,                // 20: bnd jmp END
+        &[0x48, 0x83, 0xc0, 0x01, 0xf2, 0xc3], // 26: f: add rax, 1; bnd ret
+        &[0x48, 0x83, 0xc2, 0x02, 0xf3, 0xc3], // 32: g: add rdx, 2; rep ret
+    ].concat();
+    let ins: Vec<_> = iced_x86::Decoder::with_ip(64, &code, CODE as u64, iced_x86::DecoderOptions::NONE).into_iter().collect();
+    assert_eq!(ins.iter().filter(|i| koji::jit::rep_ignored(i) && (i.has_repne_prefix() || i.has_rep_prefix())).count(), 4);
+    let mut cpu = Cpu { mode64: 1, eip: CODE, jit_budget: 1 << 30, mxcsr: 0x1f80, ..Cpu::default() };
+    cpu.set_gpr(4, (STACK - 0x800) as u64);
+    // the interpreter alone
+    let mut want = cpu.clone();
+    let mut m = vec![0u8; MEM];
+    m[CODE as usize..CODE as usize + code.len()].copy_from_slice(&code);
+    while want.eip != END {
+        assert_eq!(koji::step(&mut want, &mut Mem(m.as_mut_ptr())), Exit::Continue);
+    }
+    assert_eq!((want.gpr(0), want.gpr(2), want.gpr(1)), (100, 200, 0));
+    unsafe {
+        std::ptr::write_bytes((base + 0x10000) as *mut u8, 0, MEM - 0x10000);
+        std::ptr::copy_nonoverlapping(code.as_ptr(), (base + CODE as usize) as *mut u8, code.len());
+        put_cpu(base as *mut u8, &cpu);
+    }
+    let mut jit = Jit::new(&engine, &memory, base);
+    STEPS.set(0);
+    jit.run(base).unwrap();
+    let c = unsafe { get_cpu(base as *mut u8) };
+    assert_eq!(c.eip, END);
+    assert_eq!((c.gpr(0), c.gpr(2), c.gpr(1), c.gpr(4)), (want.gpr(0), want.gpr(2), want.gpr(1), want.gpr(4)));
+    assert_eq!(STEPS.get(), 0, "no instruction left to the interpreter");
 }
