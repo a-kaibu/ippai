@@ -290,8 +290,9 @@ fn wait_packet(c: &mut Ctx, port: u32, ms: u32, alertable: bool) -> Result<Packe
             }
         };
         let ready = || with(|s| s.ports.get(&port).is_none_or(|q| !q.is_empty())) || (alertable && crate::apc::pending(tid));
-        // (AFD polls waiting: look at their sockets again every 10 ms)
-        let left = if crate::afd::pending() { left.min(10) } else { left };
+        // (AFD polls waiting: ws2 ends them as sockets change; a look now and then besides, as a
+        // safety net: every 10 ms kept an idle network program's waiters from ever sleeping)
+        let left = if crate::afd::pending() { left.min(250) } else { left };
         obj::wait(&[], false, left, Some(&ready));
     }
 }

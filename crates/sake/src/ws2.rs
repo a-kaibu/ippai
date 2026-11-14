@@ -362,6 +362,9 @@ fn with<R>(f: impl FnOnce(&mut State, &mut Vec<Act>) -> R) -> R {
     run(acts);
     if dirty {
         obj::signal();
+        // (AFD polls on the sockets that changed end now: a waiter on a poll's event has nobody
+        // else to look; formal/tla/AfdPoll.tla)
+        crate::afd::check();
     }
     r
 }

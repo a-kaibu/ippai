@@ -225,6 +225,9 @@ pub fn ioctl(c: &mut Ctx) -> Option<u32> {
         wp(iosb, STATUS_PENDING);
     }
     POLLS.lock().unwrap().push(p);
+    // (a socket that became ready since `fired` above: ws2's check ran before the poll was
+    // here; formal/tla/AfdPoll.tla)
+    check();
     Some(STATUS_PENDING)
 }
 

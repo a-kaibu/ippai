@@ -40,3 +40,6 @@ WmStart WmStartOld.cfg violation
 WmStart WmStartOldKey.cfg violation
 TranslateGate TranslateGate.cfg ok
 TranslateGate TranslateGateOld.cfg violation
+AfdPoll AfdPoll.cfg ok
+AfdPoll AfdPollNoRecheck.cfg violation
+AfdPoll AfdPollNoHook.cfg violation
