@@ -17,6 +17,12 @@ pub mod trace;
 mod replay;
 mod shared;
 
+/// fuzz/fuzz_targets/vfs_journal.rs: processes sharing a namespace through the journal (vfs/shared/sim.rs).
+#[doc(hidden)]
+pub fn fuzz_journal(data: &[u8]) {
+    shared::sim::fuzz(data)
+}
+
 type Ino = u32;
 type Hash = [u8; 16];
 

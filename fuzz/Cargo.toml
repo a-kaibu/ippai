@@ -12,6 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 koji = { path = "../crates/koji" }
 sake = { path = "../crates/sake" }
+kura = { path = "../crates/kura" }
 vorbis = { path = "../crates/vorbis" }
 glwgsl = { path = "../crates/glwgsl" }
 dxwgsl = { path = "../crates/dxwgsl" }
@@ -109,6 +110,20 @@ bench = false
 [[bin]]
 name = "acm"
 path = "fuzz_targets/acm.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kern_pipes"
+path = "fuzz_targets/kern_pipes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vfs_journal"
+path = "fuzz_targets/vfs_journal.rs"
 test = false
 doc = false
 bench = false

@@ -82,6 +82,80 @@ struct Mark {
 }
 const MAX_RANGES: usize = 16;
 
+/// Adds bytes `lo..hi` to `r` (sorted, apart: each range ends before the next begins, touching
+/// ones merged), at most `max` ranges (past it the smallest gap goes). Kani proves it below.
+fn add_range(r: &mut Vec<(usize, usize)>, lo: usize, hi: usize, max: usize) {
+    if lo >= hi { return; }
+    let mut i = 0;
+    while i < r.len() && r[i].1 < lo { i += 1; }
+    let (mut a, mut b) = (lo, hi);
+    while i < r.len() && r[i].0 <= hi { a = a.min(r[i].0); b = b.max(r[i].1); r.remove(i); }
+    r.insert(i, (a, b));
+    if r.len() > max {
+        // (scattered writes: the smallest gap goes)
+        let mut k = 0;
+        for j in 1..r.len() - 1 { if r[j + 1].0 - r[j].1 < r[k + 1].0 - r[k].1 { k = j; } }
+        r[k].1 = r[k + 1].1;
+        r.remove(k + 1);
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::add_range;
+    /// Writes of bytes below `bytes` (as bit masks), kept in at most `max` ranges: the ranges stay
+    /// sorted and apart, no more than `max`, cover every byte written, and while there is room
+    /// for all of them cover nothing else.
+    fn check(writes: usize, max: usize, bytes: u8) {
+        let mut r = Vec::with_capacity(4);
+        let mut written = 0u8;
+        for _ in 0..writes {
+            let (lo, hi): (u8, u8) = (kani::any(), kani::any());
+            kani::assume(lo < bytes && hi <= bytes);
+            add_range(&mut r, lo as usize, hi as usize, max);
+            if lo < hi { written |= (((1u16 << hi) - 1) as u8) & !(((1u16 << lo) - 1) as u8); }
+        }
+        assert!(r.len() <= max);
+        let mut covered = 0u8;
+        for k in 0..r.len() {
+            let (a, b) = r[k];
+            assert!(a < b && b <= bytes as usize);
+            if k + 1 < r.len() { assert!(b < r[k + 1].0); }
+            covered |= (((1u16 << b) - 1) as u8) & !(((1u16 << a) - 1) as u8);
+        }
+        assert!(covered & written == written);
+        if writes <= max { assert!(covered == written); }
+    }
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn two_writes_fit() { check(2, 2, 8); }
+    /// Two ranges already there (any, sorted and apart) and one more write past the limit of 2:
+    /// the smallest gap goes, the result still sorted, apart, covering everything.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_third_range_merges_a_gap() {
+        let (a, b, c, d): (u8, u8, u8, u8) = (kani::any(), kani::any(), kani::any(), kani::any());
+        kani::assume(a < b && b < c && c < d && d <= 8);
+        let mut r = Vec::with_capacity(4);
+        r.push((a as usize, b as usize));
+        r.push((c as usize, d as usize));
+        let (lo, hi): (u8, u8) = (kani::any(), kani::any());
+        kani::assume(lo < hi && hi <= 8);
+        add_range(&mut r, lo as usize, hi as usize, 2);
+        let mask = |x: u8, y: u8| (((1u16 << y) - 1) as u8) & !(((1u16 << x) - 1) as u8);
+        let written = mask(a, b) | mask(c, d) | mask(lo, hi);
+        assert!(r.len() <= 2);
+        let mut covered = 0u8;
+        for k in 0..r.len() {
+            let (x, y) = r[k];
+            assert!(x < y && y <= 8);
+            if k + 1 < r.len() { assert!(y < r[k + 1].0); }
+            covered |= mask(x as u8, y as u8);
+        }
+        assert!(covered & written == written);
+    }
+}
+
 /// The nodes this process changed since it last published (only while the namespace is shared).
 #[derive(Default, Debug)]
 pub(super) struct Dirt {
@@ -101,19 +175,7 @@ impl Dirt {
     /// Bytes `lo..hi` of file in memory `ino` changed (its size too, maybe).
     pub(super) fn bytes(&mut self, ino: Ino, lo: usize, hi: usize) {
         let Some(m) = self.mark(ino, Level::Meta) else { return };
-        if lo >= hi { return; }
-        let r = &mut m.bytes;
-        let i = r.partition_point(|x| x.1 < lo);
-        let mut j = i;
-        let (mut a, mut b) = (lo, hi);
-        while j < r.len() && r[j].0 <= hi { a = a.min(r[j].0); b = b.max(r[j].1); j += 1; }
-        r.splice(i..j, [(a, b)]);
-        if r.len() > MAX_RANGES {
-            // (scattered writes: the smallest gap goes)
-            let k = (0..r.len() - 1).min_by_key(|&k| r[k + 1].0 - r[k].1).unwrap();
-            r[k].1 = r[k + 1].1;
-            r.remove(k + 1);
-        }
+        add_range(&mut m.bytes, lo, hi, MAX_RANGES);
     }
     pub(super) fn is_empty(&self) -> bool { self.nodes.is_empty() }
 }
@@ -419,5 +481,6 @@ impl Guard {
 }
 impl Drop for Guard { fn drop(&mut self) { #[cfg(target_arch = "wasm32")] if self.enabled { unsafe { vnhost_vfs_shared_unlock(); } } } }
 
+pub(super) mod sim;
 #[cfg(test)]
 mod tests;

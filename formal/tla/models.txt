@@ -28,3 +28,6 @@ SnapGpu SnapGpuOld.cfg violation
 RegShare RegShare.cfg ok
 RegShare RegShareOld.cfg violation
 RegShare RegShareOverwrite.cfg violation
+ObjWake ObjWake.cfg ok
+ObjWake ObjWakeSpurious.cfg ok
+ObjWake ObjWakeNoHandoff.cfg violation

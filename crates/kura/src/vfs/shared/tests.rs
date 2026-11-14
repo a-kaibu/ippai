@@ -1,40 +1,7 @@
 use super::*;
+use super::sim::{self, rooted, Mem, Op, Sim};
 use proptest::prelude::*;
 
-/// The host's buffer as a Vec (an upper bound like the host's maximum), counting the bytes that
-/// went in and out.
-#[derive(Default)]
-struct Mem {
-    buf: Vec<u8>,
-    len: usize,
-    generation: u32,
-    max: usize,
-    written: usize,
-    read: std::cell::Cell<usize>,
-}
-impl Mem {
-    fn new(max: usize) -> Self { Mem { max, ..Default::default() } }
-}
-impl Region for Mem {
-    fn len(&self) -> usize { self.len }
-    fn generation(&self) -> u32 { self.generation }
-    fn read(&self, off: usize, dst: &mut [u8]) { self.read.set(self.read.get() + dst.len()); dst.copy_from_slice(&self.buf[off..off + dst.len()]); }
-    fn write(&mut self, off: usize, src: &[u8]) -> bool {
-        if off + src.len() > self.max { return false; }
-        if self.buf.len() < off + src.len() { self.buf.resize(off + src.len(), 0); }
-        self.buf[off..off + src.len()].copy_from_slice(src);
-        self.written += src.len();
-        true
-    }
-    fn commit(&mut self, len: usize) -> u32 { self.len = len; self.generation += 1; self.generation }
-}
-
-fn rooted() -> (Fs, Ino) {
-    let mut fs = Fs::default();
-    let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
-    fs.mounts.push(("/".into(), root));
-    (fs, root)
-}
 /// One process's operation as vfs::with runs it: take in the others' changes, do it, publish.
 fn op<R>(fs: &mut Fs, m: &mut Mem, f: impl FnOnce(&mut Fs) -> R) -> R {
     fs.dirt.on = true;
@@ -168,17 +135,6 @@ fn a_buffer_too_small_keeps_the_last_namespace() {
     assert_eq!(a.file_size(ino), 1000);
 }
 
-/// What one of the processes does.
-#[derive(Debug, Clone)]
-enum Op {
-    Put(u8, Vec<u8>),
-    Write(u8, u16, Vec<u8>),
-    Size(u8, u16),
-    Open(u8),
-    Close(u8),
-    Unlink(u8),
-    Mkdir(u8),
-}
 fn ops() -> impl Strategy<Value = Vec<(u8, Vec<Op>)>> {
     let data = || prop::collection::vec(any::<u8>(), 0..200);
     let op = prop_oneof![
@@ -193,56 +149,29 @@ fn ops() -> impl Strategy<Value = Vec<(u8, Vec<Op>)>> {
     // (one to three of them by one process before it publishes: what one publish carries)
     prop::collection::vec((0u8..3, prop::collection::vec(op, 1..4)), 1..60)
 }
-fn name(n: u8) -> String { format!("/d{}/f{}", n % 3, n) }
-
 proptest! {
     #![proptest_config(ProptestConfig { cases: 400, ..ProptestConfig::default() })]
     /// Three processes doing anything to one namespace through the journal: after every
     /// operation each of them, having taken in what is new, has exactly the namespace the
     /// one that did it has (the same as a whole snapshot of it); handles stay each one's own.
     #[test]
-    fn processes_agree(ops in ops(), limit in prop_oneof![Just(usize::MAX), 2000usize..20000]) {
-        let mut m = Mem::new(limit.min(1 << 24));
-        let (first, root) = rooted();
-        let mut ps = vec![first, Fs::default(), Fs::default()];
-        // (a file from the store too: its chunk list goes along)
-        let lower = ps[0].add(Data::File(Content::Lower { size: 10, chunks: Arc::new(vec![Some([3; 16]), None]), starts: Arc::new(vec![0, 4, 10]) }), 0o644, 0);
-        if let Some(Data::Dir(ch)) = ps[0].data_mut(root) { ch.insert("lower".into(), lower); }
-        let mut handles: Vec<Vec<u32>> = vec![vec![]; 3];
-        op(&mut ps[0], &mut m, |_| ());
+    fn processes_agree(ops in ops(), limit in prop_oneof![Just(1usize << 24), 2000usize..20000]) {
+        let mut sim = Sim::new(limit);
         for (who, batch) in ops {
-            let p = who as usize;
-            let fs = &mut ps[p];
-            fs.dirt.on = true;
-            fs.sync_in(&m);
-            for o in &batch {
-                match o {
-                    Op::Put(n, d) => fs.put_file(&name(*n), d.clone(), *n as i64),
-                    Op::Write(n, at, d) => if let Some(ino) = fs.walk(root, &name(*n)[1..]) { let _ = fs.write_upper(ino, d, *at as u64); },
-                    Op::Size(n, s) => if let Some(ino) = fs.walk(root, &name(*n)[1..]) { let _ = fs.set_upper_size(ino, *s as u64); },
-                    Op::Open(n) => if let Some(ino) = fs.walk(root, &name(*n)[1..]).or(if *n == 11 { Some(lower) } else { None }) { handles[p].push(fs.new_handle(ino, 0)); },
-                    Op::Close(i) => if !handles[p].is_empty() { let k = *i as usize % handles[p].len(); let h = handles[p].remove(k); fs.close_handle(h); },
-                    Op::Unlink(n) => { let path = name(*n); let (dir, base) = path[1..].split_once('/').unwrap(); if let Some(d) = fs.walk(root, dir) { fs.unlink_name(d, base); } }
-                    Op::Mkdir(n) => { fs.mkdir_p(root, &format!("d{}/sub{n}", n % 3)); }
-                }
-            }
-            let o = &batch;
-            if !fs.sync_out(&mut m) {
+            match sim.step(who as usize, &batch) {
+                Ok(true) => {}
                 // (past the buffer: the others keep what they had; this one goes on alone, so
                 // the comparison ends here)
-                return Ok(());
-            }
-            let want = ps[p].shared_snapshot();
-            for q in 0..3 {
-                ps[q].sync_in(&m);
-                prop_assert_eq!(&ps[q].shared_snapshot(), &want, "process {} after {:?} by {}", q, o, p);
-                for h in &handles[q] { prop_assert!(ps[q].node(ps[q].handles[h].ino).is_some()); }
-                // the free slots are the empty ones
-                let mut free = ps[q].free.clone(); free.sort();
-                let empty: Vec<Ino> = (0..ps[q].nodes.len() as Ino).filter(|&i| ps[q].nodes[i as usize].is_none()).collect();
-                prop_assert_eq!(free, empty);
+                Ok(false) => return Ok(()),
+                Err(e) => prop_assert!(false, "{}", e),
             }
         }
+    }
+
+    /// The fuzz target's own decoding (fuzz/fuzz_targets/vfs_journal.rs) on random bytes.
+    #[test]
+    fn fuzz_target_on_any_bytes(b in prop::collection::vec(any::<u8>(), 0..600)) {
+        sim::fuzz(&b);
     }
 
     /// Entries of any bytes are refused or applied whole, never half; they never panic.
@@ -274,4 +203,30 @@ fn dirt_ranges_merge() {
     let mut off = Dirt::default();
     off.bytes(1, 0, 5);
     assert!(off.is_empty());
+}
+
+proptest! {
+    /// Byte ranges against a bitmap of what was written (Kani proves the same for every input
+    /// up to 8 bytes, vfs/shared.rs `proofs`): sorted and apart, at most MAX_RANGES, every
+    /// written byte covered, and nothing else while they fit.
+    #[test]
+    fn ranges_against_a_bitmap(writes in prop::collection::vec((0usize..400, 0usize..60), 0..40)) {
+        let mut r = Vec::new();
+        let mut written = vec![false; 460];
+        let mut max_seen = 0;
+        for (lo, n) in writes {
+            add_range(&mut r, lo, lo + n, MAX_RANGES);
+            for b in lo..lo + n { written[b] = true; }
+            max_seen = max_seen.max(r.len());
+        }
+        prop_assert!(r.len() <= MAX_RANGES);
+        for w in r.windows(2) { prop_assert!(w[0].1 < w[1].0); }
+        for x in &r { prop_assert!(x.0 < x.1); }
+        let exact = max_seen < MAX_RANGES;
+        for b in 0..460 {
+            let covered = r.iter().any(|x| x.0 <= b && b < x.1);
+            if written[b] { prop_assert!(covered, "byte {} written, not sent", b); }
+            if exact && covered { prop_assert!(written[b], "byte {} sent, never written", b); }
+        }
+    }
 }
