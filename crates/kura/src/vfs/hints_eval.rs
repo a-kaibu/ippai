@@ -9,7 +9,8 @@
 //! With HINTS_FORESEE=<dir> (`ippai foresee --out <dir>`: each tree's table and archive members)
 //! also what the static foresight (vfs.rs `predicted` with a table) adds: each read reaches the
 //! members (or the loose file) its chunk holds, and those hint what the table says they name or
-//! what follows them in their scenes, as kura does.
+//! what follows them in their scenes, as kura does. HINTS_DEBUG=1: a line for each read (what
+//! it reached, what that named, how much of it is a file).
 //!
 //! A list is the order of first reads, not their times: a chunk hinted just before its read
 //! still waits a little. The misses are a floor, the waste is as it would be.
@@ -153,19 +154,40 @@ impl Foresight {
                 foresee::following(&self.table, &self.places, &k, crate::vfs::FOLLOWING)
             }
         };
+        let debug = std::env::var_os("HINTS_DEBUG").is_some();
+        let mut reached = Vec::new();
         match self.members.get(&f) {
             Some(ms) => {
                 for m in ms.iter().filter(|m| m.1 < end && start < m.1 + m.2.max(1)) {
                     if scanned.insert((f, m.1)) {
                         lists.push(look(&m.0));
+                        reached.push(m.0.clone());
                     }
                 }
             }
             None => {
                 if scanned.insert((f, 0)) {
-                    lists.push(look(file.path.rsplit('/').next().unwrap_or(&file.path)));
+                    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+                    lists.push(look(name));
+                    reached.push(name.to_string());
                 }
             }
+        }
+        if debug {
+            let named: usize = lists.iter().map(Vec::len).sum();
+            let known = lists.iter().flatten().filter(|n| {
+                let (full, stem) = foresee::keys(n);
+                self.names.contains_key(&full) || stem.is_some_and(|s| self.names.contains_key(&s))
+            });
+            let scripts = reached.iter().filter(|n| self.table.contains_key(&foresee::script_key(n))).count();
+            eprintln!(
+                "  read {} chunk {c} [{start}..{end}): archive {}, reached {} ({scripts} in the table; e.g. {:?}), named {named}, of them files {}",
+                file.path,
+                self.members.contains_key(&f),
+                reached.len(),
+                reached.iter().take(3).collect::<Vec<_>>(),
+                known.count()
+            );
         }
         // (the targets' chunks, in the order named: SIBLING_MAX each, PREDICT_BYTES in all)
         let span = |g: usize, a: u64, n: u64| {
@@ -361,6 +383,12 @@ fn hints_eval() {
             }
         }
         let fs = foresee_dir.as_ref().map(|_| Foresight::new(&files, &tables, &members));
+        if std::env::var_os("HINTS_DEBUG").is_some() {
+            if let Some(f) = &fs {
+                let ms: usize = f.members.values().map(Vec::len).sum();
+                eprintln!("{id}: files {}, tables {} ({} scripts), members {ms} in {} archives (of {} lines)", files.len(), tables.len(), f.table.len(), f.members.len(), members.iter().map(|m| m.lines().count()).sum::<usize>());
+            }
+        }
         let engine = field(&json, "engine").unwrap_or(engine(&files)).to_string();
         let mut at: HashMap<&str, (usize, usize)> = HashMap::new();
         let mut dirs: HashMap<String, Vec<usize>> = HashMap::new();
