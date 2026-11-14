@@ -439,7 +439,7 @@ impl Display {
         let win = d.wins.entry(hwnd).or_insert_with(|| Win { rect: Rect::default(), client, visible: false, pixels: Vec::new(), shared: 0 });
         if win.rect.w() != rect.w() || win.rect.h() != rect.h() {
             win.shared = 0;
-            win.pixels = vec![0xff00_0000; (rect.w().max(0) * rect.h().max(0)) as usize];
+            win.pixels = vec![0xff00_0000; rect.w().max(0) as usize * rect.h().max(0) as usize];
         }
         win.rect = rect;
         win.client = client;
@@ -826,13 +826,24 @@ fn input_queued() -> usize {
     INPUT.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
+/// Adds a record to the queue. A mouse move after a mouse move takes its place (as Windows
+/// keeps one WM_MOUSEMOVE: only the latest position counts), so a program that does not take
+/// its input for a while (a long load) finds one move, not every one since, and the queue
+/// grows only by its clicks and keys.
+fn input_add(q: &mut VecDeque<[u32; 4]>, rec: [u32; 4]) {
+    match q.back_mut() {
+        Some(last) if rec[0] == INPUT_MOUSE_MOVE && last[0] == INPUT_MOUSE_MOVE && last[3] == rec[3] => *last = rec,
+        _ => q.push_back(rec),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn vnhost_input_push(kind: u32, x: i32, y: i32, data: u32) -> c_int {
     // (nothing changes while a save state is taken: what comes meanwhile is dropped)
     if crate::snap::pausing() {
         return 0;
     }
-    INPUT.lock().unwrap_or_else(|e| e.into_inner()).push_back([kind, x as u32, y as u32, data]);
+    input_add(&mut INPUT.lock().unwrap_or_else(|e| e.into_inner()), [kind, x as u32, y as u32, data]);
     INPUT_READY.notify_one();
     0
 }
@@ -1409,6 +1420,28 @@ mod tests {
         assert_eq!(r, rect(0, 0, 60, 50));
     }
 
+    proptest::proptest! {
+        /// The queue after any records: every click, wheel and key in order, and between them
+        /// the last of each run of moves; never more moves than other records plus one.
+        #[test]
+        fn input_moves_collapse(recs in proptest::collection::vec((1u32..=6, 0u32..4, 0u32..4), 0..200)) {
+            let mut q = VecDeque::new();
+            let mut want: Vec<[u32; 4]> = Vec::new();
+            for &(kind, x, y) in &recs {
+                let rec = [kind, x, y, 0];
+                input_add(&mut q, rec);
+                if kind == INPUT_MOUSE_MOVE && want.last().is_some_and(|l| l[0] == INPUT_MOUSE_MOVE) {
+                    want.pop();
+                }
+                want.push(rec);
+            }
+            let got: Vec<[u32; 4]> = q.into_iter().collect();
+            let others = got.iter().filter(|r| r[0] != INPUT_MOUSE_MOVE).count();
+            proptest::prop_assert!(got.len() - others <= others + 1);
+            proptest::prop_assert_eq!(got, want);
+        }
+    }
+
     #[test]
     fn input_queue() {
         assert_eq!(vnhost_input_push(INPUT_KEY_DOWN, 1, 2, 3), 0);
@@ -1416,7 +1449,13 @@ mod tests {
         assert_eq!(input_queued(), 2);
         assert_eq!(input_take(0), [[INPUT_KEY_DOWN, 1, 2, 3], [INPUT_MOUSE_MOVE, u32::MAX, 4, 0]]);
         assert!(input_take(1).is_empty());
+        // a thousand moves the program did not take: the last one
+        for x in 0..1000 {
+            vnhost_input_push(INPUT_MOUSE_MOVE, x, 7, 0);
+        }
+        assert_eq!(input_take(0), [[INPUT_MOUSE_MOVE, 999, 7, 0]]);
     }
+
 
     #[test]
     fn big_redraws() {
