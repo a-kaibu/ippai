@@ -15,6 +15,7 @@ dxwgsl = { path = "../dxwgsl" }
 glwgsl = { path = "../glwgsl" }
 libc = "0.2"
 bcdec_rs = "0.2"
+foresee = { path = "../foresee" }
 miniz_oxide = "0.8"
 
 [dev-dependencies]

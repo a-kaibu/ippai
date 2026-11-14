@@ -6,6 +6,7 @@ license.workspace = true
 description = "ippai: play visual novels in the browser. The server (web app built in) and the game store in one binary"
 
 [dependencies]
+foresee = { path = "../foresee" }
 libc = "0.2"
 anyhow = "1"
 # sdrs v1.0.0 (core only; no CLI or GUI).

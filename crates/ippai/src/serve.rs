@@ -16,6 +16,7 @@
 //!   `<name>.next`: which chunk each chunk led to (pairs of hashes, every branch: merge_edges).
 //!   `PUT /jit-save/trace.<game>.<run>`: a run's read trace (kura vfs/trace.rs), kept in
 //!   `<jit>/traces/` (the newest TRACES_MAX) for hints_eval.rs.
+//! - `/foresee/<tree>`: what each script of a tree names, read once ahead (foresee.rs).
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
 //!   programs saved (shared libraries and the like; the chunks only for a program with no list
 //!   of its own yet): every page loads them too, so a
@@ -1344,6 +1345,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .merge(crate::update::router(exe, dirs.fonts.clone()))
         .merge(saves::router(saves.clone()))
         .merge(crate::portable::router(store.clone(), saves.clone()))
+        .merge(crate::foresee::router(trees.clone(), args.jit.clone()))
         .route("/games", get(games).with_state(pre.clone()))
         // (zstd on the way: a game's regions are ~15 MB of wasm, ~2.5 MB compressed, and on a
         // slow connection they held the start back)

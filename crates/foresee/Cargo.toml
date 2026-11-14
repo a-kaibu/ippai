@@ -1,0 +1,12 @@
+[package]
+name = "foresee"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "What a game reads next, foreseen from its scripts: archive indexes (KiriKiri .xp3), script text, the names in it, and per-tree tables of them"
+
+[dependencies]
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+proptest = "1"

@@ -30,6 +30,7 @@ mod engine_exe;
 mod gamedb;
 mod movie;
 mod evb;
+mod foresee;
 mod nwjs;
 mod iscab;
 mod pack;

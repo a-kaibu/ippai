@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use libc::size_t;
 
 pub mod hints;
-pub mod predict;
+pub use foresee as predict;
 pub mod trace;
 #[cfg(test)]
 mod replay;
@@ -1353,6 +1353,37 @@ struct Predict {
     archives: HashMap<Ino, Vec<predict::Member>>,
     /// Scripts looked into: (file, member start; 0 for a loose one).
     scanned: std::collections::HashSet<(Ino, u64)>,
+    /// The trees' scripts and what they name, as ippai serve read them all ahead
+    /// (vnhost_vfs_foresee; crates/ippai/src/foresee.rs), and those keys without extension.
+    table: HashMap<String, Vec<String>>,
+    stems: HashMap<String, String>,
+}
+
+/// A table's levels of scripts named by a script read (its own names, then the next scripts').
+const FORESEE_DEPTH: usize = 1;
+
+/// The page hands a tree's table (text, `len` bytes at `text`: foresee::parse_table), read by
+/// ippai serve from all its scripts ahead: a script read then foresees what it names and what
+/// the scripts it goes on to name, without reading it here (scripts this cannot read, too).
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_vfs_foresee(text: *const u8, len: size_t) {
+    let text = String::from_utf8_lossy(std::slice::from_raw_parts(text, len)).into_owned();
+    foresee_table(&text);
+}
+
+fn foresee_table(text: &str) {
+    let t = predict::parse_table(text);
+    let mut g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+    let p = g.get_or_insert_with(Predict::default);
+    for (k, v) in t {
+        let e = p.table.entry(k).or_default();
+        for n in v {
+            if !e.contains(&n) {
+                e.push(n);
+            }
+        }
+    }
+    p.stems = predict::table_stems(&p.table);
 }
 static PREDICT: Mutex<Option<Predict>> = Mutex::new(None);
 /// Bytes a script's names fetch ahead at most, and each file or member at most.
@@ -1445,7 +1476,13 @@ fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
         }
     }
     // what to look into: a loose script whole; an archive's script members this read reaches
-    let mut texts: Vec<Vec<u8>> = Vec::new();
+    // what the scripts this read reaches name: from the table when it has them, else read here
+    let from_table = |key: &str| -> Option<Vec<String>> {
+        let g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
+        let p = g.as_ref()?;
+        p.table.contains_key(key).then(|| predict::foreseen(&p.table, &p.stems, key, FORESEE_DEPTH, predict::MENTIONS_MAX))
+    };
+    let mut lists: Vec<Vec<String>> = Vec::new();
     if archive {
         if first {
             let members = xp3_members(ino);
@@ -1472,31 +1509,40 @@ fn predicted(ino: Ino, off: u64, len: u64) -> Vec<Hash> {
             ms.into_iter().filter(|m| p.scanned.insert((ino, m.segments[0].0))).collect()
         };
         for m in reached {
+            if let Some(l) = from_table(&predict::script_key(&m.name)) {
+                lists.push(l);
+                continue;
+            }
             if m.segments.iter().map(|s| s.1).sum::<u64>() > predict::SCRIPT_MAX as u64 {
                 continue;
             }
             let parts: Option<Vec<(Vec<u8>, bool)>> = m.segments.iter().map(|s| read_bytes(ino, s.0, s.1).map(|b| (b, s.2))).collect();
             let Some(parts) = parts else { continue };
             let refs: Vec<(&[u8], bool)> = parts.iter().map(|(b, z)| (&b[..], *z)).collect();
-            texts.extend(predict::member_bytes(&refs));
+            lists.extend(predict::member_bytes(&refs).map(|b| predict::names_in(&b)));
         }
     } else {
         let fresh = PREDICT.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Predict::default).scanned.insert((ino, 0));
-        let size = with(|fs| match fs.node(ino).map(|n| &n.data) {
-            Some(Data::File(Content::Lower { size, .. })) => *size,
-            _ => 0,
-        });
-        if fresh && size <= predict::SCRIPT_MAX as u64 {
-            texts.extend(read_bytes(ino, 0, size));
+        let path = NAMES.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&ino).cloned()).unwrap_or_default();
+        if fresh {
+            if let Some(l) = from_table(&predict::script_key(&path)) {
+                lists.push(l);
+            } else {
+                let size = with(|fs| match fs.node(ino).map(|n| &n.data) {
+                    Some(Data::File(Content::Lower { size, .. })) => *size,
+                    _ => 0,
+                });
+                if size <= predict::SCRIPT_MAX as u64 {
+                    lists.extend(read_bytes(ino, 0, size).map(|b| predict::names_in(&b)));
+                }
+            }
         }
     }
     // what the scripts name -> the chunks of it, in the order named
     let mut out = Vec::new();
     let mut bytes = 0u64;
     let mut seen = std::collections::HashSet::new();
-    for t in texts {
-        let (chars, wide) = predict::text(&t);
-        let names = predict::mentions(&chars, wide);
+    for names in lists {
         let targets: Vec<Target> = {
             let g = PREDICT.lock().unwrap_or_else(|e| e.into_inner());
             let Some(p) = g.as_ref() else { break };
@@ -2854,7 +2900,7 @@ pub(crate) mod tests {
         arc.resize(64, 0);
         let mut idx = Vec::new();
         let mut put = |arc: &mut Vec<u8>, name: &str, body: &[u8], zl: bool| {
-            idx.extend(predict::tests::file_entry(name, &[(arc.len() as u64, body.len() as u64, zl)]));
+            idx.extend(predict::xp3_entry(name, &[(arc.len() as u64, body.len() as u64, zl)]));
             arc.extend_from_slice(body);
             arc.resize(arc.len().div_ceil(64) * 64, 0);
         };
@@ -2940,6 +2986,65 @@ pub(crate) mod tests {
         *CACHE.lock().unwrap() = Some(c);
         assert!(predicted(scene, 0, 4).is_empty());
         *CACHE.lock().unwrap() = None;
+        *FS.lock().unwrap() = None;
+    }
+
+    /// A table read ahead (ippai serve's, of all a tree's scripts): a script this cannot read
+    /// (encrypted: noise here) foresees what the table says it names, and what the script it
+    /// goes on to names, before that one is read; without the table, nothing.
+    #[test]
+    fn a_table_foresees_scripts_not_read_yet() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let noise: Vec<u8> = (0..200u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8 | 0x80).collect();
+        let arc = predict::xp3_archive(&[("scenario/first.ks", &noise, false), ("scenario/second.ks", &noise, false), ("bg01.png", &[1; 50], false), ("bg02.png", &[2; 50], false), ("bg03.png", &[3; 50], false)]);
+        let h = |i: usize| format!("{:032x}", 0xf0e5_0000u128 + i as u128);
+        let mut m = HashMap::new();
+        let mut list = Vec::new();
+        for (i, c) in arc.chunks(64).enumerate() {
+            m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), c.to_vec());
+            list.push(format!("{}:{}", h(i), c.len()));
+        }
+        let tsv = format!("vnvm-tree\t2\t64\nf\t644\t0\tdata.xp3\t{}\t{}\n", arc.len(), list.join(","));
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.mounts.push(("/".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *PREDICT.lock().unwrap() = None;
+        let At::Ours(Ok(fd)) = open_handle("/data.xp3", libc::O_RDONLY, 0) else { panic!("open") };
+        let data = handle(fd).unwrap().0;
+        release(fd);
+        let at = predict::xp3_index_at(&arc).unwrap() as usize;
+        let ms = predict::xp3_index(&predict::xp3_index_bytes(&arc[at..]).unwrap());
+        let (first, png) = (ms[0].segments[0], |k: usize| ms[2 + k].segments[0].0 as usize / 64);
+        let hash = |i: usize| {
+            let x = h(i);
+            let mut b = [0u8; 16];
+            for (k, c) in b.iter_mut().enumerate() {
+                *c = u8::from_str_radix(&x[2 * k..2 * k + 2], 16).unwrap();
+            }
+            b
+        };
+        // (no table: the noise names nothing)
+        assert!(predicted(data, 0, 32).is_empty());
+        assert!(predicted(data, first.0, first.1).is_empty());
+        *PREDICT.lock().unwrap() = None;
+        foresee_table(&format!("{}\n{}{}", predict::TABLE_HEADER, predict::table_line("scenario/first.ks", &["bg01".into(), "second".into()]), predict::table_line("second.ks", &["bg03.png".into()])));
+        predicted(data, 0, 32);
+        let on = |x: &Hash| CACHE.lock().unwrap().as_ref().is_some_and(|c| c.contains(&(*x, 0)));
+        let got = predicted(data, first.0, first.1);
+        let (s2, n2) = (ms[1].segments[0].0 as usize, ms[1].segments[0].1 as usize);
+        let second: Vec<Hash> = (s2 / 64..=(s2 + n2 - 1) / 64).map(hash).collect();
+        let want: Vec<Hash> = std::iter::once(hash(png(0))).chain(second).chain([hash(png(2))]).filter(|x| got.contains(x) || !on(x)).collect();
+        assert_eq!(got, want, "bg01, second.ks itself, then what second.ks names");
+        assert!(!got.contains(&hash(png(1))), "not bg02, which nothing names");
+        assert!(got.contains(&hash(png(2))));
+        *CACHE.lock().unwrap() = None;
+        *PREDICT.lock().unwrap() = None;
+        // (no tree at "/" left for the tests of host files)
+        *FS.lock().unwrap() = None;
     }
 
     /// The run's trace: a path before its file's reads, each chunk's first read once (with the
@@ -3008,6 +3113,7 @@ pub(crate) mod tests {
         }).collect();
         assert!(ms.windows(2).all(|w| w[0] <= w[1]));
         *CACHE.lock().unwrap() = None;
+        *FS.lock().unwrap() = None;
     }
 
     /// A padded get copies only a chunk someone else holds.

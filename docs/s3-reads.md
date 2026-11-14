@@ -201,6 +201,14 @@ Two more say what comes next whichever way the game goes, on its first run too:
   `merge_edges`). At the game's first read of a chunk the network worker queues what followed
   it, nearest first across branches (fetch-bridge.js `ippaiFollow`, 12 at most).
 
+- **Read ahead of any play.** `GET /foresee/<tree>` (crates/ippai/src/foresee.rs): ippai
+  serve reads every script of a tree once (loose, and in its .xp3s) into a table of what each
+  names (`<jit>/foresee/<tree>.tsv`, read again when the tree's list changes; 202 while it
+  reads). The page hands it to kura at the start (web/src/foresee.ts, `vnhost_vfs_foresee`).
+  A script read then foresees its names and those of the scripts it names (one level on)
+  without being read on the device; the table is where scripts only the server can decode (per
+  engine, later) come in.
+
 Each first read of a chunk is counted by where it was then (`ippaiReads`): `device`, `saving`
 (checked, on its way into the cache), `coming` (a fetch ahead on its way), `none` (the game's
 own fetch); with the milliseconds waited. The run log has a line a minute: `game reads, first

@@ -1,8 +1,13 @@
 //! What a game reads next, foreseen from what it reads now: a script names the pictures, voices
 //! and scripts its scene shows and plays ("[bg storage=bg01]", "@voice v_0012"), so when the game
-//! reads a script, those files are fetched onto the device before it gets to them (vfs.rs
-//! `predict`, the page's ippaiHint). The same way whichever way the game goes: the gallery's
+//! reads a script, those files are fetched onto the device before it gets to them (kura vfs.rs
+//! `predict_read`, the page's ippaiHint). The same way whichever way the game goes: the gallery's
 //! script names the gallery's pictures, a route's its scenes, on the game's first run too.
+//!
+//! Two places use it: kura, on the device, reads a script as the game reads it; ippai serve
+//! reads every script of a tree once, ahead of any play (crates/ippai/src/foresee.rs), into a
+//! table ([`table_line`], [`parse_table`]) the page hands kura at the start: a script's names
+//! are known before it is read, and so are those of the scripts it goes on to.
 //!
 //! The scripts read here: loose ones (a tree's .ks, .txt, .scn ... files), and the members of
 //! KiriKiri's .xp3 archives (half the store's games; their index names each member and where its
@@ -11,7 +16,6 @@
 //! encrypts its own way (cxdec and the like) reads as noise and names nothing; engines with
 //! compiled, packed scripts (Siglus' Scene.pck, BGI) name nothing here either.
 
-use super::hints::{kind, Kind};
 
 /// A member of an archive: its name (as the index has it) and its segments, each
 /// (offset in the archive, bytes there, zlib'd).
@@ -139,9 +143,153 @@ pub fn member_bytes(parts: &[(&[u8], bool)]) -> Option<Vec<u8>> {
 /// Scripts bigger than this are not looked into.
 pub const SCRIPT_MAX: usize = 8 << 20;
 
-/// Whether a file named `name` is a script to look into.
+/// Whether a file named `name` is a script to look into (by its extension, as kura's
+/// vfs/hints.rs Kind::Script, and a few more).
 pub fn is_script(name: &str) -> bool {
-    kind(name) == Kind::Script || matches!(name.rsplit_once('.').map(|x| x.1.to_ascii_lowercase()).as_deref(), Some("asd" | "sli" | "def" | "nss" | "s"))
+    let Some((stem, e)) = name.rsplit_once('.') else { return false };
+    if stem.is_empty() || stem.ends_with(['/', '\\']) {
+        return false;
+    }
+    matches!(
+        e.to_ascii_lowercase().as_str(),
+        "ks" | "tjs" | "scn" | "txt" | "ss" | "ybn" | "mjo" | "ast" | "nut" | "ain" | "ini" | "csv" | "xml" | "json" | "lua" | "rpy" | "rpyc" | "sob" | "bin_" | "asd" | "sli" | "def" | "nss" | "s"
+    )
+}
+
+/// The key a script goes by in a table: its name's last part, lower case (as scripts name each
+/// other: "second.ks", whatever its folder).
+pub fn script_key(name: &str) -> String {
+    name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase()
+}
+
+/// A table's first line.
+pub const TABLE_HEADER: &str = "ippai-foresee 1";
+
+/// A table's line for script `name` and the names it mentions (in order): key, tab, names
+/// comma-separated (names with a tab, a comma or a line break in them left out).
+pub fn table_line(name: &str, names: &[String]) -> String {
+    let ok: Vec<&str> = names.iter().map(String::as_str).filter(|n| !n.contains(['\t', ',', '\n', '\r'])).collect();
+    format!("{}\t{}\n", script_key(name).replace(['\t', '\n', '\r'], " "), ok.join(","))
+}
+
+/// A table's scripts and their names (a later line for a key adds to it; other lines passed over).
+pub fn parse_table(text: &str) -> std::collections::HashMap<String, Vec<String>> {
+    let mut out: std::collections::HashMap<String, Vec<String>> = Default::default();
+    let mut lines = text.lines();
+    if lines.next() != Some(TABLE_HEADER) {
+        return out;
+    }
+    for l in lines {
+        let Some((k, v)) = l.split_once('\t') else { continue };
+        let e = out.entry(k.to_string()).or_default();
+        for n in v.split(',').filter(|n| !n.is_empty()) {
+            if !e.iter().any(|x| x == n) {
+                e.push(n.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// What script `key` foresees through `table`: its names, then those of the scripts it names
+/// (`depth` levels on, breadth first), each once, `max` at most.
+pub fn foreseen(table: &std::collections::HashMap<String, Vec<String>>, stems: &std::collections::HashMap<String, String>, key: &str, depth: usize, max: usize) -> Vec<String> {
+    let find = |n: &str| -> Option<String> {
+        if table.contains_key(n) {
+            return Some(n.to_string());
+        }
+        let (_, stem) = keys(n);
+        stems.get(stem.as_deref().unwrap_or(n)).cloned()
+    };
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut done = std::collections::HashSet::from([key.to_string()]);
+    let mut level = vec![key.to_string()];
+    for _ in 0..=depth {
+        let mut next = Vec::new();
+        for s in &level {
+            for n in table.get(s).into_iter().flatten() {
+                if out.len() >= max {
+                    return out;
+                }
+                if seen.insert(n.clone()) {
+                    out.push(n.clone());
+                }
+                if let Some(k) = find(n) {
+                    if done.insert(k.clone()) {
+                        next.push(k);
+                    }
+                }
+            }
+        }
+        level = next;
+    }
+    out
+}
+
+/// A table's scripts by their names without extension (`second` for second.ks), for
+/// [`foreseen`]: a script names another without one.
+pub fn table_stems(table: &std::collections::HashMap<String, Vec<String>>) -> std::collections::HashMap<String, String> {
+    table.keys().filter_map(|k| keys(k).1.map(|s| (s, k.clone()))).collect()
+}
+
+/// An .xp3 index chunk (tag, length, body).
+pub fn xp3_chunk(tag: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut v = tag.to_vec();
+    v.extend((body.len() as u64).to_le_bytes());
+    v.extend_from_slice(body);
+    v
+}
+
+/// An .xp3 index entry of `name` with segments (start, packed, zlib), as KiriKiri writes them
+/// (for tests here and in kura and ippai).
+pub fn xp3_entry(name: &str, segs: &[(u64, u64, bool)]) -> Vec<u8> {
+    let units: Vec<u16> = name.encode_utf16().collect();
+    let total: u64 = segs.iter().map(|s| s.1).sum();
+    let mut info = 0u32.to_le_bytes().to_vec();
+    info.extend(total.to_le_bytes());
+    info.extend(total.to_le_bytes());
+    info.extend((units.len() as u16).to_le_bytes());
+    info.extend(units.iter().flat_map(|u| u.to_le_bytes()));
+    let mut segm = Vec::new();
+    for &(start, packed, z) in segs {
+        segm.extend((z as u32).to_le_bytes());
+        segm.extend(start.to_le_bytes());
+        segm.extend(packed.to_le_bytes());
+        segm.extend(packed.to_le_bytes());
+    }
+    let mut body = xp3_chunk(b"info", &info);
+    body.extend(xp3_chunk(b"segm", &segm));
+    body.extend(xp3_chunk(b"adlr", &[0; 4]));
+    xp3_chunk(b"File", &body)
+}
+
+/// A whole .xp3 of `members` (name, bytes, zlib'd), its index zlib'd at the end (tests).
+pub fn xp3_archive(members: &[(&str, &[u8], bool)]) -> Vec<u8> {
+    let mut arc = XP3_MAGIC.to_vec();
+    arc.extend(0u64.to_le_bytes());
+    arc.resize(64, 0);
+    let mut idx = Vec::new();
+    for (name, body, z) in members {
+        let data = if *z { miniz_oxide::deflate::compress_to_vec_zlib(body, 6) } else { body.to_vec() };
+        idx.extend(xp3_entry(name, &[(arc.len() as u64, data.len() as u64, *z)]));
+        arc.extend_from_slice(&data);
+        arc.resize(arc.len().div_ceil(64) * 64, 0);
+    }
+    let at = arc.len() as u64;
+    arc[11..19].copy_from_slice(&at.to_le_bytes());
+    let zi = miniz_oxide::deflate::compress_to_vec_zlib(&idx, 6);
+    arc.push(1);
+    arc.extend((zi.len() as u64).to_le_bytes());
+    arc.extend((idx.len() as u64).to_le_bytes());
+    arc.extend(&zi);
+    arc
+}
+
+/// The names a script's bytes (`bytes`, as the file or member holds them unpacked) mention.
+pub fn names_in(bytes: &[u8]) -> Vec<String> {
+    let (chars, wide) = text(bytes);
+    mentions(&chars, wide)
 }
 
 /// A script's text, as characters (`bytes`: the file's): UTF-16 (a BOM), KiriKiri's simple
@@ -221,37 +369,12 @@ pub fn keys(name: &str) -> (String, Option<String>) {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn chunk(tag: &[u8], body: &[u8]) -> Vec<u8> {
-        let mut v = tag.to_vec();
-        v.extend((body.len() as u64).to_le_bytes());
-        v.extend_from_slice(body);
-        v
-    }
-    /// An xp3 index entry of `name` with segments (start, packed, zlib).
-    pub(crate) fn file_entry(name: &str, segs: &[(u64, u64, bool)]) -> Vec<u8> {
-        let units: Vec<u16> = name.encode_utf16().collect();
-        let total: u64 = segs.iter().map(|s| s.1).sum();
-        let mut info = 0u32.to_le_bytes().to_vec();
-        info.extend(total.to_le_bytes());
-        info.extend(total.to_le_bytes());
-        info.extend((units.len() as u16).to_le_bytes());
-        info.extend(units.iter().flat_map(|u| u.to_le_bytes()));
-        let mut segm = Vec::new();
-        for &(start, packed, z) in segs {
-            segm.extend((z as u32).to_le_bytes());
-            segm.extend(start.to_le_bytes());
-            segm.extend(packed.to_le_bytes());
-            segm.extend(packed.to_le_bytes());
-        }
-        let mut body = chunk(b"info", &info);
-        body.extend(chunk(b"segm", &segm));
-        body.extend(chunk(b"adlr", &[0; 4]));
-        chunk(b"File", &body)
-    }
+    use xp3_chunk as chunk;
+    use xp3_entry as file_entry;
 
     #[test]
     fn xp3_index_names_members_and_their_bytes() {
@@ -328,6 +451,39 @@ pub(crate) mod tests {
         assert_eq!(keys("bg01"), ("bg01".into(), None));
         assert_eq!(keys(".hidden"), (".hidden".into(), None));
         assert!(is_script("scenario/first.KS") && is_script("x.tjs") && !is_script("bg01.png"));
+    }
+
+    /// A table: lines back as they went, a later line adding; what a script foresees: its names,
+    /// then those of the scripts it names (with or without the extension), breadth first.
+    #[test]
+    fn tables_and_what_they_foresee() {
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let mut text = String::from(TABLE_HEADER);
+        text.push('\n');
+        text += &table_line("scenario/First.ks", &v(&["bg01", "v002", "second.ks", "a,b", "gallery"]));
+        text += &table_line("second.ks", &v(&["bg02", "third"]));
+        text += &table_line("third.ks", &v(&["bg03", "first.ks"]));
+        text += &table_line("gallery.ks", &v(&["cg01"]));
+        text += &table_line("second.ks", &v(&["se01", "bg02"]));
+        let t = parse_table(&text);
+        assert_eq!(t["first.ks"], v(&["bg01", "v002", "second.ks", "gallery"]), "a name with a comma left out");
+        assert_eq!(t["second.ks"], v(&["bg02", "third", "se01"]));
+        let stems = table_stems(&t);
+        assert_eq!(foreseen(&t, &stems, "first.ks", 0, 100), v(&["bg01", "v002", "second.ks", "gallery"]));
+        assert_eq!(foreseen(&t, &stems, "first.ks", 1, 100), v(&["bg01", "v002", "second.ks", "gallery", "bg02", "third", "se01", "cg01"]));
+        // (a loop back to first.ks: once)
+        assert_eq!(foreseen(&t, &stems, "first.ks", 5, 100), v(&["bg01", "v002", "second.ks", "gallery", "bg02", "third", "se01", "cg01", "bg03", "first.ks"]));
+        assert_eq!(foreseen(&t, &stems, "first.ks", 5, 3).len(), 3);
+        assert!(foreseen(&t, &stems, "nothing.ks", 3, 100).is_empty());
+        assert!(parse_table("not a table\nx\ty").is_empty());
+        // (an archive written and read back: its members, their bytes)
+        let a = xp3_archive(&[("scenario/a.ks", b"[bg storage=bg09]", true), ("bg09.png", b"png", false)]);
+        let at = xp3_index_at(&a).unwrap() as usize;
+        let ms = xp3_index(&xp3_index_bytes(&a[at..]).unwrap());
+        assert_eq!(ms.len(), 2);
+        let (s0, n0, z0) = ms[0].segments[0];
+        let body = member_bytes(&[(&a[s0 as usize..(s0 + n0) as usize], z0)]).unwrap();
+        assert_eq!(names_in(&body), v(&["storage", "bg09"]));
     }
 
     proptest! {

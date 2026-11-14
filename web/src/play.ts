@@ -68,6 +68,7 @@ import { startWarm, warmAllowed, warmBusyWidth, type Warm } from "./warm";
 import { savedChunks } from "./offline";
 import { sakeWasmBytes, wasmModuleArg } from "./wasmsource";
 import { deviceChunks } from "./chunkstore";
+import { fetchForesee, handForesee, mountedTrees } from "./foresee";
 import { netBudget, setGameBusy } from "./budget";
 import {
   builds,
@@ -681,6 +682,14 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     console.log(`sake memory: ${mib(before)} -> ${mib(sake.wasmMemory.buffer.byteLength)} MiB`);
   }
   ahead?.(sake);
+  // what each script of the trees names, read by the server ahead: kura foresees from it (foresee.ts)
+  void fetchForesee(mountedTrees(params.getAll("mount")), (tree, text) => {
+    void (async () => {
+      // (a save state is being taken: the memory stays as it is)
+      while (snapping()) await new Promise((r) => setTimeout(r, 50));
+      if (handForesee(sake, text)) recorder?.note(`foresee: ${tree}'s scripts (${text.length} bytes)`);
+    })();
+  });
   // (a restored state has the late parts it had in its memory already)
   if (!stateMem) void loaded.then((l) => l && handLate(sake, l.late));
   // (a save to the device going on meanwhile gives way while the game waits: offline.ts)

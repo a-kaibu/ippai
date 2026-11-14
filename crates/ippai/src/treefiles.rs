@@ -213,6 +213,45 @@ impl Trees {
     }
 }
 
+impl Trees {
+    /// Tree `name`'s files: (path, lower case; size), in no order. None: no such tree.
+    pub fn list(&self, name: &str) -> Option<Vec<(String, u64)>> {
+        Some(self.tree(name)?.files.iter().map(|(p, e)| (p.clone(), e.size)).collect())
+    }
+
+    /// Tree `name`'s file at `path` (lower case): bytes `a..a + len` (fewer at its end), the
+    /// chunks it spans kept in `cache` (index -> bytes) for the next reads of the same file.
+    pub async fn read(&self, name: &str, path: &str, a: u64, len: u64, cache: &mut HashMap<u64, Vec<u8>>) -> Option<Vec<u8>> {
+        let e = self.tree(name)?.files.get(path)?.clone();
+        if a >= e.size || len == 0 {
+            return Some(Vec::new());
+        }
+        let b = (a + len).min(e.size) - 1;
+        let mut out = Vec::with_capacity((b + 1 - a) as usize);
+        for i in e.index(a)..=e.index(b) {
+            if !cache.contains_key(&i) {
+                // (a few kept: the members of one archive lie side by side)
+                if cache.len() >= 8 {
+                    let k = *cache.keys().next().unwrap();
+                    cache.remove(&k);
+                }
+                cache.insert(i, self.chunk(&e, i).await.ok()?);
+            }
+            let d = &cache[&i];
+            let start = e.span(i).0;
+            let from = a.max(start) - start;
+            let to = (b + 1).min(start + d.len() as u64) - start;
+            out.extend_from_slice(&d[from as usize..to as usize]);
+        }
+        Some(out)
+    }
+
+    /// When tree `name`'s list last changed.
+    pub fn changed(&self, name: &str) -> Option<SystemTime> {
+        std::fs::metadata(self.store.join("trees").join(format!("{name}.tsv"))).ok()?.modified().ok()
+    }
+}
+
 pub async fn file(State(t): State<Trees>, Path((name, path)): Path<(String, String)>, h: HeaderMap) -> Response {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
         return StatusCode::BAD_REQUEST.into_response();
