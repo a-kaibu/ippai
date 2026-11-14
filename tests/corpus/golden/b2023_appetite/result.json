@@ -1,7 +1,7 @@
 {
  "crashed": false,
  "errors": [],
- "firstWindow": 1.0427320003509521,
+ "firstWindow": 1.048171043395996,
  "leftTitle": false,
  "manifests": [
   "sennokoro_tr.exe",
@@ -17,6 +17,6 @@
  ],
  "steps": "key:Return wait:6",
  "storyFrames": 1,
- "title": 5.2607691287994385,
- "titleStill": 26.03688907623291
+ "title": 5.213549375534058,
+ "titleStill": 25.876461267471313
 }
