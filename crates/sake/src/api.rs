@@ -427,6 +427,50 @@ fn stats_on() -> bool {
     })
 }
 
+/// SAKE_THREADS=<seconds>: every so often, each guest thread's last API calls (name, first
+/// arguments, caller, ms), to see what a stalled game's threads wait for without the cost of
+/// formatting a trace line per call.
+// (lock-free: relaxed stores into a slot per thread, so watching barely changes the timing)
+const RECENT_N: usize = 8;
+const RECENT_THREADS: usize = 128;
+static RECENT: [[[std::sync::atomic::AtomicU32; 6]; RECENT_N]; RECENT_THREADS] = unsafe { std::mem::zeroed() };
+static RECENT_POS: [std::sync::atomic::AtomicU32; RECENT_THREADS] = unsafe { std::mem::zeroed() };
+
+fn recent_slot(tid: u32) -> Option<usize> {
+    let k = (tid.wrapping_sub(0x20) / 4) as usize;
+    (k < RECENT_THREADS).then_some(k)
+}
+
+fn threads_on() -> bool {
+    static T: OnceLock<bool> = OnceLock::new();
+    *T.get_or_init(|| {
+        let Some(s) = std::env::var("SAKE_THREADS").ok().and_then(|s| s.parse::<f64>().ok()) else { return false };
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs_f64(s));
+            use std::sync::atomic::Ordering::Relaxed;
+            let mut out = format!("sake threads at {} ms:", crate::k32::ticks_ms() - 60_000);
+            for k in 0..RECENT_THREADS {
+                let pos = RECENT_POS[k].load(Relaxed) as usize;
+                if pos == 0 {
+                    continue;
+                }
+                out += &format!("\n  {:04x}:", 0x20 + 4 * k);
+                for n in pos.saturating_sub(RECENT_N)..pos {
+                    let r: Vec<u32> = RECENT[k][n % RECENT_N].iter().map(|x| x.load(Relaxed)).collect();
+                    out += &format!(" {}({:x},{:x},{:x})@{:x}/{}", name_of(TRAP_LO + 4 * r[0]).unwrap_or_default(), r[1], r[2], r[3], r[4], r[5]);
+                }
+                // (waiting for a critical section: its LockCount, RecursionCount, OwningThread, LockSemaphore)
+                let last: Vec<u32> = RECENT[k][(pos - 1) % RECENT_N].iter().map(|x| x.load(Relaxed)).collect();
+                if name_of(TRAP_LO + 4 * last[0]).is_some_and(|n| n.contains("EnterCriticalSection")) && last[1] >= 0x10000 {
+                    out += &format!(" [cs {:x}: {:x} {:x} owner {:x} {:x}]", last[1], r32(last[1] + 4), r32(last[1] + 8), r32(last[1] + 12), r32(last[1] + 16));
+                }
+            }
+            eprintln!("{out}");
+        });
+        true
+    })
+}
+
 /// SAKE_TRACE_FILTER=a,b: trace only functions whose name contains one of these.
 fn trace_match(i: u32) -> bool {
     // SAKE_TRACE_AFTER=<ms>: only from then on
@@ -512,6 +556,17 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         *COUNTS.lock().unwrap().get_or_insert_with(HashMap::default).entry(i).or_default() += 1;
     }
     let esp = cpu.regs[ESP];
+    if threads_on() {
+        if let Some(k) = recent_slot(crate::cur().tid) {
+            use std::sync::atomic::Ordering::Relaxed;
+            let n = RECENT_POS[k].load(Relaxed) as usize;
+            let r = [i, r32(esp + 4), r32(esp + 8), r32(esp + 12), r32(esp), crate::k32::ticks_ms() - 60_000];
+            for (x, v) in RECENT[k][n % RECENT_N].iter().zip(r) {
+                x.store(v, Relaxed);
+            }
+            RECENT_POS[k].store(n as u32 + 1, Relaxed);
+        }
+    }
     {
         static W: OnceLock<u32> = OnceLock::new();
         static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

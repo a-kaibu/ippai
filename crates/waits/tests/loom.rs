@@ -720,3 +720,41 @@ fn a_woken_waiter_reads_what_its_signaler_stored_before_its_next_call() {
         t.join().unwrap();
     });
 }
+
+/// The output queue (outq, #221): two threads write while the page's thread takes, in every
+/// interleaving: every record comes out whole, each writer's in its order, none twice, and no
+/// write waits for the taker (it only tries the lock).
+#[test]
+fn output_queue_keeps_records_whole() {
+    use waits::outq::{records, OutQ};
+    model(|| {
+        let q = Arc::new(OutQ::<64>::new());
+        let w: Vec<_> = (1..=2u8)
+            .map(|fd| {
+                let q = q.clone();
+                thread::spawn(move || {
+                    q.push(fd, &[fd, 10]);
+                    q.push(fd, &[fd, 11, 12]);
+                })
+            })
+            .collect();
+        let mut got: Vec<(u8, Vec<u8>)> = vec![];
+        let mut out = [0u8; 64];
+        let n = q.take(&mut out);
+        got.extend(records(&out[..n]).map(|(f, b)| (f, b.to_vec())));
+        for t in w {
+            t.join().unwrap();
+        }
+        loop {
+            let n = q.take(&mut out);
+            if n == 0 {
+                break;
+            }
+            got.extend(records(&out[..n]).map(|(f, b)| (f, b.to_vec())));
+        }
+        for fd in 1..=2u8 {
+            let mine: Vec<Vec<u8>> = got.iter().filter(|r| r.0 == fd).map(|r| r.1.clone()).collect();
+            assert_eq!(mine, vec![vec![fd, 10], vec![fd, 11, 12]]);
+        }
+    });
+}

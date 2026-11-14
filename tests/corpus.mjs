@@ -222,6 +222,18 @@ res.firstWindow = firstFrame;
 if (last) res.size = [last.w, last.h];
 if (res.title === null) {
   await shot("notitle");
+  // every guest thread's state now (kura's crash log snapshot): where a stalled start waits
+  const snap = await page
+    .evaluate(() => {
+      const m = window.vnvmSake;
+      const p = m?._vnhost_crashlog_info?.();
+      const n = p ? m._vnhost_crashlog_snapshot() >>> 0 : 0;
+      if (!n) return null;
+      const at = new Uint32Array(m.wasmMemory.buffer, p >>> 0, 16)[8] >>> 0;
+      return new TextDecoder().decode(new Uint8Array(m.wasmMemory.buffer, at, n).slice());
+    })
+    .catch((e) => `(snapshot failed: ${e})`);
+  if (snap) writeFileSync(`${out}/threads.txt`, snap);
   res.d3d = last?.d3d ?? false;
   save();
   await browser.close();

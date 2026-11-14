@@ -12,10 +12,51 @@ extern "C" {
     fn __real_writev(fd: c_int, iov: *const iovec, cnt: c_int) -> ssize_t;
 }
 
+/// stdout / stderr of every thread but the page's, once the page asked for it
+/// ([`vnhost_output_queue`]): queued for the page's thread to print when it gets to it, instead
+/// of emscripten's write, which hands each write to the page's thread and waits there (a game
+/// stopped for good inside one, holding Rust's stderr lock, #221).
+static OUT_QUEUED: AtomicBool = AtomicBool::new(false);
+static OUT_Q: waits::outq::OutQ<{ 1 << 20 }> = waits::outq::OutQ::new();
+
+/// Called by the page's thread (host/pre.js) before the program starts: from then on the other
+/// threads' output goes through the queue.
+#[no_mangle]
+pub extern "C" fn vnhost_output_queue() {
+    OUT_QUEUED.store(true, Ordering::Release);
+}
+
+/// The queued output, as records (fd, u16 length, bytes; waits::outq), into `buf`: the bytes
+/// written, 0 when nothing is queued or a thread is adding to it right now.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_output_take(buf: *mut u8, cap: u32) -> u32 {
+    OUT_Q.take(std::slice::from_raw_parts_mut(buf, cap as usize)) as u32
+}
+
+fn on_page_thread() -> bool {
+    extern "C" {
+        fn emscripten_is_main_browser_thread() -> c_int;
+    }
+    unsafe { emscripten_is_main_browser_thread() != 0 }
+}
+
+/// Whether this write goes to the queue (and is done).
+fn queued(f: c_int, b: &[u8]) -> bool {
+    if !OUT_QUEUED.load(Ordering::Acquire) || on_page_thread() {
+        return false;
+    }
+    OUT_Q.push(f as u8, b);
+    true
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_write(f: c_int, buf: *const c_void, len: size_t) -> ssize_t {
     if (f == 1 || f == 2) && !buf.is_null() {
-        crate::crashlog::output(f, std::slice::from_raw_parts(buf as *const u8, len));
+        let b = std::slice::from_raw_parts(buf as *const u8, len);
+        crate::crashlog::output(f, b);
+        if queued(f, b) {
+            return len as ssize_t;
+        }
     }
     __real_write(f, buf, len)
 }
@@ -31,6 +72,17 @@ pub unsafe extern "C" fn __wrap_writev(f: c_int, iov: *const iovec, cnt: c_int) 
             }
         }
         crate::crashlog::output(f, l.bytes());
+        // (each piece as it is: the page joins them into lines)
+        if OUT_QUEUED.load(Ordering::Acquire) && !on_page_thread() {
+            let mut total = 0;
+            for v in std::slice::from_raw_parts(iov, cnt.max(0) as usize) {
+                if !v.iov_base.is_null() {
+                    OUT_Q.push(f as u8, std::slice::from_raw_parts(v.iov_base as *const u8, v.iov_len));
+                    total += v.iov_len;
+                }
+            }
+            return total as ssize_t;
+        }
     }
     __real_writev(f, iov, cnt)
 }

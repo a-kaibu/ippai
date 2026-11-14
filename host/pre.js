@@ -152,3 +152,44 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     onAbort?.(what);
   };
 }
+
+// The page's threads' stdout / stderr (crates/kura/src/wrap.rs, #221): they queue it and the
+// page's thread prints it from here, every 50 ms and at the end, so that a write never waits for
+// the page's thread (emscripten's own write from a thread does, and a game stopped for good in
+// one, rarely). Records: fd, u16 length, bytes.
+if (!ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
+  let buf = 0;
+  const CAP = 1 << 16;
+  const drain = () => {
+    if (!buf) return;
+    for (let k = 0; k < 64; k++) {
+      const n = wasmExports.vnhost_output_take(buf, CAP) >>> 0;
+      if (!n) return;
+      const b = HEAPU8.subarray(buf >>> 0, (buf >>> 0) + n);
+      for (let at = 0; at + 3 <= n; ) {
+        const fd = b[at], len = b[at + 1] | (b[at + 2] << 8);
+        for (let i = at + 3; i < at + 3 + len; i++) printChar(fd, b[i]);
+        at += 3 + len;
+      }
+    }
+  };
+  const ready = Module.onRuntimeInitialized;
+  Module.onRuntimeInitialized = () => {
+    if (wasmExports.vnhost_output_queue) {
+      buf = _malloc(CAP);
+      wasmExports.vnhost_output_queue();
+      setInterval(drain, 50);
+    }
+    ready?.();
+  };
+  const onExit = Module.onExit;
+  Module.onExit = (code) => {
+    drain();
+    onExit?.(code);
+  };
+  const onAbort = Module.onAbort;
+  Module.onAbort = (what) => {
+    drain();
+    onAbort?.(what);
+  };
+}

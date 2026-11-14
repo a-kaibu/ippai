@@ -12,4 +12,4 @@ loom = "0.7"
 proptest = "1"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(kani)"] }

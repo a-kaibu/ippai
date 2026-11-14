@@ -2124,6 +2124,7 @@ dependencies = [
  "naga",
  "proptest",
  "texture2ddecoder",
+ "waits",
 ]
 
 [[package]]
