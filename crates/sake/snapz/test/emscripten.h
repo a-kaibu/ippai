@@ -1,0 +1,1 @@
+#define EMSCRIPTEN_KEEPALIVE

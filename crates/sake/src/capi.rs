@@ -51,6 +51,7 @@ pub(crate) fn acquire(container: Option<&str>, name: Option<&str>, ty: u32, flag
         let marker = format!("{path}/keyset");
         let deleted = storage(|| {
           if flags & 16 != 0 {
+            forget_keys(path);
             // Removing the marker prevents another opener from observing a
             // container while its two key files are being removed.
             kura::fs::remove_file(&marker).map_err(|_| cng::NTE_BAD_KEYSET)?;
@@ -91,16 +92,57 @@ pub(crate) fn release(id: u32, flags: u32) -> Result<(), u32> {
     Ok(())
 }
 fn spec(alg: u32) -> Result<u32, u32> { match alg { 1 | 0xa400 => Ok(1), 2 | 0x2400 => Ok(2), _ => Err(0x8009_0008) } }
+/// Persisted keys parsed before: (container path, key spec) -> the stamps of its keyset and key
+/// files when read, the keyset's generation, the key. A program that signs a message at a time
+/// read both files under the kern lock and parsed the private key blob on every call.
+type KeyCache = HashMap<(String, u32), (u64, u64, Vec<u8>, Key)>;
+static KEY_CACHE: Mutex<Option<KeyCache>> = Mutex::new(None);
+
+/// The key `load` gives, or the one it gave before when neither file changed since (stamps 0:
+/// trust nothing) and the provider's generation is the one it was read for.
+fn cached_key(cache: &mut Option<KeyCache>, at: (String, u32), stamps: (u64, u64), generation: &[u8], load: impl FnOnce() -> Result<Key, u32>) -> Result<Key, u32> {
+    let c = cache.get_or_insert_with(HashMap::new);
+    if stamps.0 != 0 && stamps.1 != 0 {
+        if let Some((a, b, g, k)) = c.get(&at) {
+            if (*a, *b) == stamps && g == generation {
+                return Ok(k.clone());
+            }
+        }
+    }
+    c.remove(&at);
+    let k = load()?;
+    if stamps.0 != 0 && stamps.1 != 0 {
+        if c.len() > 64 {
+            c.clear();
+        }
+        c.insert(at, (stamps.0, stamps.1, generation.to_vec(), k.clone()));
+    }
+    Ok(k)
+}
+
+/// A container's keys are no longer the ones read (written, deleted).
+fn forget_keys(path: &str) {
+    if let Some(c) = KEY_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        c.retain(|(p, _), _| p != path);
+    }
+}
+
 pub(crate) fn user_key(id: u32, key_spec: u32) -> Result<Key, u32> {
     let p = provider(id)?; let key_spec = spec(key_spec)?;
     if let Some(path) = &p.path {
-        let bytes = storage(|| {
-            if kura::fs::read(format!("{path}/keyset")).ok().as_ref() != Some(&p.generation) { return Err(cng::NTE_BAD_KEYSET); }
-            kura::fs::read(format!("{path}/{key_spec}.key")).map_err(|_| cng::NTE_NO_KEY)
-        })?;
-        if bytes.get(..4) != Some(b"CAP1") || bytes.len() < 8 { return Err(cng::NTE_BAD_DATA); }
-        let (rsa, bits) = Rsa::from_blob(Blob::FullPrivate, false, &bytes[8..])?;
-        Ok(Key { rsa, bits, exportable: u32::from_le_bytes(bytes[4..8].try_into().unwrap()) & 1 != 0 })
+        // (stamps before the reads: a change while reading shows at the next look)
+        let (keyset, file) = (format!("{path}/keyset"), format!("{path}/{key_spec}.key"));
+        let stamps = (kura::fs::stamp(&keyset), kura::fs::stamp(&file));
+        let mut cache = KEY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cached_key(&mut cache, (path.clone(), key_spec), stamps, &p.generation, || {
+            let bytes = storage(|| {
+                if kura::fs::read(&keyset).ok().as_ref() != Some(&p.generation) { return Err(cng::NTE_BAD_KEYSET); }
+                kura::fs::read(&file).map_err(|_| cng::NTE_NO_KEY)
+            })?;
+            if bytes.get(..4) != Some(b"CAP1") || bytes.len() < 8 { return Err(cng::NTE_BAD_DATA); }
+            let (rsa, bits) = Rsa::from_blob(Blob::FullPrivate, false, &bytes[8..])?;
+            Ok(Key { rsa, bits, exportable: u32::from_le_bytes(bytes[4..8].try_into().unwrap()) & 1 != 0 })
+        })
     } else { p.keys.lock().unwrap().get(&key_spec).cloned().ok_or(cng::NTE_NO_KEY) }
 }
 pub(crate) fn generate(id: u32, alg: u32, flags: u32) -> Result<Key, u32> {
@@ -114,6 +156,7 @@ pub(crate) fn generate(id: u32, alg: u32, flags: u32) -> Result<Key, u32> {
         let mut bytes = b"CAP1".to_vec(); bytes.extend_from_slice(&(flags & 1).to_le_bytes());
         bytes.extend(key.rsa.to_blob(Blob::FullPrivate, key.bits)?);
         let temp = format!("{path}/{key_spec}.{}.{}.tmp", crate::pid(), NEXT.fetch_add(1, Ordering::Relaxed));
+        forget_keys(path);
         storage(|| {
           if kura::fs::read(format!("{path}/keyset")).ok().as_ref() != Some(&p.generation) { return Err(cng::NTE_BAD_KEYSET); }
           kura::fs::write(&temp, bytes).map_err(|_| cng::NTE_PERM)?;
@@ -124,4 +167,88 @@ pub(crate) fn generate(id: u32, alg: u32, flags: u32) -> Result<Key, u32> {
         })?;
     } else { p.keys.lock().unwrap().insert(key_spec, key.clone()); }
     Ok(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn key(n: u8) -> Key {
+        let rsa = Rsa::from_blob(Blob::FullPrivate, false, &blob(n)).unwrap().0;
+        Key { rsa, bits: 512, exportable: n & 1 != 0 }
+    }
+    /// A 512-bit private key blob, one of a few (made once).
+    fn blob(n: u8) -> Vec<u8> {
+        static B: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+        B.get_or_init(|| (0..3).map(|_| Rsa::generate(512).unwrap().to_blob(Blob::FullPrivate, 512).unwrap()).collect())[n as usize % 3].clone()
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        /// a key file rewritten with key n (its stamp moves on; 0: a file changed just now)
+        Write(u32, u8, bool),
+        /// the keyset made again (a new generation)
+        Keyset(bool),
+        /// the provider of generation g asks for key spec s
+        Get(u32, u8),
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+
+        /// Against reading the files every time: the cache answers as they would, whatever was
+        /// written, remade or changed just now (a stamp of 0) in between.
+        #[test]
+        fn cached_keys_as_reading_each_time(ops in prop::collection::vec(prop_oneof![
+            (1u32..=2, any::<u8>(), any::<bool>()).prop_map(|(s, n, r)| Op::Write(s, n, r)),
+            any::<bool>().prop_map(Op::Keyset),
+            (1u32..=2, 0u8..3).prop_map(|(s, g)| Op::Get(s, g)),
+        ], 1..60)) {
+            let mut cache = None;
+            // the files: keyset generation + stamp, key files (spec -> key n, stamp)
+            let (mut gen, mut gen_stamp) = (vec![0u8], 1u64);
+            let mut files: HashMap<u32, (u8, u64)> = HashMap::new();
+            let mut tick = 10u64;
+            let mut loads = 0;
+            for op in ops {
+                tick += 1;
+                match op {
+                    Op::Write(s, n, recent) => { files.insert(s, (n, if recent { 0 } else { tick })); }
+                    Op::Keyset(recent) => { gen = vec![gen[0].wrapping_add(1)]; gen_stamp = if recent { 0 } else { tick }; }
+                    Op::Get(s, g) => {
+                        // (a provider opened at this generation or one before)
+                        let asked = vec![gen[0].wrapping_sub(g % 2)];
+                        let read = || -> Result<Key, u32> {
+                            if asked != gen { return Err(cng::NTE_BAD_KEYSET); }
+                            files.get(&s).map(|&(n, _)| key(n)).ok_or(cng::NTE_NO_KEY)
+                        };
+                        let want = read().map(|k| (k.exportable, k.rsa.to_blob(Blob::FullPrivate, 512).unwrap()));
+                        let stamps = (gen_stamp, files.get(&s).map_or(0, |f| f.1));
+                        let got = cached_key(&mut cache, ("c".into(), s), stamps, &asked, || { loads += 1; read() })
+                            .map(|k| (k.exportable, k.rsa.to_blob(Blob::FullPrivate, 512).unwrap()));
+                        prop_assert_eq!(got, want);
+                    }
+                }
+            }
+            let _ = loads;
+        }
+    }
+
+    /// The same key asked again with nothing changed is not read again.
+    #[test]
+    fn unchanged_keys_are_read_once() {
+        let mut cache = None;
+        let mut loads = 0;
+        for _ in 0..5 {
+            let k = cached_key(&mut cache, ("c".into(), 1), (5, 6), b"g", || { loads += 1; Ok(key(1)) }).unwrap();
+            assert!(k.exportable);
+        }
+        assert_eq!(loads, 1);
+        // (a file changed just now: read each time)
+        for _ in 0..3 {
+            cached_key(&mut cache, ("c".into(), 1), (5, 0), b"g", || { loads += 1; Ok(key(1)) }).unwrap();
+        }
+        assert_eq!(loads, 4);
+    }
 }

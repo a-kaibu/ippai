@@ -371,6 +371,23 @@ fn return_from(cpu: &mut Cpu, trap: u32, esp: u32, value: u32) {
 
 #[cfg(test)]
 mod tests {
+    /// The page's zstd (snapz/snapz.c, built into the save-state worker) with zstd faked:
+    /// a context it could not make is an error, never handed to zstd (snapz/test/test.c).
+    #[test]
+    fn snapz_contexts_that_could_not_be_made() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/snapz");
+        let out = std::env::temp_dir().join(format!("snapz-test-{}", std::process::id()));
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        let Ok(b) = std::process::Command::new(&cc).args(["-Wall", "-I", &format!("{dir}/test"), "-o"]).arg(&out).arg(format!("{dir}/test/test.c")).status() else {
+            eprintln!("no C compiler ({cc}): snapz not tested");
+            return;
+        };
+        assert!(b.success(), "snapz/test/test.c did not build");
+        let r = std::process::Command::new(&out).output().unwrap();
+        let _ = std::fs::remove_file(&out);
+        assert!(r.status.success(), "{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr));
+    }
+
     use super::Reacquire;
 
     /// A state names its reacquire routine by number: each number names one routine, and a
