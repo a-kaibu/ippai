@@ -94,7 +94,9 @@ async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<f
             continue;
         }
         if !foresee::is_script(&m.name) {
-            // (named without a script's extension, as BGI's are: by its first bytes)
+            // (named without a script's extension, as BGI's are: by its first bytes; an .xp3's
+            // others are not read at all, or the whole archive would be)
+            let Some(by_bytes) = by_bytes else { continue };
             let s = m.segments[0];
             if s.2 || !trees.read(tree, path, s.0, 64.min(s.1), cache).await.is_some_and(|h| by_bytes(&h)) {
                 continue;
@@ -123,12 +125,12 @@ async fn members_lines(trees: &Trees, tree: &str, path: &str, mut members: Vec<f
 
 async fn xp3(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> String {
     let members = xp3_members(trees, tree, path, cache).await;
-    members_lines(trees, tree, path, members, cache, |_| false).await
+    members_lines(trees, tree, path, members, cache, None).await
 }
 
 async fn bgi(trees: &Trees, tree: &str, path: &str, cache: &mut HashMap<u64, std::sync::Arc<[u8]>>) -> String {
     let members = bgi_members(trees, tree, path, cache).await;
-    members_lines(trees, tree, path, members, cache, foresee::is_bgi_script).await
+    members_lines(trees, tree, path, members, cache, Some(foresee::is_bgi_script)).await
 }
 
 /// An .xp3's members, from its index.
