@@ -2720,6 +2720,12 @@ impl D3d {
 
     // ---- Direct3D 11 ----
 
+    /// Tests: the WebGPU buffer of page buffer `id`.
+    #[cfg(test)]
+    pub(crate) fn buffer_obj(&self, id: u32) -> Option<Id> {
+        self.buffers.get(&id).map(|b| b.0)
+    }
+
     /// The view the screen shows of texture `id`: its own, or for a multisampled one what it
     /// resolves to now (a texture kept for that).
     fn present_view(&mut self, id: u32) -> Id {

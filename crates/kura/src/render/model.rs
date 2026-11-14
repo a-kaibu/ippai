@@ -1553,6 +1553,14 @@ impl Model {
         self.pass.as_ref()?.3.ibuf
     }
 
+    /// Tests: the bytes of the buffer behind table index `i`.
+    pub fn buffer_bytes(&self, i: u32) -> Option<Vec<u8>> {
+        match &self.objs[*self.table.get(i as usize)?.as_ref()?] {
+            Obj::Buffer(b) => Some(b.data.clone()),
+            _ => None,
+        }
+    }
+
     /// Tests: textures the page made so far (destroyed ones too).
     pub fn textures_made(&self) -> usize {
         self.objs.iter().filter(|o| matches!(o, Obj::Texture(..))).count()

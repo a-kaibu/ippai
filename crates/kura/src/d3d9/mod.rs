@@ -22,6 +22,8 @@ mod lost_tests;
 #[cfg(test)]
 mod draw_tests;
 #[cfg(test)]
+mod page_buffer_tests;
+#[cfg(test)]
 mod target_tests;
 #[cfg(test)]
 mod palette_tests;

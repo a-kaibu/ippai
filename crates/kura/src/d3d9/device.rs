@@ -137,20 +137,26 @@ fn resident(b: &Buffer) -> bool {
 /// The page copy of buffer `obj`, made or brought up to date with what was locked for writing
 /// since it was sent (`Buffer::dirty`: the words of it that differ from what the page has):
 /// its page buffer and the count of its changes.
-fn page_buffer(objs: &mut HashMap<u32, super::Obj, super::FastHash>, obj: u32) -> (u32, u64) {
+pub(crate) fn page_buffer(objs: &mut HashMap<u32, super::Obj, super::FastHash>, obj: u32) -> (u32, u64) {
     let Some(Data::Buffer(b)) = objs.get_mut(&obj).map(|o| &mut o.data) else { return (0, 0) };
     let size = b.len.next_multiple_of(4);
+    // (guest bytes lo..hi as whole words: zeros past the end)
+    let words_of = |b: &Buffer, lo: usize, hi: usize| -> Vec<u8> {
+        let mut v = vec![0; hi - lo];
+        let n = (b.len as usize).saturating_sub(lo).min(hi - lo);
+        v[..n].copy_from_slice(unsafe { std::slice::from_raw_parts((b.mem as usize + lo) as *const u8, n) });
+        v
+    };
     if b.gpu == 0 {
         b.gpu = crate::d3d11::page_id();
-        b.dirty = Some((0, b.len));
-        b.shadow = vec![0; size as usize];
         gpu::record(|q| q.cmd(&[gpu::CREATE_BUFFER, b.gpu, size]));
         b.cgen += 1;
-        // (all of it once, zeros too: the page's buffer starts as zeros, so sent as they are)
-        let bytes = unsafe { std::slice::from_raw_parts(b.mem as *const u8, b.len as usize) };
-        b.shadow[..bytes.len()].copy_from_slice(bytes);
+        // (all of it once, zeros too: the page's buffer starts as zeros, so sent as they are;
+        // no copy kept: a buffer filled once and drawn from (a static mesh) is not held a
+        // third time, see the shadow below)
+        let all = words_of(b, 0, size as usize);
         gpu::record(|q| {
-            let off = q.blob(&b.shadow);
+            let off = q.blob(&all);
             q.cmd(&[gpu::WRITE_BUFFER, b.gpu, 0, off, size]);
         });
         RESIDENT_SENT.fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
@@ -160,7 +166,18 @@ fn page_buffer(objs: &mut HashMap<u32, super::Obj, super::FastHash>, obj: u32) -
     if let Some((lo, hi)) = b.dirty.take() {
         // (whole words; only from the first to the last that changed)
         let (lo, hi) = ((lo & !3) as usize, (hi.min(b.len) as usize).next_multiple_of(4).min(size as usize));
-        if hi > lo {
+        if hi > lo && b.shadow.is_empty() {
+            // changed again after its first send: the range as it is, and from now a copy of
+            // what the page holds to send only what changes
+            let words = words_of(b, lo, hi);
+            gpu::record(|q| {
+                let off = q.blob(&words);
+                q.cmd(&[gpu::WRITE_BUFFER, b.gpu, lo as u32, off, words.len() as u32]);
+            });
+            RESIDENT_SENT.fetch_add(words.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            b.cgen += 1;
+            b.shadow = words_of(b, 0, size as usize);
+        } else if hi > lo {
             let now = unsafe { std::slice::from_raw_parts((b.mem as usize + lo) as *const u8, (hi - lo).min(b.len as usize - lo)) };
             let old = &b.shadow[lo..lo + now.len()];
             if let (Some(a), Some(z)) = (now.iter().zip(old).position(|(x, y)| x != y), now.iter().zip(old).rposition(|(x, y)| x != y)) {
