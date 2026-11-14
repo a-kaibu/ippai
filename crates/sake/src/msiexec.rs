@@ -83,7 +83,7 @@ pub fn image() -> Vec<u8> {
     for (thunk, name) in [(0x80, 0xa0u32), (0x88, 0xc0), (0x90, 0xa0), (0x98, 0xc0)] {
         w32(&mut f, t + thunk, RVA + name);
     }
-    f[t + 0xa2..t + 0xa2 + 13].copy_from_slice(b"masu_msiexec");
+    f[t + 0xa2..t + 0xa2 + 12].copy_from_slice(b"masu_msiexec");
     f[t + 0xc2..t + 0xc2 + 11].copy_from_slice(b"ExitProcess");
     f[t + 0xe0..t + 0xe7].copy_from_slice(b"msi.dll");
     f[t + 0xf0..t + 0xfc].copy_from_slice(b"kernel32.dll");
