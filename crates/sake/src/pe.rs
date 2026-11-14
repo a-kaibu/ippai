@@ -99,6 +99,13 @@ pub fn by_base(base: u32) -> Option<usize> {
     MODULES.read().unwrap().iter().position(|m| m.base == base & !3)
 }
 
+/// The module loaded from the file at Windows path `path` (a path-qualified LoadLibrary is
+/// matched by the whole path: same-named DLLs of different folders are different modules, as
+/// Ren'Py 6.99/7's renpy\\gl\\gldraw.pyd and renpy\\angle\\gldraw.pyd).
+pub fn by_path(path: &str) -> Option<u32> {
+    MODULES.read().unwrap().iter().find(|m| !m.redirected && m.path.eq_ignore_ascii_case(path)).map(|m| m.base)
+}
+
 pub fn by_name(name: &str) -> Option<u32> {
     let n = base_name(name);
     MODULES.read().unwrap().iter().find(|m| !m.redirected && (m.name == n || m.name.trim_end_matches(".dll") == n)).map(|m| m.base)
@@ -1290,13 +1297,19 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
             return b;
         }
     }
-    if let Some(b) = by_name(name) {
+    let qualified = name.contains(['\\', '/', ':']);
+    let at = if qualified { find_dll_file(name) } else { None };
+    let loaded = match &at {
+        Some((_, w)) => by_path(w),
+        None => by_name(name),
+    };
+    if let Some(b) = loaded {
         if let Some(i) = by_base(b) {
             MODULES.write().unwrap()[i].refs += 1;
         }
         return b;
     }
-    let file = find_dll_file(name);
+    let file = if qualified { at } else { find_dll_file(name) };
     if api::is_core(name) || (api::is_system(name) && file.is_none()) {
         // the Visual C++ runtimes bring the UCRT in with them (GetModuleHandle("ucrtbase.dll")
         // then finds it, as Wine's msvcp140 tests take setlocale from it)
@@ -1732,4 +1745,69 @@ fn RtlImageNtHeader(c: &mut crate::api::Ctx) -> u32 {
 pub fn init() {
     crate::api::implement("ntdll", "LdrFindEntryForAddress", LdrFindEntryForAddress);
     crate::api::implement("ntdll", "RtlImageNtHeader", RtlImageNtHeader);
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn fake(base: u32, path: &str) -> Module {
+        Module {
+            base,
+            size: 0x1000,
+            entry: 0,
+            name: base_name(path),
+            path: path.into(),
+            exports: Default::default(),
+            ordinals: Default::default(),
+            dll: true,
+            tls: None,
+            resources: 0,
+            refs: 1,
+            hle: false,
+            pdata: (0, 0),
+            redirected: false,
+            deps: Vec::new(),
+            pinned: false,
+        }
+    }
+
+    const A: &str = "C:\\game\\renpy\\angle\\pathtest_gldraw.pyd";
+    const B: &str = "C:\\game\\renpy\\gl\\pathtest_gldraw.pyd";
+
+    /// Ren'Py 6.99/7: renpy\angle\gldraw.pyd loaded, then renpy\gl\gldraw.pyd by its path (#146):
+    /// the path finds only the module of that file; the bare name, a module of that name.
+    #[test]
+    fn same_named_modules_are_told_apart_by_path() {
+        MODULES.write().unwrap().push(fake(0x7f10_0000, A));
+        assert_eq!(by_path(B), None, "the gl gldraw.pyd is not the angle one");
+        assert_eq!(by_name(B), Some(0x7f10_0000), "(by_name matches base names only)");
+        MODULES.write().unwrap().push(fake(0x7f20_0000, B));
+        assert_eq!(by_path(A), Some(0x7f10_0000));
+        assert_eq!(by_path(B), Some(0x7f20_0000));
+        assert_eq!(by_path(&B.to_ascii_uppercase()), Some(0x7f20_0000));
+        assert!(matches!(by_name("pathtest_gldraw.pyd"), Some(0x7f10_0000 | 0x7f20_0000)));
+        // (a redirected module is found through its activation context only)
+        MODULES.write().unwrap().iter_mut().find(|m| m.base == 0x7f20_0000).unwrap().redirected = true;
+        assert_eq!(by_path(B), None);
+        MODULES.write().unwrap().retain(|m| m.base != 0x7f10_0000 && m.base != 0x7f20_0000);
+    }
+
+    proptest! {
+        /// any spelling of a loaded module's path (case) finds it, and no other folder's file of
+        /// the same name does
+        #[test]
+        fn by_path_is_the_whole_path_without_case(dir in "[a-zA-Z0-9_]{1,8}", other in "[a-zA-Z0-9_]{1,8}", flips in proptest::collection::vec(any::<bool>(), 64)) {
+            let p = format!("C:\\pt_{dir}\\pathprop.dll");
+            let base = 0x7f30_0000;
+            MODULES.write().unwrap().push(fake(base, &p));
+            let spelled: String = p.chars().zip(flips.iter().cycle()).map(|(c, f)| if *f { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }).collect();
+            let found = by_path(&spelled);
+            let elsewhere = by_path(&format!("C:\\pt_{other}\\pathprop.dll"));
+            MODULES.write().unwrap().retain(|m| m.base != base);
+            prop_assert_eq!(found, Some(base));
+            prop_assert_eq!(elsewhere, if dir.eq_ignore_ascii_case(&other) { Some(base) } else { None });
+        }
+    }
 }

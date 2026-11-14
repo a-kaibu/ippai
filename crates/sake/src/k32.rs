@@ -6172,8 +6172,17 @@ pub fn module_handle(name: u32, wide: bool) -> u32 {
         }
         return b;
     }
-    if let Some(b) = crate::pe::by_name(&n) {
-        return b;
+    // (a path: the module loaded from that file; a system DLL's, wherever the path says it is)
+    let qualified = n.contains(['\\', '/', ':']);
+    if qualified {
+        if let Some(b) = crate::pe::by_path(&crate::files::full_path(&n)) {
+            return b;
+        }
+    }
+    if !qualified || crate::api::is_system(&crate::pe::base_name(&n)) {
+        if let Some(b) = crate::pe::by_name(&n) {
+            return b;
+        }
     }
     let k = crate::api::dll_key(&n);
     if matches!(k.as_str(), "kernel32" | "ntdll" | "kernelbase" | "user32" | "gdi32" | "advapi32") {
