@@ -405,7 +405,7 @@ fn timeline<R>(id: u32, f: impl FnOnce(&mut Timeline, u64) -> R) -> Option<R> {
     let (key, video) = dev(id, |d| (d.key, d.video()))?;
     let t = play::now();
     if video {
-        play::with(|m| m.get_mut(&key).map(|p| f(&mut p.tl, t)))
+        play::timeline(key, t, f)
     } else {
         dev(id, |d| f(&mut d.tl, t))
     }

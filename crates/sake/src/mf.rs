@@ -1056,7 +1056,7 @@ fn shut(b: u32) -> bool {
 /// Where the movie of engine `b` is: (position, frames per second, frames, stream, w, h).
 fn position(b: u32) -> Option<(u64, (u32, u32), u32, u32, u32, u32)> {
     let t = now();
-    play::with(|m| m.get(&b).map(|p| (p.tl.position(t), p.movie.rate, p.movie.frames, p.movie.stream, p.movie.w, p.movie.h)))
+    play::read(|m| m.get(&b).map(|p| (p.tl.position(t), p.movie.rate, p.movie.frames, p.movie.stream, p.movie.w, p.movie.h)))
 }
 /// The movie's volume as IBasicAudio's (1/100 dB).
 fn centibels(v: f64, muted: bool) -> i32 {

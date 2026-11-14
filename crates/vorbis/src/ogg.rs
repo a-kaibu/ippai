@@ -13,7 +13,7 @@ pub fn packets(data: &[u8]) -> (Vec<Vec<u8>>, u64) {
 
 /// [`packets`] of bytes given a piece at a time (a movie's sound read as it plays): `push` the
 /// next bytes, `pop` the packets they complete, `finish` at the end of the file.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Reader {
     /// bytes not yet taken into a page
     buf: Vec<u8>,

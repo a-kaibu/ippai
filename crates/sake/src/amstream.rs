@@ -302,7 +302,7 @@ fn mms_set_state(c: &mut Ctx) -> u32 {
 }
 fn position(b: u32) -> u64 {
     let t = now();
-    play::with(|m| m.get(&b).map(|p| p.tl.position(t))).unwrap_or(0)
+    play::read(|m| m.get(&b).map(|p| p.tl.position(t))).unwrap_or(0)
 }
 /// GetTime(STREAM_TIME *)
 fn mms_time(c: &mut Ctx) -> u32 {
@@ -773,7 +773,7 @@ fn sm_update(c: &mut Ctx) -> u32 {
 fn update(c: &mut Ctx, b: u32, m: u32, surf: u32, rect: (i32, i32, i32, i32)) -> u32 {
     loop {
         let t = now();
-        let Some((pos, stop, rate, frames, stream, w, h)) = play::with(|x| {
+        let Some((pos, stop, rate, frames, stream, w, h)) = play::read(|x| {
             x.get(&m).map(|p| (p.tl.position(t), p.tl.stop, p.movie.rate, p.movie.frames, p.movie.stream, p.movie.w, p.movie.h))
         }) else {
             return MS_S_ENDOFSTREAM;

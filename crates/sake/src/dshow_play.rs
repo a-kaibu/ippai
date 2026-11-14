@@ -113,6 +113,9 @@ impl Timeline {
 /// The frame shown at `pos` of a movie of `frames` frames at `rate` (frames per second as a
 /// fraction): the one whose time has begun, the last one past the end.
 pub fn frame_at(pos: u64, rate: (u32, u32), frames: u32) -> u32 {
+    if rate.0 == 0 || rate.1 == 0 {
+        return 0;
+    }
     let n = (pos as u128 * rate.0 as u128 / (rate.1 as u128 * SEC as u128)) as u64;
     n.min(frames.saturating_sub(1) as u64) as u32
 }
@@ -217,6 +220,13 @@ pub struct Vorbis {
     /// decoded stereo frames, the first of them frame `base`
     pcm: VecDeque<[f32; 2]>,
     base: u64,
+    /// where decoding was every `every` frames (frame, byte, the Ogg reader, the decoder's
+    /// carry): a seek back starts from the last one before it, not from the start of the
+    /// stream (a late seek decoded minutes of sound again, under the movies' lock)
+    marks: Vec<(u64, u64, vorbis::ogg::Reader, vorbis::Carry)>,
+    every: u64,
+    /// how many times decoding started again from the start (tests)
+    pub restarts: u32,
 }
 
 impl Vorbis {
@@ -238,14 +248,16 @@ impl Vorbis {
     }
     /// The `len` bytes of sound `read` reads.
     pub fn read(len: u64, read: ReadAt) -> Option<Vorbis> {
-        let mut s = Vorbis { read, len, step: SOUND_READ, pos: 0, ogg: Default::default(), heads: Default::default(), dec: None, channels: 0, rate: 0, pcm: VecDeque::new(), base: 0 };
+        let mut s = Vorbis { read, len, step: SOUND_READ, pos: 0, ogg: Default::default(), heads: Default::default(), dec: None, channels: 0, rate: 0, pcm: VecDeque::new(), base: 0, marks: Vec::new(), every: 0, restarts: 0 };
         let id = s.packet()?;
         let _comment = s.packet()?;
         let setup = s.packet()?;
         let i = vorbis::Ident::read(&id).ok()?;
         (s.channels, s.rate) = (i.channels, i.rate);
+        s.every = 30 * i.rate as u64;
         s.heads = [id, setup];
         s.restart();
+        s.restarts = 0;
         s.dec.as_ref()?;
         Some(s)
     }
@@ -272,6 +284,7 @@ impl Vorbis {
         }
     }
     fn restart(&mut self) {
+        self.restarts += 1;
         self.dec = vorbis::Decoder::new(&self.heads[0], &self.heads[1]).ok();
         self.pos = 0;
         self.ogg = Default::default();
@@ -284,7 +297,17 @@ impl Vorbis {
     /// Appends `n` stereo frames from frame `from` to `out` (silence past the end).
     pub fn take(&mut self, from: u64, n: usize, out: &mut Vec<f32>) {
         if from < self.base {
-            self.restart();
+            // (from the last mark at or before it: decoding goes on from there as it did)
+            let mark = self.marks.iter().rposition(|m| m.0 <= from);
+            match (mark, self.dec.as_mut()) {
+                (Some(i), Some(dec)) => {
+                    let (frame, pos, ogg, carry) = &self.marks[i];
+                    dec.resume(carry);
+                    (self.base, self.pos, self.ogg) = (*frame, *pos, ogg.clone());
+                    self.pcm.clear();
+                }
+                _ => self.restart(),
+            }
         }
         // what is no longer wanted (a second's worth kept behind for small steps back)
         let keep = from.saturating_sub(self.rate as u64);
@@ -303,6 +326,10 @@ impl Vorbis {
             self.dec.as_mut().unwrap().packet(&p, &mut buf);
             let ch = self.channels.max(1);
             self.pcm.extend(buf.chunks_exact(ch).map(|f| if ch == 1 { [f[0], f[0]] } else { [f[0], f[1]] }));
+            let end = self.base + self.pcm.len() as u64;
+            if self.every > 0 && end >= self.marks.last().map_or(self.every, |m| m.0 + self.every) {
+                self.marks.push((end, self.pos, self.ogg.clone(), self.dec.as_ref().unwrap().carry()));
+            }
             // (far behind what is wanted: not kept)
             let keep = from.saturating_sub(self.rate as u64);
             if keep > self.base + self.pcm.len() as u64 {
@@ -337,7 +364,8 @@ impl Movie {
     /// anything else.
     pub fn open(path: &str) -> Option<Movie> {
         let (stream, i) = video::open_file(path)?;
-        let Some(rate) = i.rate else {
+        // (a rate with a zero in it is no movie: frame_at would divide by it)
+        let Some(rate) = i.rate.filter(|r| r.0 != 0 && r.1 != 0) else {
             video::close(stream);
             return None;
         };
@@ -440,11 +468,30 @@ impl Drop for Play {
 static PLAYS: Mutex<Option<HashMap<u32, Play>>> = Mutex::new(None);
 static WAKE: Condvar = Condvar::new();
 
+/// The plays to change: the movie thread takes a turn for what changed.
 pub fn with<R>(f: impl FnOnce(&mut HashMap<u32, Play>) -> R) -> R {
     let mut g = PLAYS.lock().unwrap_or_else(|e| e.into_inner());
     let r = f(g.get_or_insert_with(HashMap::new));
     WAKE.notify_all();
     r
+}
+/// The plays to look at (GetCurrentPosition, the picture's size, ...): the movie thread is not
+/// woken (a game polling the position every frame forced a whole turn per poll)
+pub fn read<R>(f: impl FnOnce(&HashMap<u32, Play>) -> R) -> R {
+    let mut g = PLAYS.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(HashMap::new))
+}
+/// `f` on the timeline of `key`'s play: the movie thread is woken only when it changed
+/// (a seek, a run or a stop; not a position query)
+pub fn timeline<R>(key: u32, t: u64, f: impl FnOnce(&mut Timeline, u64) -> R) -> Option<R> {
+    let mut g = PLAYS.lock().unwrap_or_else(|e| e.into_inner());
+    let p = g.get_or_insert_with(HashMap::new).get_mut(&key)?;
+    let before = p.tl.clone();
+    let r = f(&mut p.tl, t);
+    if p.tl != before {
+        WAKE.notify_all();
+    }
+    Some(r)
 }
 
 /// Starts playback of graph `key` (replacing a movie it had).
@@ -499,13 +546,19 @@ fn thread() {
 /// One turn of the movie thread: ends, frames, sound. Returns how long it may sleep.
 fn turn() -> Duration {
     let t = now();
-    let mut wait = Duration::from_millis(20);
+    // (nothing running or shown: the thread sleeps until a change wakes it; it woke 50 times a
+    // second for the rest of the session after the first movie)
+    let mut wait = Duration::from_secs(3600);
     let mut ended = Vec::new();
+    // sound to decode, outside the lock (reading and decoding the .vnv's Vorbis can take long:
+    // every other thread's movie call waited for it)
+    let mut sounds = Vec::new();
     // (what to draw, decoded outside the lock: frame waits on the page)
     let mut draws = Vec::new();
     let keys: Vec<(u32, u32)> = with(|m| m.iter().map(|(&k, p)| (k, p.place.hwnd)).collect());
     // the windows' places on the screen (user32's lock, not under ours)
     let screens: HashMap<u32, Option<crate::user::Rect>> = keys.iter().map(|&(_, h)| (h, if h == 0 { None } else { crate::user::client_rect_screen(h) })).collect();
+    let screen = crate::user::screen();
     with(|m| {
         for (&k, p) in m.iter_mut() {
             if p.tl.complete(t) {
@@ -516,16 +569,28 @@ fn turn() -> Duration {
             }
             let n = frame_at(p.tl.position(t), p.movie.rate, p.movie.frames);
             if p.tl.running() {
+                // (sound is queued ahead every 20 ms at most)
+                wait = wait.min(Duration::from_millis(20));
                 // to the next frame
-                let next = (n as u128 + 1) * p.movie.rate.1 as u128 * SEC as u128 / p.movie.rate.0 as u128;
-                let to = (next as u64).saturating_sub(p.tl.position(t));
-                wait = wait.min(Duration::from_nanos((to as f64 / p.tl.rate.max(0.01) * 100.0) as u64).max(Duration::from_millis(2)));
+                if p.movie.rate.0 != 0 {
+                    let next = (n as u128 + 1) * p.movie.rate.1 as u128 * SEC as u128 / p.movie.rate.0 as u128;
+                    let to = (next as u64).saturating_sub(p.tl.position(t));
+                    wait = wait.min(Duration::from_nanos((to as f64 / p.tl.rate.max(0.01) * 100.0) as u64).max(Duration::from_millis(2)));
+                }
             }
-            sound(p, t);
+            if p.shown.is_some() {
+                // (shown: raised over the game's windows again every 500 ms)
+                wait = wait.min(Duration::from_millis(500));
+            }
+            if let Some(job) = sound_job(p, t) {
+                sounds.push((k, job));
+            }
             // the window's part of the screen, clipped to it
+            // (no window: the screen; a rectangle the game set past it is clipped to it, not a
+            // buffer of its size)
             let client = match screens.get(&p.place.hwnd).copied().flatten() {
                 Some(r) => (r.l, r.t, r.r - r.l, r.b - r.t),
-                None if p.place.hwnd == 0 => (0, 0, 1 << 20, 1 << 20),
+                None if p.place.hwnd == 0 => (0, 0, screen.0, screen.1),
                 None => (0, 0, 0, 0),
             };
             let dst = if p.place.letterbox { letterbox(p.place.dst, p.place.src.2, p.place.src.3) } else { p.place.dst };
@@ -561,6 +626,9 @@ fn turn() -> Duration {
             p.shown = Some((n, rect));
         }
     });
+    for (k, job) in sounds {
+        job.run(k);
+    }
     for (k, stream, n, w, h, src, dst, view, disp) in draws {
         let t0 = Instant::now();
         // (the buffers stay for the next frame: no allocation per frame)
@@ -661,15 +729,49 @@ pub(crate) fn stats(k: u32, n: u32, t: [Duration; 3], pixels: usize) {
 }
 
 /// Keeps the sound queued for where the movie is (only while it runs at its own rate).
-fn sound(p: &mut Play, t: u64) {
-    let Some(s) = p.movie.sound.as_mut() else { return };
+/// Sound frames of a play to decode and queue: taken out of the play (the decoder goes with the
+/// job, outside the lock) and given back by `run`.
+struct SoundJob {
+    sound: Sound,
+    audio: i32,
+    next: u64,
+    n: usize,
+    gain: f32,
+}
+
+impl SoundJob {
+    /// Decodes (no lock held), then queues what it decoded if the play still plays into the
+    /// same audio stream, and gives the sound back.
+    fn run(mut self, key: u32) {
+        let mut buf = Vec::with_capacity(2 * self.n);
+        self.sound.take(self.next, self.n, &mut buf);
+        if self.gain != 1.0 {
+            buf.iter_mut().for_each(|x| *x *= self.gain);
+        }
+        with(|m| {
+            let Some(p) = m.get_mut(&key) else { return };
+            if p.audio.is_some_and(|(a, next)| a == self.audio && next == self.next) {
+                kura::audio::write(self.audio, &buf);
+                p.audio = Some((self.audio, self.next + self.n as u64));
+            }
+            if p.movie.sound.is_none() {
+                p.movie.sound = Some(self.sound);
+            }
+        });
+    }
+}
+
+/// The sound of a play at clock `t`: its audio stream opened, closed or (out of step) opened
+/// again, and the frames to queue ahead as a job, if any.
+fn sound_job(p: &mut Play, t: u64) -> Option<SoundJob> {
+    let s = p.movie.sound.as_mut()?;
     let playing = p.tl.running() && p.tl.rate == 1.0 && !p.tl.done;
     let want = p.tl.position(t) as u128 * s.rate() as u128 / SEC as u128;
     if !playing {
         if let Some((a, _)) = p.audio.take() {
             kura::audio::close(a);
         }
-        return;
+        return None;
     }
     let (a, next) = match p.audio {
         // (out of step by more than 60 ms, after a seek or a pause: queued again from here)
@@ -682,20 +784,13 @@ fn sound(p: &mut Play, t: u64) {
         }
     };
     let q = kura::audio::queued(a);
-    let mut next = next;
-    if q < AHEAD {
-        let n = (AHEAD - q) as usize + 441;
-        let mut buf = Vec::with_capacity(2 * n);
-        s.take(next, n, &mut buf);
-        let gain = if p.volume >= 0 { 1.0 } else { 10f32.powf(p.volume.max(-10000) as f32 / 2000.0) };
-        if gain != 1.0 {
-            buf.iter_mut().for_each(|x| *x *= gain);
-        }
-        // (the end of the movie's sound: no more)
-        kura::audio::write(a, &buf);
-        next += n as u64;
-    }
     p.audio = Some((a, next));
+    if q >= AHEAD {
+        return None;
+    }
+    let n = (AHEAD - q) as usize + 441;
+    let gain = if p.volume >= 0 { 1.0 } else { 10f32.powf(p.volume.max(-10000) as f32 / 2000.0) };
+    Some(SoundJob { sound: p.movie.sound.take()?, audio: a, next, n, gain })
 }
 
 #[cfg(test)]
@@ -861,5 +956,121 @@ mod tests {
                 assert!(whole.chunks(2).all(|f| f[0] == f[1]));
             }
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+        /// Seeks back and forth in any order (marks every `every` frames): what take gives is
+        /// the sound decoded whole, and a seek back to a point past the first mark does not
+        /// decode from the start again
+        #[test]
+        fn seeks_back_from_marks(name in prop::sample::select(vec!["stereo-q5", "mono-q0", "stereo-48k"]), every in 200u64..3000,
+                                 takes in proptest::collection::vec((0u64..14_000, 1usize..3000), 1..30)) {
+            let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../vorbis/testdata/");
+            let ogg = std::fs::read(format!("{dir}{name}.ogg")).unwrap();
+            let mut whole = Vec::new();
+            Vorbis::new(&ogg).unwrap().take(0, 200_000, &mut whole);
+            let mut s = Vorbis::new(&ogg).unwrap();
+            s.every = every;
+            s.step = 512;
+            s.restart();
+            s.restarts = 0;
+            let mut want_restarts = 0;
+            for (from, n) in takes {
+                let back = from < s.base;
+                let from_mark = s.marks.iter().any(|m| m.0 <= from);
+                if back && !from_mark {
+                    want_restarts += 1;
+                }
+                let mut got = Vec::new();
+                s.take(from, n, &mut got);
+                let want: Vec<f32> = (0..n as u64).flat_map(|i| {
+                    let k = (from + i) as usize;
+                    if 2 * k + 1 < whole.len() { [whole[2 * k], whole[2 * k + 1]] } else { [0.0, 0.0] }
+                }).collect();
+                prop_assert!(got == want, "{} from {} ({} frames)", name, from, n);
+                prop_assert_eq!(s.restarts, want_restarts);
+            }
+            // (marks at least `every` apart, in order)
+            prop_assert!(s.marks.windows(2).all(|w| w[1].0 >= w[0].0 + every));
+        }
+    }
+
+    proptest! {
+        /// frame_at: no rate with a zero in it divides (frame 0), the frame never passes the
+        /// last one, and it never goes back as the position moves on
+        #[test]
+        fn frame_at_is_safe(pos in any::<u64>(), d in 0u64..1 << 40, rate in (0u32..1000, 0u32..1000), frames in 0u32..100_000) {
+            let n = frame_at(pos, rate, frames);
+            if rate.0 == 0 || rate.1 == 0 {
+                prop_assert_eq!(n, 0);
+            }
+            prop_assert!(n <= frames.saturating_sub(1));
+            prop_assert!(frame_at(pos.saturating_add(d), rate, frames) >= n);
+        }
+    }
+
+    fn sound_play(key: u32) -> u64 {
+        let ogg = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../vorbis/testdata/stereo-q5.ogg")).unwrap();
+        let movie = Movie { stream: 0, w: 4, h: 4, frames: 1, rate: (1, 1), duration: 10 * SEC, sound: Some(Sound::Vorbis(Vorbis::new(&ogg).unwrap())) };
+        let mut p = Play::new(movie);
+        let t = now();
+        p.tl.run(t);
+        with(|m| m.insert(key, p));
+        t
+    }
+
+    /// The sound is decoded outside the lock: the job takes the decoder out of the play, and
+    /// gives it back; what it decoded is queued only if the play still plays into the same
+    /// stream from the same frame (a seek or a stop while it decoded: thrown away)
+    #[test]
+    fn sound_jobs_queue_only_what_still_fits() {
+        for seek in [false, true] {
+            let key = 0x5d00_0000 + seek as u32;
+            let t = sound_play(key);
+            let job = with(|m| sound_job(m.get_mut(&key).unwrap(), t)).expect("a job to queue sound");
+            let (a, next, n) = (job.audio, job.next, job.n);
+            assert_eq!(next, 0);
+            assert!(read(|m| m[&key].movie.sound.is_none()), "the decoder is with the job");
+            // (other threads' calls get the lock while it decodes)
+            let other = std::thread::spawn(move || read(|m| m[&key].tl.duration));
+            assert_eq!(other.join().unwrap(), 10 * SEC);
+            if seek {
+                with(|m| m.get_mut(&key).unwrap().audio = Some((a, 12345)));
+            }
+            job.run(key);
+            with(|m| {
+                let p = &m[&key];
+                assert!(p.movie.sound.is_some(), "the decoder came back");
+                if seek {
+                    assert_eq!(p.audio, Some((a, 12345)));
+                    assert_eq!(kura::audio::queued(a), 0, "nothing queued for the old place");
+                } else {
+                    assert_eq!(p.audio, Some((a, n as u64)));
+                    // (the mixer may have played some already)
+                    let q = kura::audio::queued(a);
+                    assert!(q > n as u32 / 2 && q <= n as u32, "{q} of {n} queued");
+                }
+            });
+            end(key);
+        }
+    }
+
+    /// Nothing running or shown: the movie thread sleeps until a change wakes it (it woke 50
+    /// times a second for good after the first movie); a running movie keeps it at 20 ms.
+    #[test]
+    fn idle_turns_sleep() {
+        let key = 0x5d00_0100;
+        let t = sound_play(key);
+        let mut wait = turn();
+        assert!(wait <= Duration::from_millis(20), "running: {wait:?}");
+        with(|m| m.get_mut(&key).unwrap().tl.stop(t));
+        wait = turn();
+        end(key);
+        // (other tests' plays may be about: only this one is known stopped)
+        if read(|m| m.is_empty()) {
+            assert!(turn() >= Duration::from_secs(3600));
+        }
+        assert!(wait >= Duration::from_millis(500) || read(|m| !m.is_empty()), "stopped: {wait:?}");
     }
 }

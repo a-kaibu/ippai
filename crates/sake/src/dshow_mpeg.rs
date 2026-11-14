@@ -1450,7 +1450,7 @@ fn vnv_thread(c: &mut Ctx) -> u32 {
             continue;
         }
         let t = now();
-        let at = crate::dshow_play::with(|m| m.get(&graph).map(|p| (crate::dshow_play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames), p.tl.position(t) >= p.tl.duration, p.movie.stream, p.movie.w, p.movie.h)));
+        let at = crate::dshow_play::read(|m| m.get(&graph).map(|p| (crate::dshow_play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames), p.tl.position(t) >= p.tl.duration, p.movie.stream, p.movie.w, p.movie.h)));
         match feed_step(last, at.map(|a| a.0), at.is_some_and(|a| a.1), eos) {
             FeedStep::Wait => pause(SEC / 100),
             FeedStep::End => {

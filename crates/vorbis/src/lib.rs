@@ -83,7 +83,28 @@ pub struct Decoder {
     block: Vec<Vec<f32>>,
 }
 
+/// What decoding carries from one packet to the next (the previous block, windowed): a
+/// decoder given it back goes on from there exactly as it went on then (a player seeking back
+/// to a point it passed, without decoding again from the start).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Carry {
+    prev: Vec<Vec<f32>>,
+    prev_n: usize,
+}
+
 impl Decoder {
+    /// What the next packet's decoding depends on.
+    pub fn carry(&self) -> Carry {
+        Carry { prev: self.prev.iter().map(|v| v[..self.prev_n].to_vec()).collect(), prev_n: self.prev_n }
+    }
+    /// Back to where `carry` was taken (of a decoder of the same stream).
+    pub fn resume(&mut self, carry: &Carry) {
+        for (d, s) in self.prev.iter_mut().zip(&carry.prev) {
+            d[..s.len()].copy_from_slice(s);
+        }
+        self.prev_n = carry.prev_n;
+    }
+
     /// From the identification and setup headers (the comment header is not needed).
     pub fn new(ident: &[u8], setup: &[u8]) -> Result<Decoder, Error> {
         let setup = Setup::read(Ident::read(ident)?, setup)?;
@@ -161,6 +182,35 @@ mod tests {
                         assert!((s - 1.0).abs() < 1e-5, "lw {lw} w {w} nw {nw} i {i}: {s}");
                     }
                     assert!(d.iter().all(|v| (0.0..=1.0).contains(v)));
+                }
+            }
+        }
+    }
+
+    /// A decoder resumed from a carry taken after packet k goes on as the one it was taken
+    /// from: the same samples, packet for packet, for every k of the test files
+    #[test]
+    fn carry_resumes_exactly() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/");
+        for name in ["stereo-q5", "mono-q0", "stereo-48k"] {
+            let data = std::fs::read(format!("{dir}{name}.ogg")).unwrap();
+            let (ps, _) = ogg::packets(&data);
+            let mut whole = Decoder::new(&ps[0], &ps[2]).unwrap();
+            let mut outs: Vec<Vec<f32>> = Vec::new();
+            let mut carries = Vec::new();
+            for p in &ps[3..] {
+                carries.push(whole.carry());
+                let mut o = Vec::new();
+                whole.packet(p, &mut o);
+                outs.push(o);
+            }
+            for k in (0..outs.len()).step_by(3) {
+                let mut d = Decoder::new(&ps[0], &ps[2]).unwrap();
+                d.resume(&carries[k]);
+                for (i, p) in ps[3 + k..].iter().enumerate() {
+                    let mut o = Vec::new();
+                    d.packet(p, &mut o);
+                    assert!(o == outs[k + i], "{name}: resumed at {k}, packet {}", k + i);
                 }
             }
         }

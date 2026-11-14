@@ -26,6 +26,7 @@ const E_NOINTERFACE: u32 = 0x8000_4002;
 const E_POINTER: u32 = 0x8000_4003;
 const VFW_E_NOT_STOPPED: u32 = 0x8004_0224;
 const E_NOTIMPL: u32 = 0x8000_4001;
+const E_OUTOFMEMORY: u32 = 0x8007_000e;
 const E_ABORT: u32 = 0x8000_4004;
 const E_FAIL: u32 = 0x8000_4005;
 const E_INVALIDARG: u32 = 0x8007_0057;
@@ -131,10 +132,43 @@ struct Graph {
 }
 
 static GRAPHS: Mutex<Option<HashMap<u32, Graph>>> = Mutex::new(None);
+/// Notified after every change to a graph (`with`): GetEvent and WaitForCompletion wait on it
+/// instead of polling every 2 ms
+static CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 
 fn with<R>(b: u32, f: impl FnOnce(&mut Graph) -> R) -> Option<R> {
-    let mut g = GRAPHS.lock().unwrap_or_else(|e| e.into_inner());
-    g.get_or_insert_with(HashMap::new).get_mut(&b).map(f)
+    let r = {
+        let mut g = GRAPHS.lock().unwrap_or_else(|e| e.into_inner());
+        g.get_or_insert_with(HashMap::new).get_mut(&b).map(f)
+    };
+    CHANGED.notify_all();
+    r
+}
+
+/// Waits up to `ms` (INFINITE too) for `f` of graph `b` to give an answer (`f` sees None once
+/// the graph is gone): on CHANGED, in slices that let a save state or TerminateThread stop
+/// the thread (snap.rs) outside the lock; None at the timeout.
+fn wait_graph<R>(b: u32, ms: u32, mut f: impl FnMut(Option<&mut Graph>) -> Option<R>) -> Option<R> {
+    let until = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    loop {
+        if kura::snap::pausing() {
+            crate::snap::point();
+        }
+        if crate::k32::terminating() {
+            crate::k32::check_terminate();
+        }
+        let mut g = GRAPHS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = f(g.get_or_insert_with(HashMap::new).get_mut(&b)) {
+            return Some(r);
+        }
+        let now = std::time::Instant::now();
+        if until.is_some_and(|u| now >= u) {
+            return None;
+        }
+        let slice = std::time::Duration::from_millis(100);
+        let left = until.map_or(slice, |u| (u - now).min(slice));
+        drop(CHANGED.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()));
+    }
 }
 
 /// The block an interface pointer of slot `k` belongs to.
@@ -186,12 +220,24 @@ fn release_k(c: &mut Ctx, k: u32) -> u32 {
     })
     .unwrap_or(0);
     if n == 0 {
-        // the movie stops and its window goes (the block and the graph's event stay: a game
-        // may still hold the handle it got from us)
+        // the movie stops and its window goes
         play::end(b);
         sound_close(b);
         with(b, |g| g.playing = false);
         crate::dshow_mpeg::graph_released(c, b);
+        // then the graph: its filters leave it (JoinFilterGraph(NULL) and the reference it
+        // held, as Windows' graph lets them go), its event closes, its state and its block go
+        // (the block after com.rs's quarantine: a filter thread may still be on its way out)
+        let g = GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
+        CHANGED.notify_all();
+        if let Some(g) = g {
+            for f in g.filters {
+                com(c, f, 13, &[0, 0]);
+                com(c, f, 2, &[]);
+            }
+            crate::obj::close(g.event);
+            crate::com::free_later(b);
+        }
     }
     n
 }
@@ -233,9 +279,10 @@ fn put_dbl(p: u32, v: f64) -> u32 {
     0
 }
 
-/// IFilterGraph::EnumFilters: an IEnumFilters of the renderer added to it (ours: its AddRef and
-/// Release count nothing), if any (there are no other filters). The enumerator is a block of
-/// its vtable, the renderer and where it is (0 or 1).
+/// IFilterGraph::EnumFilters: an IEnumFilters of the renderer added to it, if any (there are no
+/// other filters). The enumerator is a block of its vtable, the renderer, where it is (0 or 1)
+/// and its references (freed at the last Release); Next hands the renderer out with a
+/// reference, as COM's enumerators do.
 fn enum_filters(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
@@ -245,10 +292,24 @@ fn enum_filters(c: &mut Ctx) -> u32 {
         fn qi(c: &mut Ctx) -> u32 {
             let ok = r32(c.a(1)) == 0x56a8_6893 || r32(c.a(1)) == 0;
             putp(c.a(2), if ok { c.a(0) } else { 0 });
+            if ok {
+                add(c);
+            }
             if ok { 0 } else { E_NOINTERFACE }
         }
-        fn one(_: &mut Ctx) -> u32 {
-            1
+        fn add(c: &mut Ctx) -> u32 {
+            let p = c.a(0) + 3 * ps();
+            w32(p, r32(p).saturating_add(1));
+            r32(p)
+        }
+        fn release(c: &mut Ctx) -> u32 {
+            let p = c.a(0) + 3 * ps();
+            let n = r32(p).saturating_sub(1);
+            w32(p, n);
+            if n == 0 {
+                crate::com::free_later(c.a(0));
+            }
+            n
         }
         /// Next(n, filters, fetched)
         fn next(c: &mut Ctx) -> u32 {
@@ -256,6 +317,7 @@ fn enum_filters(c: &mut Ctx) -> u32 {
             let (f, at) = (r32(e + ps()), r32(e + 2 * ps()));
             let got = (n > 0 && f != 0 && at == 0) as u32;
             if got == 1 {
+                com(c, f, 1, &[]);
                 putp(c.a(2), f);
                 w32(e + 2 * ps(), 1);
             }
@@ -277,12 +339,13 @@ fn enum_filters(c: &mut Ctx) -> u32 {
             w32(c.a(0) + 2 * ps(), 0);
             0
         }
-        vtable("IEnumFilters", &[(qi, 12), (one, 4), (one, 4), (next, 16), (skip, 8), (reset, 4), (notimpl, 8)])
+        vtable("IEnumFilters", &[(qi, 12), (add, 4), (release, 4), (next, 16), (skip, 8), (reset, 4), (notimpl, 8)])
     });
     let f = with(base(c, GB), |g| g.evr).unwrap_or(0);
-    let e = mem::heap_alloc(3 * ps(), true);
+    let e = mem::heap_alloc(4 * ps(), true);
     wp(e, v);
     wp(e + ps(), f);
+    w32(e + 3 * ps(), 1);
     putp(c.a(1), e);
     0
 }
@@ -867,29 +930,31 @@ fn get_event(c: &mut Ctx) -> u32 {
     if pc == 0 || p1 == 0 || p2 == 0 {
         return E_POINTER;
     }
-    let until = std::time::Instant::now() + std::time::Duration::from_millis(if ms == u32::MAX { u64::MAX / 4 } else { ms as u64 });
-    loop {
-        let e = with(b, |g| {
-            let e = g.events.pop_front();
+    // (the event object reset when the queue is empty: under the lock, as before, so that a
+    // filter's Notify in between is not lost)
+    let got = wait_graph(b, ms, |g| match g {
+        None => Some(None),
+        Some(g) => g.events.pop_front().map(|e| {
             if g.events.is_empty() {
                 crate::k32::event_set(g.event, false);
             }
-            e
-        })
-        .flatten();
-        if let Some((code, a, bb)) = e {
+            Some(e)
+        }),
+    })
+    .flatten();
+    match got {
+        Some((code, a, bb)) => {
             put32(pc, code);
             putp(p1, a);
             putp(p2, bb);
-            return 0;
+            0
         }
-        if std::time::Instant::now() >= until {
+        None => {
             put32(pc, 0);
             putp(p1, 0);
             putp(p2, 0);
-            return E_ABORT;
+            E_ABORT
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
 /// WaitForCompletion(timeout, code): until EC_COMPLETE is queued (left in the queue); after one
@@ -900,22 +965,25 @@ fn wait_for_completion(c: &mut Ctx) -> u32 {
     if pc == 0 {
         return E_POINTER;
     }
-    let until = std::time::Instant::now() + std::time::Duration::from_millis(if ms == u32::MAX { u64::MAX / 4 } else { ms as u64 });
-    loop {
-        let (done, running) = with(b, |g| (g.events.iter().any(|e| e.0 == EC_COMPLETE), g.state == 2 && !g.ended)).unwrap_or((true, false));
+    let r = wait_graph(b, ms, |g| {
+        let (done, running) = g.map_or((true, false), |g| (g.events.iter().any(|e| e.0 == EC_COMPLETE), g.state == 2 && !g.ended));
         if done {
-            put32(pc, EC_COMPLETE);
-            return 0;
+            Some((EC_COMPLETE, 0))
+        } else if !running {
+            Some((0, WRONG_STATE))
+        } else {
+            None
         }
-        if !running {
+    });
+    match r {
+        Some((code, hr)) => {
+            put32(pc, code);
+            hr
+        }
+        None => {
             put32(pc, 0);
-            return WRONG_STATE;
+            E_ABORT
         }
-        if std::time::Instant::now() >= until {
-            put32(pc, 0);
-            return E_ABORT;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
 fn set_notify_window(c: &mut Ctx) -> u32 {
@@ -954,7 +1022,7 @@ fn timeline<R>(b: u32, f: impl FnOnce(&mut play::Timeline, u64) -> R) -> Option<
         sound_end_check(b);
         return Some(r);
     }
-    play::with(|m| m.get_mut(&b).map(|p| (f.take().unwrap())(&mut p.tl, t))).or_else(|| crate::dshow_mpeg::timeline(b, f.take()?))
+    play::timeline(b, t, |tl, t| (f.take().unwrap())(tl, t)).or_else(|| crate::dshow_mpeg::timeline(b, f.take()?))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1552,10 +1620,10 @@ fn bv_image(c: &mut Ctx) -> u32 {
     if psize == 0 {
         return E_POINTER;
     }
-    let Some((w, h)) = play::with(|m| m.get(&b).map(|p| (p.movie.w, p.movie.h))) else {
+    let Some((w, h)) = play::read(|m| m.get(&b).map(|p| (p.movie.w, p.movie.h))) else {
         return E_NOTIMPL;
     };
-    let need = 40 + 4 * w * h;
+    let Some(need) = dib_bytes(w, h) else { return E_OUTOFMEMORY };
     if img == 0 {
         put32(psize, need);
         return 0;
@@ -1563,20 +1631,29 @@ fn bv_image(c: &mut Ctx) -> u32 {
     if r32(psize) < need {
         return E_INVALIDARG;
     }
-    if !put_dib(b, img) {
+    if !put_dib(b, img, need) {
         // E_UNEXPECTED
         return 0x8000_ffff;
     }
     put32(psize, need);
     0
 }
+/// The bytes of a 32-bit DIB of w x h with its BITMAPINFOHEADER (None: over 1 GiB, or a size
+/// that is none)
+fn dib_bytes(w: u32, h: u32) -> Option<u32> {
+    let n = (w as u64).checked_mul(h as u64)?.checked_mul(4)?.checked_add(40)?;
+    (n <= 1 << 30).then_some(n as u32)
+}
 /// The frame graph `b` shows as a 32-bit bottom-up DIB at `img` (a BITMAPINFOHEADER, then
-/// 4 * w * h bytes).
-fn put_dib(b: u32, img: u32) -> bool {
+/// 4 * w * h bytes), if that fits in the `cap` bytes there.
+fn put_dib(b: u32, img: u32, cap: u32) -> bool {
     let t = now();
-    let Some((stream, n, w, h)) = play::with(|m| m.get(&b).map(|p| (p.movie.stream, play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames), p.movie.w, p.movie.h))) else {
+    let Some((stream, n, w, h)) = play::read(|m| m.get(&b).map(|p| (p.movie.stream, play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames), p.movie.w, p.movie.h))) else {
         return false;
     };
+    if dib_bytes(w, h).is_none_or(|need| need > cap) {
+        return false;
+    }
     let mut px = vec![0u8; (4 * w * h) as usize];
     if !unsafe { play::frame(stream, n as i32, px.as_mut_ptr(), 4 * w as usize, w, h) } {
         return false;
@@ -1894,6 +1971,9 @@ struct Evr {
     key: u32,
     /// the graph it joined (JoinFilterGraph; not held: the graph holds the filter)
     graph: u32,
+    /// the references to an EVR or VMR of ours (evr(), vmr()): at 0 it goes; None for the
+    /// VMR-9s of vmr9.rs, which keep their own count
+    refs: Option<u32>,
 }
 
 static EVRS: Mutex<Option<HashMap<u32, Evr>>> = Mutex::new(None);
@@ -1914,7 +1994,7 @@ pub(crate) fn evr_changed(e: u32) {
 pub(crate) fn vmr_evr(key: u32, windowless: Option<bool>) {
     let mut g = EVRS.lock().unwrap_or_else(|e| e.into_inner());
     let m = g.get_or_insert_with(HashMap::new);
-    let e = m.entry(key).or_insert(Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0, graph: 0 });
+    let e = m.entry(key).or_insert(Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0, graph: 0, refs: None });
     if let Some(w) = windowless {
         e.windowless = w;
     }
@@ -1930,10 +2010,53 @@ fn evr_slot(iid: u32) -> Option<u32> {
         _ => return None,
     })
 }
+/// AddRef / Release of the EVR's or VMR's interface at slot `k` of its block: one count for the
+/// object; at the last Release its state leaves EVRS and the block goes (com.rs's quarantine)
+fn evr_add_ref(c: &mut Ctx, k: u32) -> u32 {
+    let b = c.a(0) - ps() * k;
+    evr_with(b, |e| match &mut e.refs {
+        Some(n) => {
+            *n += 1;
+            *n
+        }
+        None => 1,
+    })
+    .unwrap_or(1)
+}
+fn evr_release(c: &mut Ctx, k: u32) -> u32 {
+    let b = c.a(0) - ps() * k;
+    let mut g = EVRS.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(HashMap::new);
+    let left = match m.get_mut(&b).map(|e| &mut e.refs) {
+        Some(Some(n)) => {
+            *n = n.saturating_sub(1);
+            *n
+        }
+        _ => return 1,
+    };
+    if left == 0 {
+        m.remove(&b);
+        drop(g);
+        crate::com::free_later(b);
+    }
+    left
+}
+macro_rules! evr_unknown {
+    ($q:expr, $k:expr) => {{
+        fn a(c: &mut Ctx) -> u32 {
+            evr_add_ref(c, $k)
+        }
+        fn r(c: &mut Ctx) -> u32 {
+            evr_release(c, $k)
+        }
+        vec![($q as Handler, 12), (a as Handler, 4), (r as Handler, 4)]
+    }};
+}
 fn evr_qi(c: &mut Ctx, k: u32) -> u32 {
     let b = c.a(0) - ps() * k;
     match evr_slot(c.a(1)) {
         Some(s) => {
+            evr_with(b, |e| e.refs.as_mut().map(|n| *n += 1));
             putp(c.a(2), b + ps() * s);
             0
         }
@@ -1948,6 +2071,7 @@ fn evr_get_service(c: &mut Ctx) -> u32 {
     let b = c.a(0) - ps();
     match evr_slot(c.a(2)) {
         Some(s) => {
+            evr_with(b, |e| e.refs.as_mut().map(|n| *n += 1));
             putp(c.a(3), b + ps() * s);
             0
         }
@@ -1956,9 +2080,6 @@ fn evr_get_service(c: &mut Ctx) -> u32 {
             E_NOINTERFACE
         }
     }
-}
-fn one(_: &mut Ctx) -> u32 {
-    1
 }
 /// IBaseFilter::QueryFilterInfo(&info): FILTER_INFO { WCHAR achName[128], IFilterGraph *pGraph }
 fn evr_query_info(c: &mut Ctx) -> u32 {
@@ -2073,16 +2194,15 @@ fn evr(iid: u32) -> Option<u32> {
         fn q2(c: &mut Ctx) -> u32 {
             evr_qi(c, 2)
         }
-        let unk = |q: Handler| -> Vec<(Handler, u32)> { vec![(q, 12), (one as Handler, 4), (one as Handler, 4)] };
-        let mut gs = unk(q1);
+        let mut gs = evr_unknown!(q1, 1);
         gs.push((evr_get_service, 16));
         // IBaseFilter: GetClassID, Stop, Pause, Run, GetState, SetSyncSource, GetSyncSource,
         // EnumPins, FindPin, QueryFilterInfo, JoinFilterGraph, QueryVendorInfo
-        let mut bf = unk(q0);
+        let mut bf = evr_unknown!(q0, 0);
         bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
         bf.extend([(notimpl as Handler, 8), (notimpl, 12), (evr_query_info, 8), (evr_join, 12), (notimpl, 8)]);
         // IMFVideoDisplayControl
-        let mut dc = unk(q2);
+        let mut dc = evr_unknown!(q2, 2);
         dc.extend([
             (dc_native as Handler, 12), // GetNativeVideoSize
             (dc_native, 12),            // GetIdealVideoSize
@@ -2107,7 +2227,7 @@ fn evr(iid: u32) -> Option<u32> {
     for (k, t) in v.iter().enumerate() {
         wp(b + ps() * k as u32, *t);
     }
-    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1, vmr: false, src_px: None, windowless: true, border: 0, key: 0, graph: 0 });
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1, vmr: false, src_px: None, windowless: true, border: 0, key: 0, graph: 0, refs: Some(1) });
     Some(b + ps() * s)
 }
 
@@ -2137,6 +2257,7 @@ fn vmr_qi(c: &mut Ctx, k: u32) -> u32 {
     };
     match s {
         Some(s) => {
+            evr_with(b, |e| e.refs.as_mut().map(|n| *n += 1));
             putp(c.a(2), b + ps() * s);
             0
         }
@@ -2268,10 +2389,15 @@ pub(crate) fn wl_image(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    let g = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).iter().find(|(_, g)| g.evr == e && g.playing).map(|(&b, g)| (b, g.video));
-    let Some((b, (w, h))) = g else { return E_NOTIMPL };
-    let img = mem::heap_alloc(40 + 4 * (w * h) as u32, false);
-    if !put_dib(b, img) {
+    let g = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).iter().find(|(_, g)| g.evr == e && g.playing).map(|(&b, _)| b);
+    let Some(b) = g else { return E_NOTIMPL };
+    // (sized by the movie that plays, the one put_dib writes)
+    let Some(need) = play::read(|m| m.get(&b).map(|p| (p.movie.w, p.movie.h))).and_then(|(w, h)| dib_bytes(w, h)) else { return E_NOTIMPL };
+    let img = mem::heap_alloc(need, false);
+    if img == 0 {
+        return E_OUTOFMEMORY;
+    }
+    if !put_dib(b, img, need) {
         mem::heap_free(img);
         return 0x8000_ffff;
     }
@@ -2316,11 +2442,10 @@ fn vmr(iid: u32) -> Option<u32> {
         fn q2(c: &mut Ctx) -> u32 {
             vmr_qi(c, VMR_WINDOWLESS)
         }
-        let unk = |q: Handler| -> Vec<(Handler, u32)> { vec![(q, 12), (one as Handler, 4), (one as Handler, 4)] };
-        let mut bf = unk(q0);
+        let mut bf = evr_unknown!(q0, 0);
         bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
         bf.extend([(notimpl as Handler, 8), (notimpl, 12), (evr_query_info, 8), (evr_join, 12), (notimpl, 8)]);
-        let mut fc = unk(q1);
+        let mut fc = evr_unknown!(q1, VMR_CONFIG);
         fc.extend([
             (ok as Handler, 8), // SetImageCompositor
             (ok, 8),            // SetNumberOfStreams
@@ -2330,7 +2455,7 @@ fn vmr(iid: u32) -> Option<u32> {
             (vmr_set_mode, 8),
             (vmr_get_mode, 8),
         ]);
-        let mut wl = unk(q2);
+        let mut wl = evr_unknown!(q2, VMR_WINDOWLESS);
         wl.extend([
             (wl_native as Handler, 20),
             (wl_min_ideal, 12),
@@ -2359,7 +2484,7 @@ fn vmr(iid: u32) -> Option<u32> {
     for (k, t) in v.iter().enumerate() {
         wp(b + ps() * k as u32, *t);
     }
-    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0, graph: 0 });
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0, graph: 0, refs: Some(1) });
     Some(b + ps() * s)
 }
 
@@ -2599,6 +2724,199 @@ mod sniff_tests {
             if !maybe_sound(head(&b)) {
                 prop_assert!(crate::audiofile::open(&b).is_none());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    use std::time::{Duration, Instant};
+
+    /// A graph of its own at a made-up block (no guest block: only the table's entry)
+    fn graph(b: u32) {
+        GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Graph::new(0));
+    }
+    fn get(b: u32, ms: u32) -> (u32, u32, u32) {
+        let out = mem::heap_alloc(12, true);
+        let r = call(get_event, &[b + ps() * ME, out, out + 4, out + 8, ms]);
+        let v = (r, r32(out), r32(out + 4));
+        mem::heap_free(out);
+        v
+    }
+
+    /// GetEvent(INFINITE) sleeps until a filter queues an event (it polled every 2 ms), wakes
+    /// for it at once, and a timeout is a timeout
+    #[test]
+    fn get_event_waits_for_the_queue() {
+        let _g = enter();
+        let b = 0x7eae_0000;
+        graph(b);
+        let t = Instant::now();
+        assert_eq!(get(b, 120).0, E_ABORT);
+        assert!(t.elapsed() >= Duration::from_millis(120));
+        let q = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            queue2(b, 0x55, 7, 9);
+            Instant::now()
+        });
+        let r = get(b, u32::MAX);
+        let woke = Instant::now();
+        let sent = q.join().unwrap();
+        assert_eq!(r, (0, 0x55, 7));
+        assert!(woke.duration_since(sent) < Duration::from_millis(60), "{:?}", woke.duration_since(sent));
+        GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
+    }
+
+    /// Producers on several threads, one consumer in GetEvent(INFINITE): every event arrives,
+    /// in each producer's order, none lost between the consumer's check and its sleep
+    #[test]
+    fn no_event_is_lost() {
+        let _g = enter();
+        let b = 0x7eaf_0000;
+        graph(b);
+        const N: u32 = 2000;
+        let made = Arc::new(AtomicU32::new(0));
+        let ps: Vec<_> = (0..3u32)
+            .map(|k| {
+                let made = made.clone();
+                std::thread::spawn(move || {
+                    for i in 0..N {
+                        queue2(b, 0x100 + k, i, 0);
+                        made.fetch_add(1, Relaxed);
+                        if i % 64 == 0 {
+                            std::thread::yield_now();
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut next = [0u32; 3];
+        for _ in 0..3 * N {
+            let (r, code, i) = get(b, 10_000);
+            assert_eq!(r, 0, "lost: {} made, got {:?}", made.load(Relaxed), next);
+            let k = (code - 0x100) as usize;
+            assert_eq!(i, next[k]);
+            next[k] += 1;
+        }
+        for p in ps {
+            p.join().unwrap();
+        }
+        assert_eq!(next, [N; 3]);
+        GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
+    }
+
+    /// WaitForCompletion: stopped is VFW_E_WRONG_STATE at once; running, it waits until the
+    /// end is queued (left in the queue) or the graph stops; a graph released meanwhile ends it
+    #[test]
+    fn wait_for_completion_wakes_on_the_end() {
+        let _g = enter();
+        let b = 0x7eb0_0000;
+        graph(b);
+        let pc = mem::heap_alloc(4, true);
+        assert_eq!(call(wait_for_completion, &[b + ps() * ME, u32::MAX, pc]), WRONG_STATE);
+        with(b, |g| g.state = 2);
+        assert_eq!(call(wait_for_completion, &[b + ps() * ME, 50, pc]), E_ABORT);
+        let q = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            queue(b, EC_COMPLETE, 0);
+        });
+        assert_eq!(call(wait_for_completion, &[b + ps() * ME, u32::MAX, pc]), 0);
+        assert_eq!(r32(pc), EC_COMPLETE);
+        q.join().unwrap();
+        assert_eq!(with(b, |g| g.events.len()), Some(1));
+        with(b, |g| g.events.clear());
+        let q = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&b);
+            CHANGED.notify_all();
+        });
+        let t = Instant::now();
+        assert_eq!(call(wait_for_completion, &[b + ps() * ME, u32::MAX, pc]), 0);
+        assert!(t.elapsed() < Duration::from_secs(2));
+        q.join().unwrap();
+        mem::heap_free(pc);
+    }
+
+    fn iid(first: u32, second: u32) -> u32 {
+        let g = mem::heap_alloc(16, true);
+        w32(g, first);
+        w32(g + 4, second);
+        g
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(48))]
+        /// A filter graph and an EVR through QueryInterface / AddRef / Release on any of their
+        /// interfaces, in any order: one count each, as a model says; at the last Release the
+        /// graph's entry and event (and the EVR's state) are gone (they stayed for ever)
+        #[test]
+        fn graph_and_evr_count_as_a_model(ops in proptest::collection::vec((0u8..3, 0usize..4, proptest::prelude::any::<bool>()), 0..40)) {
+            let _g = enter();
+            let gb = create_instance(iid(0xe436_ebb3, 0x11ce_524f), iid(0x56a8_68a9, 0)).unwrap();
+            let gbase = gb - ps() * GB;
+            let event = with(gbase, |g| g.event).unwrap();
+            let ev = create_instance(iid(0xfa10_746c, 0x4b6c_9b63), iid(0x56a8_6895, 0)).unwrap();
+            // (graph slots: IGraphBuilder, IMediaControl, IMediaEventEx, IMediaSeeking; EVR
+            // slots: IBaseFilter, IMFGetService, IMFVideoDisplayControl)
+            let giids = [0x56a8_68a9u32, 0x56a8_68b1, 0x56a8_68b6, 0x36b7_3880];
+            let eiids = [0x56a8_6895u32, 0xfa99_3888, 0xa490_b1e4, 0x56a8_6895];
+            let (mut gn, mut en) = (1u32, 1u32);
+            let mut ptrs: (Vec<u32>, Vec<u32>) = (vec![gb], vec![ev]);
+            for (op, k, on_graph) in ops {
+                let (n, list) = if on_graph { (&mut gn, &mut ptrs.0) } else { (&mut en, &mut ptrs.1) };
+                if *n == 0 {
+                    continue;
+                }
+                let p = list[k % list.len()];
+                match op {
+                    0 => {
+                        let out = mem::heap_alloc(8, true);
+                        let id = if on_graph { iid(giids[k], 0) } else { iid(eiids[k], 0) };
+                        let qi: Handler = if on_graph { [|c: &mut Ctx| qi_k(c, 0), |c: &mut Ctx| qi_k(c, 1), |c: &mut Ctx| qi_k(c, 2), |c: &mut Ctx| qi_k(c, 3)][((p - if on_graph { gbase } else { ev }) / ps()) as usize % 4] } else { [|c: &mut Ctx| evr_qi(c, 0), |c: &mut Ctx| evr_qi(c, 1), |c: &mut Ctx| evr_qi(c, 2)][((p - ev) / ps()) as usize % 3] };
+                        proptest::prop_assert_eq!(call(qi, &[p, id, out]), 0);
+                        *n += 1;
+                        list.push(r32(out));
+                    }
+                    1 => {
+                        let slot = (p - if on_graph { gbase } else { ev }) / ps();
+                        let r = if on_graph { call(match slot { 0 => |c: &mut Ctx| add_ref_k(c, 0), 1 => |c: &mut Ctx| add_ref_k(c, 1), 2 => |c: &mut Ctx| add_ref_k(c, 2), _ => |c: &mut Ctx| add_ref_k(c, 3) }, &[p]) } else { call(match slot { 0 => |c: &mut Ctx| evr_add_ref(c, 0), 1 => |c: &mut Ctx| evr_add_ref(c, 1), _ => |c: &mut Ctx| evr_add_ref(c, 2) }, &[p]) };
+                        *n += 1;
+                        proptest::prop_assert_eq!(r, *n);
+                    }
+                    _ => {
+                        let slot = (p - if on_graph { gbase } else { ev }) / ps();
+                        let r = if on_graph { call(match slot { 0 => |c: &mut Ctx| release_k(c, 0), 1 => |c: &mut Ctx| release_k(c, 1), 2 => |c: &mut Ctx| release_k(c, 2), _ => |c: &mut Ctx| release_k(c, 3) }, &[p]) } else { call(match slot { 0 => |c: &mut Ctx| evr_release(c, 0), 1 => |c: &mut Ctx| evr_release(c, 1), _ => |c: &mut Ctx| evr_release(c, 2) }, &[p]) };
+                        *n -= 1;
+                        proptest::prop_assert_eq!(r, *n);
+                    }
+                }
+                proptest::prop_assert_eq!(with(gbase, |_| ()).is_some(), gn > 0);
+                proptest::prop_assert_eq!(evr_with(ev, |_| ()).is_some(), en > 0);
+            }
+            for _ in 0..gn {
+                call(|c: &mut Ctx| release_k(c, 0), &[gb]);
+            }
+            for _ in 0..en {
+                call(|c: &mut Ctx| evr_release(c, 0), &[ev]);
+            }
+            proptest::prop_assert!(with(gbase, |_| ()).is_none());
+            proptest::prop_assert!(evr_with(ev, |_| ()).is_none());
+            // (the graph's event went with it)
+            proptest::prop_assert!(!crate::obj::close(event));
+        }
+    }
+
+    proptest::proptest! {
+        /// GetCurrentImage's size for any picture size: exact in 64 bits, refused past 1 GiB
+        /// (40 + 4*w*h wrapped in u32)
+        #[test]
+        fn dib_sizes_do_not_wrap(w in proptest::prelude::any::<u32>(), h in proptest::prelude::any::<u32>()) {
+            let n = 40 + 4 * w as u128 * h as u128;
+            proptest::prop_assert_eq!(dib_bytes(w, h).map(|v| v as u128), (n <= 1 << 30).then_some(n));
         }
     }
 }
