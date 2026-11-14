@@ -522,7 +522,7 @@ fn sse_codes() -> &'static [Code] {
                 let any_x = kinds.iter().any(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::ymm_reg | K::ymm_rm | K::ymm_or_mem | K::ymm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem));
                 let m = format!("{:?}", c.mnemonic());
                 // (side effects outside the compared state, or not in CPUID)
-                let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movnt", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vtest", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
+                let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movntdqa", "Vmovntdqa", "Movntss", "Movntsd", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vtest", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
                 // (JIT64_SSE=Movlps,Blendv: only these mnemonic prefixes, to focus a run)
                 let only = std::env::var("JIT64_SSE").map_or(true, |v| v.split(',').any(|p| m.starts_with(p)));
                 ok && any_x && only && !skip.iter().any(|p| m.starts_with(p))
@@ -1041,6 +1041,13 @@ fn mx_check() -> bool {
     s
 }
 
+/// An interpreter fault at an address in [MEM, GUEST_HI): "interpreter exit Fault(Fault { addr: N, .."
+fn wild_fault(e: &str) -> bool {
+    let Some(i) = e.find("addr: ") else { return false };
+    let n: String = e[i + 6..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    n.parse::<u32>().is_ok_and(|a| a >= limit() && a < koji::jit::GUEST_HI)
+}
+
 /// `pre`: (FRESH) another program run first at the same address by the same Jit, whose
 /// translations the case's program then meets: they must find their code changed.
 fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instruction], data: &[u8], cpu0: &Cpu, rip_hi: u32, pre: Option<(&[Instruction], &Cpu)>) -> (Vec<String>, Vec<u8>) {
@@ -1062,6 +1069,11 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         if want.as_ref().is_err_and(|e| e == "no end") {
             // There is no reference final state. Previously this was ignored only AFTER
             // running the JIT, which could loop forever on the same generated program.
+            return (Vec::new(), code);
+        }
+        // (a store into the code made an instruction access an address beyond this harness's
+        // memory but in the JIT's guest window, which regions access directly: not comparable)
+        if want.as_ref().is_err_and(|e| wild_fault(e)) {
             return (Vec::new(), code);
         }
         let reads = koji::jit::mx_switched();
@@ -1566,5 +1578,49 @@ fn ignored_prefixes_on_branches_stay_translated() {
     let c = unsafe { get_cpu(base as *mut u8) };
     assert_eq!(c.eip, END);
     assert_eq!((c.gpr(0), c.gpr(2), c.gpr(1), c.gpr(4)), (want.gpr(0), want.gpr(2), want.gpr(1), want.gpr(4)));
+    assert_eq!(STEPS.get(), 0, "no instruction left to the interpreter");
+}
+
+/// MOVNTPS / MOVNTPD / MOVNTDQ (memcpy's large copies in MSVC's CRT) are stores for the
+/// program: translated as MOVUPS, not left to the interpreter one by one.
+#[test]
+fn non_temporal_stores_stay_translated() {
+    let mut config = Config::new();
+    config.wasm_threads(true).consume_fuel(true);
+    let engine = Engine::new(&config).unwrap();
+    let pages = koji::jit::wasm::memory_min_pages();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(pages, pages)).unwrap();
+    let base = memory.data().as_ptr() as *mut u8 as usize;
+    let jmp = (END - (CODE + 27)).to_le_bytes();
+    #[rustfmt::skip]
+    let code: Vec<u8> = [
+        &[0x0f, 0x2b, 0x0b][..],            // 0: movntps [rbx], xmm1
+        &[0x66, 0x0f, 0x2b, 0x53, 0x10],    // 3: movntpd [rbx+16], xmm2
+        &[0x66, 0x44, 0x0f, 0xe7, 0x43, 0x20], // 8: movntdq [rbx+32], xmm8
+        &[0x0f, 0x2b, 0x5b, 0x30],          // 14: movntps [rbx+48], xmm3
+        &[0x90, 0x90, 0x90],                // 18
+        &[0x90],                            // 21
+        &[0xe9], &jmp,                      // 22: jmp END
+    ].concat();
+    let mut cpu = Cpu { mode64: 1, eip: CODE, jit_budget: 1 << 30, mxcsr: 0x1f80, ..Cpu::default() };
+    cpu.set_gpr(3, DATA as u64);
+    cpu.set_gpr(4, (STACK - 0x800) as u64);
+    cpu.xmm[1] = 0x0011_2233_4455_6677_8899_aabb_ccdd_eeff;
+    cpu.xmm[2] = 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10;
+    cpu.xmm[3] = !cpu.xmm[1];
+    cpu.xmm8[0] = 0xdead_beef_0000_0000_1234_5678_9abc_def0;
+    unsafe {
+        std::ptr::write_bytes((base + 0x10000) as *mut u8, 0, MEM - 0x10000);
+        std::ptr::copy_nonoverlapping(code.as_ptr(), (base + CODE as usize) as *mut u8, code.len());
+        put_cpu(base as *mut u8, &cpu);
+    }
+    let mut jit = Jit::new(&engine, &memory, base);
+    STEPS.set(0);
+    jit.run(base).unwrap();
+    let c = unsafe { get_cpu(base as *mut u8) };
+    assert_eq!(c.eip, END);
+    let got = unsafe { std::slice::from_raw_parts((base + DATA as usize) as *const u8, 64) };
+    let want: Vec<u8> = [cpu.xmm[1], cpu.xmm[2], cpu.xmm8[0], cpu.xmm[3]].iter().flat_map(|x| x.to_le_bytes()).collect();
+    assert_eq!(got, &want[..]);
     assert_eq!(STEPS.get(), 0, "no instruction left to the interpreter");
 }

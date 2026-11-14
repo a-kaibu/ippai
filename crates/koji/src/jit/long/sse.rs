@@ -166,6 +166,8 @@ fn supported(ins: &Instruction) -> bool {
         Movdqu | Movdqa | Movups | Movaps | Movupd | Movapd | Lddqu => {
             n == 2 && size_ok(ins, 16) && ((is_x(ins, 0) && (is_x(ins, 1) || mem(ins, 1))) || (mem(ins, 0) && is_x(ins, 1)))
         }
+        // (non-temporal stores: a store for the program, memcpy's large copies)
+        Movntps | Movntpd | Movntdq => n == 2 && size_ok(ins, 16) && mem(ins, 0) && is_x(ins, 1),
         Movd | Movq => {
             n == 2
                 && ((is_x(ins, 0) && (gpr(ins, 1) || mem(ins, 1) || (m == Movq && is_x(ins, 1))))
@@ -453,7 +455,7 @@ impl Gen<'_> {
         let ins = self.ins;
         let m = ins.mnemonic();
         match m {
-            Movdqu | Movdqa | Movups | Movaps | Movupd | Movapd | Lddqu => {
+            Movdqu | Movdqa | Movups | Movaps | Movupd | Movapd | Lddqu | Movntps | Movntpd | Movntdq => {
                 if mem(&ins, 0) {
                     self.c.get(L_A);
                     self.xget(ins.op_register(1));
