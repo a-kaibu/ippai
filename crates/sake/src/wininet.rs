@@ -5,7 +5,7 @@ use crate::api::{self, Ctx};
 use crate::mem::{self, ps, r32, rp, w32};
 use std::collections::HashMap;
 use std::sync::{
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicU32, Ordering},
 };
 const LIMIT: usize = 4 * 1024 * 1024;
@@ -21,12 +21,15 @@ struct Connection {
     host: String,
     port: u16,
 }
+/// (the bodies are shared: `get` clones a handle per call, and the usual download loop,
+/// InternetQueryDataAvailable + InternetReadFile per few KB, copied the whole response body
+/// once or twice per chunk: a 20 MB file meant tens of GB of copying)
 #[derive(Clone, Default)]
 struct Response {
     status: u32,
     text: String,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    body: Arc<Vec<u8>>,
     offset: usize,
 }
 #[derive(Clone)]
@@ -36,7 +39,7 @@ struct Request {
     path: String,
     flags: u32,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
+    body: Arc<Vec<u8>>,
     response: Option<Response>,
 }
 #[derive(Clone)]
@@ -45,16 +48,32 @@ enum Handle {
     Connection(Connection),
     Request(Request),
 }
+/// The handles and the handle each was made from (0: a session).
 static HANDLES: Mutex<Option<HashMap<u32, Handle>>> = Mutex::new(None);
+static PARENTS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 static NEXT: AtomicU32 = AtomicU32::new(0x4c000000);
-fn add(h: Handle) -> u32 {
+fn add_under(parent: u32, h: Handle) -> u32 {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     HANDLES
         .lock()
         .unwrap()
         .get_or_insert_with(HashMap::new)
         .insert(id, h);
+    PARENTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, parent);
     id
+}
+/// `id` and every handle made from it, each once (`parents`: each handle's parent).
+fn with_descendants(parents: &HashMap<u32, u32>, id: u32) -> Vec<u32> {
+    let mut out = vec![id];
+    let mut i = 0;
+    while i < out.len() {
+        let p = out[i];
+        let mut kids: Vec<u32> = parents.iter().filter(|&(&k, &v)| v == p && k != p && !out.contains(&k)).map(|(&k, _)| k).collect();
+        kids.sort_unstable();
+        out.extend(kids);
+        i += 1;
+    }
+    out
 }
 fn get(id: u32) -> Option<Handle> {
     HANDLES.lock().unwrap().as_ref()?.get(&id).cloned()
@@ -256,7 +275,7 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
     if !matches!(c.a(1), 0 | 1) {
         return fail(50);
     }
-    add(Handle::Session(Session {
+    add_under(0, Handle::Session(Session {
         agent: string(c.a(0), wide),
         timeout: 30000,
         callback: 0,
@@ -282,7 +301,7 @@ fn connect(c: &mut Ctx, wide: bool) -> u32 {
     if host.is_empty() || host.contains(['/', ':', '@', '?', '#', '\r', '\n']) {
         return fail(87);
     }
-    add(Handle::Connection(Connection {
+    add_under(c.a(0), Handle::Connection(Connection {
         session,
         host,
         port: c.a(2) as u16,
@@ -328,13 +347,13 @@ fn request(c: &mut Ctx, wide: bool) -> u32 {
     } else {
         vec![("Accept".into(), accept.join(", "))]
     };
-    add(Handle::Request(Request {
+    add_under(c.a(0), Handle::Request(Request {
         connection,
         method,
         path,
         flags: c.a(6),
         headers,
-        body: vec![],
+        body: Arc::default(),
         response: None,
     }))
 }
@@ -411,7 +430,7 @@ fn transport(r: &Request) -> Result<Response, u32> {
         method: r.method.clone(),
         path: r.path.clone(),
         headers,
-        body: r.body.clone(),
+        body: r.body.to_vec(),
     };
     let io = crate::tls_socket::Socket::open(&host, connection.session.timeout).map_err(|_| 12029u32)?;
     let response =
@@ -444,7 +463,7 @@ fn transport(r: &Request) -> Result<Response, u32> {
         status: response.status as u32,
         text: response.text,
         headers: response.headers,
-        body: response.body,
+        body: Arc::new(response.body),
         offset: 0,
     })
 }
@@ -486,7 +505,7 @@ fn send_request(c: &mut Ctx, wide: bool) -> u32 {
     if edit(c.a(0), |h| {
         if let Handle::Request(r) = h {
             r.headers.extend(values);
-            r.body = body;
+            r.body = Arc::new(body);
             r.response = None;
             true
         } else {
@@ -538,7 +557,7 @@ fn send_ex(c: &mut Ctx, wide: bool) -> u32 {
     if edit(c.a(0), |h| {
         if let Handle::Request(r) = h {
             r.headers.extend(values);
-            r.body = body;
+            r.body = Arc::new(body);
             r.response = None;
             true
         } else {
@@ -593,7 +612,7 @@ fn InternetWriteFile(c: &mut Ctx) -> u32 {
             return Err(8);
         }
         if n != 0 {
-            r.body.extend_from_slice(mem::slice(p, n));
+            Arc::make_mut(&mut r.body).extend_from_slice(mem::slice(p, n));
         }
         Ok(())
     });
@@ -749,18 +768,22 @@ fn HttpQueryInfoA(c: &mut Ctx) -> u32 {
 fn HttpQueryInfoW(c: &mut Ctx) -> u32 {
     query(c, true)
 }
+/// Closing a handle closes the handles made from it too, as WinINet does (a game that only
+/// closed its session kept every request's response body for good).
 fn InternetCloseHandle(c: &mut Ctx) -> u32 {
-    if HANDLES
-        .lock()
-        .unwrap()
-        .as_mut()
-        .and_then(|m| m.remove(&c.a(0)))
-        .is_some()
-    {
-        1
-    } else {
-        fail(6)
+    let id = c.a(0);
+    let mut handles = HANDLES.lock().unwrap();
+    let Some(m) = handles.as_mut().filter(|m| m.contains_key(&id)) else {
+        drop(handles);
+        return fail(6);
+    };
+    let mut parents = PARENTS.lock().unwrap();
+    let p = parents.get_or_insert_with(HashMap::new);
+    for h in with_descendants(p, id) {
+        m.remove(&h);
+        p.remove(&h);
     }
+    1
 }
 fn session(h: &mut Handle) -> &mut Session {
     match h {
@@ -869,6 +892,52 @@ mod tests {
         for (k, n) in HEADER_NAMES.iter().enumerate() {
             if !n.is_empty() {
                 assert!(advances_index(k as u32), "{n}");
+            }
+        }
+    }
+
+    /// A request handle cloned (every `get`, per InternetQueryDataAvailable / HttpQueryInfo)
+    /// shares its response body instead of copying it.
+    #[test]
+    fn handles_share_their_bodies() {
+        let body = Arc::new(vec![7u8; 1 << 20]);
+        let r = Response { status: 200, body: body.clone(), ..Default::default() };
+        let h = Handle::Request(Request {
+            connection: Connection { session: Session { agent: String::new(), timeout: 0, callback: 0 }, host: "x".into(), port: 443 },
+            method: "GET".into(),
+            path: "/".into(),
+            flags: 0,
+            headers: vec![],
+            body: Arc::default(),
+            response: Some(r),
+        });
+        for _ in 0..1000 {
+            let Handle::Request(c) = h.clone() else { unreachable!() };
+            assert!(Arc::ptr_eq(&c.response.unwrap().body, &body));
+        }
+    }
+
+    proptest::proptest! {
+        /// Closing a handle takes exactly it and what was made from it (any depth), each once.
+        #[test]
+        fn closing_takes_the_subtree(spec in proptest::collection::vec(0usize..40, 1..40), pick in 0usize..40) {
+            // handle i+1 made from an earlier one (or a session: 0)
+            let mut parents = HashMap::new();
+            for (i, &p) in spec.iter().enumerate() {
+                let id = i as u32 + 1;
+                parents.insert(id, if p < i && p % 4 != 0 { p as u32 + 1 } else { 0 });
+            }
+            let id = (pick % spec.len()) as u32 + 1;
+            let got = with_descendants(&parents, id);
+            let set: std::collections::HashSet<u32> = got.iter().copied().collect();
+            proptest::prop_assert_eq!(set.len(), got.len());
+            for &h in parents.keys() {
+                let (mut q, mut under) = (h, false);
+                while q != 0 {
+                    under |= q == id;
+                    q = parents[&q];
+                }
+                proptest::prop_assert_eq!(set.contains(&h), under, "handle {}", h);
             }
         }
     }

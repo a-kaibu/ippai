@@ -285,6 +285,8 @@ bench = false
 [[bin]]
 name = "ws2name"
 path = "fuzz_targets/ws2name.rs"
+name = "vorbis_hook"
+path = "fuzz_targets/vorbis_hook.rs"
 test = false
 doc = false
 bench = false
@@ -292,6 +294,8 @@ bench = false
 [[bin]]
 name = "hlsl"
 path = "fuzz_targets/hlsl.rs"
+name = "ne_header"
+path = "fuzz_targets/ne_header.rs"
 test = false
 doc = false
 bench = false
@@ -341,6 +345,8 @@ bench = false
 [[bin]]
 name = "resupdate"
 path = "fuzz_targets/resupdate.rs"
+name = "wmdec"
+path = "fuzz_targets/wmdec.rs"
 test = false
 doc = false
 bench = false

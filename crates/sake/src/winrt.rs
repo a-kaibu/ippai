@@ -24,12 +24,15 @@ fn count(h: u32) -> u32 {
     h + PTR + ps()
 }
 
+/// The longest string plus one (the header and the characters' bytes fit in 31 bits)
+const MAX_LEN: u32 = 0x3fff_fff0;
+
 /// A new HSTRING holding `s` (empty: NULL)
 fn create(s: &[u16]) -> Option<u32> {
     if s.is_empty() {
         return Some(0);
     }
-    let n = u32::try_from(s.len()).ok().filter(|&n| n < 0x3fff_fff0)?;
+    let n = u32::try_from(s.len()).ok().filter(|&n| n < MAX_LEN)?;
     let at = PTR + ps() + 4;
     let h = mem::heap_alloc(at + 2 * (n + 1), true);
     if h == 0 {
@@ -48,7 +51,7 @@ fn len(h: u32) -> u32 {
 }
 
 fn chars(h: u32) -> Vec<u16> {
-    if h == 0 { Vec::new() } else { mem::wstrn(rp(h + PTR), r32(h + 4)) }
+    if h == 0 { Vec::new() } else { mem::wstrn(rp(h + PTR), r32(h + 4).min(MAX_LEN)) }
 }
 
 /// WindowsCreateString(src, length, &string)
@@ -59,6 +62,10 @@ fn WindowsCreateString(c: &mut Ctx) -> u32 {
     }
     if src == 0 && n != 0 {
         return E_POINTER;
+    }
+    // (the length is checked before the characters are read: a huge one is refused, not copied)
+    if n >= MAX_LEN {
+        return E_OUTOFMEMORY;
     }
     match create(&if n == 0 { Vec::new() } else { mem::wstrn(src, n) }) {
         Some(h) => {
@@ -180,8 +187,9 @@ fn RoGetActivationFactory(c: &mut Ctx) -> u32 {
 }
 fn RoActivateInstance(c: &mut Ctx) -> u32 {
     if let (Some(k), true) = (ui::Class::named(&class_name(c.a(0))), c.a(1) != 0) {
-        mem::putp(c.a(1), ui::object(k));
-        return S_OK;
+        let o = ui::object(k);
+        mem::putp(c.a(1), o);
+        return if o == 0 { E_OUTOFMEMORY } else { S_OK };
     }
     if crate::env_on!("SAKE_TRACE_COM") {
         eprintln!("sake: RoActivateInstance {}: not registered", class_name(c.a(0)));
@@ -314,11 +322,14 @@ mod ui {
         w32(refs(b), r32(refs(b)) + 1);
         r32(refs(b))
     }
-    /// (the objects stay: one or two per program)
+    /// (an instance's block is freed at its last reference; a factory stays: one per class)
     fn release(c: &mut Ctx) -> u32 {
         let b = split(c.a(0)).0;
         let n = r32(refs(b)).saturating_sub(1);
         w32(refs(b), n);
+        if n == 0 && matches!(kind(b), Kind::Object(_)) {
+            mem::heap_free(b);
+        }
         n
     }
     fn get_iids(c: &mut Ctx) -> u32 {
@@ -357,8 +368,9 @@ mod ui {
     /// IActivationFactory::ActivateInstance(&instance)
     fn activate(c: &mut Ctx) -> u32 {
         let Kind::Factory(k) = kind(split(c.a(0)).0) else { return E_NOINTERFACE };
-        mem::putp(c.a(1), object(k));
-        S_OK
+        let o = object(k);
+        mem::putp(c.a(1), o);
+        if o == 0 { E_OUTOFMEMORY } else { S_OK }
     }
     fn factory_vtable(k: Class) -> u32 {
         static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
@@ -511,6 +523,9 @@ mod ui {
     }
     fn access() -> u32 {
         let b = mem::heap_alloc(ps() + 4, true);
+        if b == 0 {
+            return 0;
+        }
         wp(b, access_vtable());
         w32(b + ps(), 1);
         b
@@ -519,6 +534,9 @@ mod ui {
     fn settings() -> u32 {
         let v = vtables();
         let b = mem::heap_alloc(ps() * 5 + 4, true);
+        if b == 0 {
+            return 0;
+        }
         for (k, t) in v.iter().enumerate() {
             wp(b + ps() * k as u32, *t);
         }

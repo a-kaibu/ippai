@@ -14,9 +14,13 @@ const E_PENDING: u32 = 0x8000_000a;
 const E_INVALIDARG: u32 = 0x8007_0057;
 const E_OUTOFMEMORY: u32 = 0x8007_000e;
 
+/// The most characters one call takes (as ScriptPlace's bound); a garbage count used to build a
+/// 512 MB Vec here and ask the guest heap for 1.6 GB in ScriptStringAnalyse.
+const MAX_CHARS: u32 = 1 << 20;
+
 fn wchars(p: u32, n: u32) -> Vec<u16> {
-    // (a negative count: nothing; no text is longer than the guest's address space)
-    let n = if (n as i32) < 0 { 0 } else { n.min(1 << 28) };
+    // (a negative count: nothing)
+    let n = if (n as i32) < 0 { 0 } else { n.min(MAX_CHARS) };
     (0..n).map(|i| r16(p + 2 * i)).collect()
 }
 
@@ -145,9 +149,13 @@ fn ScriptGetProperties(c: &mut Ctx) -> u32 {
 /// SCRIPT_LOGATTR: every character a stop; breaks after spaces and around CJK characters.
 fn ScriptBreak(c: &mut Ctx) -> u32 {
     let (s, n, out) = (c.a(0), c.a(1), c.a(3));
+    // (no characters or a negative count: E_INVALIDARG, as Windows and Wine; it indexed past
+    // the text before)
+    if (n as i32) <= 0 || n > MAX_CHARS || s == 0 || out == 0 {
+        return E_INVALIDARG;
+    }
     let t = wchars(s, n);
-    for i in 0..n as usize {
-        let ch = t[i];
+    for (i, &ch) in t.iter().enumerate() {
         let white = ch == 0x20 || ch == 0x3000 || ch == 9;
         let cjk = |c: u16| c >= 0x3000;
         let soft = i > 0 && (t[i - 1] == 0x20 || cjk(ch) || cjk(t[i - 1]));
@@ -194,13 +202,16 @@ fn ScriptTextOut(c: &mut Ctx) -> u32 {
 // SCRIPT_STRING_ANALYSIS: {dc, chars (copy), n, SIZE, advances}
 fn ScriptStringAnalyse(c: &mut Ctx) -> u32 {
     let (dc, s, n, out) = (c.a(0), c.a(1), c.a(2), c.a(12));
-    if n == 0 || (n as i32) < 0 || n > 1 << 28 || dc == 0 {
+    if n == 0 || (n as i32) < 0 || n > MAX_CHARS || dc == 0 {
         return E_INVALIDARG;
     }
     let text = wchars(s, n);
     let Some(g) = gdi::font_glyphs(dc, 0, &text) else { return E_INVALIDARG };
     let w = gdi::font_abc(dc, 0, &g).unwrap_or_default();
     let blk = mem::heap_alloc(20 + 2 * n + 4 * n, true);
+    if blk == 0 {
+        return E_OUTOFMEMORY;
+    }
     let chars = blk + 20;
     let advs = chars + 2 * n;
     mem::copy(chars, s, 2 * n);

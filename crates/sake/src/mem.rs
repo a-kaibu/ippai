@@ -139,6 +139,11 @@ fn guest(a: u32, n: u32) -> bool {
     refused(a, n);
     false
 }
+/// Whether `n` bytes at `a` are all guest memory (a check before reading a guest buffer whose
+/// length the guest gave)
+pub fn in_guest(a: u32, n: u32) -> bool {
+    a as u64 + n as u64 <= GUEST_TOP as u64
+}
 #[cold]
 #[inline(never)]
 fn refused(a: u32, n: u32) {

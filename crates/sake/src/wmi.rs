@@ -8,6 +8,7 @@ use crate::mem;
 
 const WBEM_S_FALSE: u32 = 1;
 const WBEM_E_NOT_SUPPORTED: u32 = 0x8004_100c;
+const E_OUTOFMEMORY: u32 = 0x8007_000e;
 
 /// One object per interface (no state: the reference count does not matter).
 fn singleton(name: &str, methods: &[(Handler, u32)], cell: &std::sync::OnceLock<u32>) -> u32 {
@@ -24,6 +25,35 @@ fn qi(c: &mut Ctx) -> u32 {
 }
 fn one(_: &mut Ctx) -> u32 {
     1
+}
+
+// An enumerator or object block: its vtable, then u32 fields after the pointer (x64: 8 bytes):
+// the class index (+ 1 in an enumerator), the enumerator's position, the reference count.
+fn field(o: u32, i: u32) -> u32 {
+    o + mem::ps() + 4 * i
+}
+/// QueryInterface on a counted block: itself, one more reference
+fn qi_counted(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(2), c.a(0));
+    add_ref(c);
+    0
+}
+fn add_ref(c: &mut Ctx) -> u32 {
+    let r = refs(c.a(0));
+    mem::atomic_rmw32(r, |v| v.saturating_add(1)).saturating_add(1)
+}
+/// Release: the block is freed at its last reference (every query used to leak it)
+fn release(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let n = mem::atomic_rmw32(refs(o), |v| v.saturating_sub(1)).saturating_sub(1);
+    if n == 0 {
+        mem::heap_free(o);
+    }
+    n
+}
+/// The count's field: an enumerator's third, an object's second (told by the vtable)
+fn refs(o: u32) -> u32 {
+    if mem::rp(o) == enum_vtable() { field(o, 2) } else { field(o, 1) }
 }
 fn not_supported(_: &mut Ctx) -> u32 {
     WBEM_E_NOT_SUPPORTED
@@ -57,8 +87,9 @@ fn services() -> u32 {
 
 fn enum_at4(c: &mut Ctx) -> u32 {
     let class = String::from_utf16_lossy(&mem::wstr(c.a(1)));
-    mem::putp(c.a(4), new_enum(&class));
-    0
+    let e = new_enum(&class);
+    mem::putp(c.a(4), e);
+    if e == 0 { E_OUTOFMEMORY } else { 0 }
 }
 fn enum_at5(c: &mut Ctx) -> u32 {
     let q = String::from_utf16_lossy(&mem::wstr(c.a(2)));
@@ -67,50 +98,67 @@ fn enum_at5(c: &mut Ctx) -> u32 {
     if crate::env_on!("SAKE_TRACE_COM") {
         eprintln!("sake: WMI query {q}");
     }
-    mem::putp(c.a(5), new_enum(&class));
-    0
+    let e = new_enum(&class);
+    mem::putp(c.a(5), e);
+    if e == 0 { E_OUTOFMEMORY } else { 0 }
 }
 
 const CLASSES: &[&str] = &["win32_processor", "win32_videocontroller", "win32_operatingsystem", "win32_computersystem", "win32_physicalmemory"];
 
 /// An enumerator of one object of `class` (unknown classes: none). Layout: vtable, class
 /// index + 1 (0: none), position.
-fn new_enum(class: &str) -> u32 {
+fn enum_vtable() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let vt = *V.get_or_init(|| {
-        crate::api::vtable("IEnumWbemClassObject", &[(qi, 12), (one, 4), (one, 4), (reset, 4), (next, 20), (not_supported, 12), (clone, 8), (skip, 12)])
-    });
-    let o = mem::heap_alloc(12, true);
+    *V.get_or_init(|| {
+        crate::api::vtable("IEnumWbemClassObject", &[(qi_counted, 12), (add_ref, 4), (release, 4), (reset, 4), (next, 20), (not_supported, 12), (clone, 8), (skip, 12)])
+    })
+}
+/// (0: the guest heap is full)
+fn new_enum(class: &str) -> u32 {
+    let vt = enum_vtable();
+    let o = mem::heap_alloc(mem::ps() + 12, true);
+    if o == 0 {
+        return 0;
+    }
     mem::wp(o, vt);
     let k = CLASSES.iter().position(|&n| n == class.to_ascii_lowercase()).map_or(0, |i| i as u32 + 1);
-    mem::w32(o + 4, k);
+    mem::w32(field(o, 0), k);
+    mem::w32(field(o, 2), 1);
     o
 }
 fn reset(c: &mut Ctx) -> u32 {
-    mem::w32(c.a(0) + 8, 0);
+    mem::w32(field(c.a(0), 1), 0);
     0
 }
 /// Next(this, timeout, count, objects, &returned)
 fn next(c: &mut Ctx) -> u32 {
     let (this, count, out, ret) = (c.a(0), c.a(2), c.a(3), c.a(4));
-    let k = mem::r32(this + 4);
-    if k == 0 || mem::r32(this + 8) != 0 || count == 0 {
+    let k = mem::r32(field(this, 0));
+    if k == 0 || mem::r32(field(this, 1)) != 0 || count == 0 {
         mem::put32(ret, 0);
         return WBEM_S_FALSE;
     }
-    mem::w32(this + 8, 1);
-    mem::putp(out, object(k - 1));
+    let o = object(k - 1);
+    if o == 0 {
+        mem::put32(ret, 0);
+        return E_OUTOFMEMORY;
+    }
+    mem::w32(field(this, 1), 1);
+    mem::putp(out, o);
     mem::put32(ret, 1);
     if count == 1 { 0 } else { WBEM_S_FALSE }
 }
 fn clone(c: &mut Ctx) -> u32 {
     let e = new_enum("");
-    mem::w32(e + 4, mem::r32(c.a(0) + 4));
     mem::putp(c.a(1), e);
+    if e == 0 {
+        return E_OUTOFMEMORY;
+    }
+    mem::w32(field(e, 0), mem::r32(field(c.a(0), 0)));
     0
 }
 fn skip(c: &mut Ctx) -> u32 {
-    mem::w32(c.a(0) + 8, 1);
+    mem::w32(field(c.a(0), 1), 1);
     WBEM_S_FALSE
 }
 
@@ -120,15 +168,19 @@ fn object(k: u32) -> u32 {
     let vt = *V.get_or_init(|| {
         let sizes = [12, 4, 4, 8, 24, 20, 8, 20, 8, 24, 4, 12, 8, 12, 12, 12, 12, 12, 8, 20, 20, 8, 8, 20, 4, 12, 12];
         let mut m: Vec<(Handler, u32)> = sizes.iter().map(|&b| (not_supported as Handler, b)).collect();
-        m[0].0 = qi;
-        m[1].0 = one;
-        m[2].0 = one;
+        m[0].0 = qi_counted;
+        m[1].0 = add_ref;
+        m[2].0 = release;
         m[4].0 = get;
         crate::api::vtable("IWbemClassObject", &m)
     });
-    let o = mem::heap_alloc(8, true);
+    let o = mem::heap_alloc(mem::ps() + 8, true);
+    if o == 0 {
+        return 0;
+    }
     mem::wp(o, vt);
-    mem::w32(o + 4, k);
+    mem::w32(field(o, 0), k);
+    mem::w32(field(o, 1), 1);
     o
 }
 
@@ -177,7 +229,7 @@ fn value(class: &str, prop: &str) -> Option<Val> {
 
 /// Get(this, name, flags, VARIANT* val, CIMTYPE* type, long* flavor)
 fn get(c: &mut Ctx) -> u32 {
-    let class = CLASSES[mem::r32(c.a(0) + 4) as usize];
+    let Some(&class) = CLASSES.get(mem::r32(field(c.a(0), 0)) as usize) else { return WBEM_E_NOT_SUPPORTED };
     let prop = String::from_utf16_lossy(&mem::wstr(c.a(1)));
     let (v, ty) = (c.a(3), c.a(4));
     let got = if prop.eq_ignore_ascii_case("__class") { Some(Val::S(class)) } else { value(class, &prop) };

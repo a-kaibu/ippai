@@ -38,6 +38,9 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `asf` | crates/asf: the ASF demuxer of sake's Windows Media readers (wmvcore) on any bytes as a file and as a packet; seeking | no panic; no object over asf::MAX_OBJECT |
 | `wma` | crates/wmcodec::wma: WMA 1 / 2 (FFmpeg's decoder ported) with any stream parameters and packets | no panic; every packet gives whole frames, as many per channel |
 | `wmv` | crates/wmcodec::msmpeg4: MS-MPEG4 v3 / WMV 1 / WMV 2 (FFmpeg's decoders ported) with any size, extradata and pictures | no panic; pictures of the stream's size |
+| `wmdec` | sake's Windows Media decoders (wmdec: the codec for any BITMAPINFOHEADER / WAVEFORMATEX, pictures and sound into an RGB24 / RGB32 / PCM output of any size) | no panic; pictures the size of their output |
+| `vorbis_hook` | sake::vorbis_hook::locate_in (the Vorbis decoder found inside a game's exe) on any bytes as a module image | no panic; the functions it finds lie in the image |
+| `ne_header` | sake::w16::check_ne (the Win16 NE loader's header readers: module name, entry points, imported names, exports) | no panic, no hang |
 | `audiofile` | sake::audiofile (WAVE, MP4/M4A, Ogg) | no panic |
 | `formats` | .lnk, event log records and .evt files, PE resource trees, type libraries, CryptStringToBinary / CryptBinaryToString | no panic; what decodes encodes back to the same (links, .evt, resource trees, base64 forms) |
 | `printf` (crates/crt) | crt::fmt::format, every mode (UCRT option bits, legacy msvcrt), narrow and wide | no panic, output within MAX_OUT, text without % unchanged |

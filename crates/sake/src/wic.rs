@@ -21,6 +21,29 @@ const WINCODEC_ERR_INSUFFICIENTBUFFER: u32 = 0x8898_2f8c;
 const WINCODEC_ERR_PROPERTYNOTFOUND: u32 = 0x8898_2f40;
 const WINCODEC_ERR_UNSUPPORTEDOPERATION: u32 = 0x8898_2f81;
 const E_NOTIMPL: u32 = 0x8000_4001;
+const E_OUTOFMEMORY: u32 = 0x8007_000e;
+const STG_E_MEDIUMFULL: u32 = 0x8003_0070;
+
+/// The largest image (and stream) sake keeps: 1 GiB, 16384 x 16384 BGRA. Sizes came from the
+/// guest unchecked: `w * h * 4` wrapped in u32 (CreateBitmap(0x8000, 0x8000) made a 0-byte
+/// image whose next copy indexed out of range) or asked for 4 GB (an allocation abort).
+const MAX_IMAGE: u64 = 1 << 30;
+
+/// The bytes of a w x h BGRA image, None past MAX_IMAGE.
+fn image_bytes(w: u32, h: u32) -> Option<usize> {
+    let n = w as u64 * h as u64 * 4;
+    (n <= MAX_IMAGE).then_some(n as usize)
+}
+
+/// Whether `w x h` at (x, y) lies in a `iw x ih` image (no wrapping).
+fn inside(x: u32, y: u32, w: u32, h: u32, iw: u32, ih: u32) -> bool {
+    x as u64 + w as u64 <= iw as u64 && y as u64 + h as u64 <= ih as u64
+}
+
+/// The bytes CreateBitmapFromMemory needs: every row but the last at `stride`, the last whole.
+fn memory_needed(stride: u32, h: u32, row: u64) -> u64 {
+    if h == 0 { 0 } else { stride as u64 * (h as u64 - 1) + row }
+}
 
 use crate::picture::{self, Fmt};
 use crate::wicmeta;
@@ -86,6 +109,9 @@ enum Obj {
         pic: Arc<picture::Picture>,
         container: Guid,
         meta: Option<Arc<wicmeta::Meta>>,
+        /// per frame, its pixels and raw bits while a frame object holds them (a GetFrame per
+        /// draw shares them instead of converting and copying the frame again)
+        made: Vec<(std::sync::Weak<Img>, std::sync::Weak<picture::Frame>)>,
     },
     /// IWICMetadataQueryReader of a frame: the container format and the items
     Reader {
@@ -104,8 +130,10 @@ enum Obj {
     },
     /// IWICBitmap (pixels changed through Lock)
     /// (and for an indexed one made from memory its bytes and stride, for SetPalette)
+    /// (the pixels shared with every source read from it: copied only when a Lock writes
+    /// while others hold them, Arc::make_mut)
     Bitmap {
-        img: Arc<Mutex<Img>>,
+        img: Arc<Mutex<Arc<Img>>>,
         fmt: Fmt,
         raw: Option<(Vec<u8>, u32)>,
     },
@@ -113,7 +141,7 @@ enum Obj {
     FormatInfo(Fmt),
     /// IWICBitmapLock: the bitmap, the rectangle and the guest copy of its pixels
     Lock {
-        bitmap: Arc<Mutex<Img>>,
+        bitmap: Arc<Mutex<Arc<Img>>>,
         fmt: Fmt,
         rect: (u32, u32, u32, u32),
         buf: u32,
@@ -147,7 +175,8 @@ fn free(this: u32) {
         if let Some(Obj::Lock { bitmap, fmt, rect, buf, stride, write }) = with(|m| m.remove(&this)) {
             if write {
                 let data = mem::slice(buf, stride * rect.3).to_vec();
-                let mut img = bitmap.lock().unwrap();
+                let mut g = bitmap.lock().unwrap();
+                let img = Arc::make_mut(&mut *g);
                 let part = decode(fmt, rect.2, rect.3, stride, &data, &img.palette);
                 for row in 0..rect.3 {
                     let d = (((rect.1 + row) * img.w + rect.0) * 4) as usize;
@@ -191,7 +220,7 @@ fn stream<R>(this: u32, f: impl FnOnce(&mut Vec<u8>, &mut u64) -> R) -> Option<R
 fn s_read(c: &mut Ctx) -> u32 {
     let (this, pv, cb, got) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let n = stream(this, |d, pos| {
-        let start = (*pos as usize).min(d.len());
+        let start = (*pos).min(d.len() as u64) as usize;
         let n = (cb as usize).min(d.len() - start);
         mem::write(pv, &d[start..start + n]);
         *pos += n as u64;
@@ -206,6 +235,14 @@ fn s_read(c: &mut Ctx) -> u32 {
 
 fn s_write(c: &mut Ctx) -> u32 {
     let (this, pv, cb, done) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    // (a position past MAX_IMAGE after a Seek: the medium is full, as for SetSize; it used
+    // to wrap on wasm32 or grow the stream to 4 GB)
+    if stream(this, |_, pos| pos.saturating_add(cb as u64) > MAX_IMAGE) != Some(false) {
+        if done != 0 {
+            mem::w32(done, 0);
+        }
+        return STG_E_MEDIUMFULL;
+    }
     let src = mem::slice(pv, cb).to_vec();
     stream(this, |d, pos| {
         let end = *pos as usize + src.len();
@@ -247,8 +284,8 @@ fn s_seek(c: &mut Ctx) -> u32 {
 
 fn s_set_size(c: &mut Ctx) -> u32 {
     let (this, n, high) = (c.a(0), c.a(1), c.a(2));
-    if high != 0 || n > 1 << 30 {
-        return 0x8003_0070; // STG_E_MEDIUMFULL
+    if high != 0 || n as u64 > MAX_IMAGE {
+        return STG_E_MEDIUMFULL;
     }
     stream(this, |d, _| d.resize(n as usize, 0));
     0
@@ -300,7 +337,7 @@ fn s_init_istream(c: &mut Ctx) -> u32 {
 
 /// The rest of a stream's bytes, through its Read (whoever made it).
 pub(crate) fn read_stream(c: &mut Ctx, stm: u32) -> Vec<u8> {
-    if let Some(v) = stream(stm, |d, pos| d[(*pos as usize).min(d.len())..].to_vec()) {
+    if let Some(v) = stream(stm, |d, pos| d[(*pos).min(d.len() as u64) as usize..].to_vec()) {
         return v;
     }
     let read = mem::rp(mem::rp(stm) + 3 * mem::ps());
@@ -309,10 +346,11 @@ pub(crate) fn read_stream(c: &mut Ctx, stm: u32) -> Vec<u8> {
     let mut data = Vec::new();
     loop {
         mem::w32(got, 0);
-        c.call(read, &[stm, buf, 0x10000, got]);
+        let hr = c.call(read, &[stm, buf, 0x10000, got]);
         let n = mem::r32(got).min(0x10000);
         data.extend_from_slice(mem::slice(buf, n));
-        if n < 0x10000 {
+        // (a failing Read, or a stream that never ends: at most MAX_IMAGE)
+        if n < 0x10000 || hr & 0x8000_0000 != 0 || data.len() as u64 >= MAX_IMAGE {
             break;
         }
     }
@@ -339,14 +377,13 @@ fn new_source(iface: &'static str, img: Arc<Img>, fmt: Fmt, extra: &[(&'static s
     new(iface, &impls, Obj::Source { img, fmt, raw: None })
 }
 
-/// The image of one of this module's sources or bitmaps, and its format.
+/// The image of one of this module's sources or bitmaps, and its format. A bitmap's pixels are
+/// shared, not copied: GetSize / GetPixelFormat / CopyPixels each copied the whole image (an
+/// engine copying a 1080p bitmap row by row copied 8 MB per row).
 fn image_of(this: u32) -> Option<(Arc<Img>, Fmt)> {
     with(|m| match m.get(&this)? {
         Obj::Source { img, fmt, .. } => Some((img.clone(), *fmt)),
-        Obj::Bitmap { img, fmt, .. } => {
-            let i = img.lock().unwrap();
-            Some((Arc::new(i.clone()), *fmt))
-        }
+        Obj::Bitmap { img, fmt, .. } => Some((img.lock().unwrap().clone(), *fmt)),
         _ => None,
     })
 }
@@ -376,8 +413,13 @@ fn read_source(c: &mut Ctx, src: u32) -> Option<(Arc<Img>, Fmt)> {
     let f = fmt_of(read_guid(tmp));
     mem::heap_free(tmp);
     let f = f?;
+    // (the game's GetSize: any numbers)
+    image_bytes(w, h)?;
     let stride = f.row_bytes(w).div_ceil(4) * 4;
     let buf = mem::heap_alloc((stride * h).max(4), false);
+    if buf == 0 {
+        return None;
+    }
     let r = c.call(mem::rp(vt + 7 * k), &[src, 0, stride, stride * h, buf]);
     let data = mem::slice(buf, stride * h).to_vec();
     mem::heap_free(buf);
@@ -454,7 +496,7 @@ fn rect(p: u32, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
         return Some((0, 0, w, h));
     }
     let (x, y, rw, rh) = (mem::r32(p) as i32, mem::r32(p + 4) as i32, mem::r32(p + 8) as i32, mem::r32(p + 12) as i32);
-    if x < 0 || y < 0 || rw < 0 || rh < 0 || (x + rw) as u32 > w || (y + rh) as u32 > h {
+    if x < 0 || y < 0 || rw < 0 || rh < 0 || !inside(x as u32, y as u32, rw as u32, rh as u32, w, h) {
         return None;
     }
     Some((x as u32, y as u32, rw as u32, rh as u32))
@@ -507,7 +549,7 @@ fn decoder(data: &[u8]) -> Option<u32> {
     let d = new(
         "IWICBitmapDecoder",
         &[("Release", release), ("GetContainerFormat", dec_container), ("GetFrameCount", dec_frame_count), ("GetFrame", dec_frame), ("CopyPalette", dec_palette), ("Initialize", ok)],
-        Obj::Decoder { pic: Arc::new(pic), container, meta },
+        Obj::Decoder { pic: Arc::new(pic), container, meta, made: Vec::new() },
     );
     Some(d)
 }
@@ -559,10 +601,26 @@ fn dec_frame(c: &mut Ctx) -> u32 {
     let Some(f) = pic.frames.get(index as usize) else {
         return E_INVALIDARG;
     };
-    let img = Img { w: f.w, h: f.h, px: f.bgra(), palette: f.palette.clone(), dpi: f.dpi };
-    let raw = picture::Frame { w: f.w, h: f.h, fmt: f.fmt, bits: f.bits.clone(), palette: f.palette.clone(), dpi: f.dpi };
+    let i = index as usize;
+    let alive = with(|m| match m.get(&this) {
+        Some(Obj::Decoder { made, .. }) => made.get(i).and_then(|(a, b)| Some((a.upgrade()?, b.upgrade()?))),
+        _ => None,
+    });
+    let (img, raw) = alive.unwrap_or_else(|| {
+        let img = Arc::new(Img { w: f.w, h: f.h, px: f.bgra(), palette: f.palette.clone(), dpi: f.dpi });
+        let raw = Arc::new(picture::Frame { w: f.w, h: f.h, fmt: f.fmt, bits: f.bits.clone(), palette: f.palette.clone(), dpi: f.dpi });
+        with(|m| {
+            if let Some(Obj::Decoder { made, .. }) = m.get_mut(&this) {
+                if made.len() <= i {
+                    made.resize(i + 1, (std::sync::Weak::new(), std::sync::Weak::new()));
+                }
+                made[i] = (Arc::downgrade(&img), Arc::downgrade(&raw));
+            }
+        });
+        (img, raw)
+    });
     let fmt = f.fmt;
-    let p = new_source("IWICBitmapFrameDecode", Arc::new(img), fmt, &[("GetMetadataQueryReader", frame_reader)]);
+    let p = new_source("IWICBitmapFrameDecode", img, fmt, &[("GetMetadataQueryReader", frame_reader)]);
     let (container, meta) = with(|m| match m.get(&this) {
         Some(Obj::Decoder { container, meta, .. }) => (*container, meta.clone()),
         _ => (BMP, None),
@@ -570,7 +628,7 @@ fn dec_frame(c: &mut Ctx) -> u32 {
     frame_meta(|m| m.insert(p, (container, meta)));
     with(|m| {
         if let Some(Obj::Source { raw: r, .. }) = m.get_mut(&p) {
-            *r = Some(Arc::new(raw));
+            *r = Some(raw);
         }
     });
     mem::putp(out, p);
@@ -953,7 +1011,8 @@ fn pal_from_bitmap(c: &mut Ctx) -> u32 {
     if !(2..=256).contains(&n) {
         return E_INVALIDARG;
     }
-    let mut counts: HashMap<u32, u32> = HashMap::new();
+    // (Fx: one insert per pixel, SipHash's cost was most of it)
+    let mut counts: crate::HashMap<u32, u32> = crate::HashMap::default();
     for p in img.px.chunks_exact(4) {
         *counts.entry(0xff00_0000 | (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32).or_default() += 1;
     }
@@ -1081,6 +1140,9 @@ fn scaler_init(c: &mut Ctx) -> u32 {
     };
     if w == 0 || h == 0 {
         return E_INVALIDARG;
+    }
+    if image_bytes(w, h).is_none() {
+        return E_OUTOFMEMORY;
     }
     set_source(this, Arc::new(scale(&img, w, h, mode)), f);
     0
@@ -1341,6 +1403,10 @@ fn flip_init(c: &mut Ctx) -> u32 {
 }
 
 fn new_bitmap(img: Img, fmt: Fmt) -> u32 {
+    new_bitmap_shared(Arc::new(img), fmt)
+}
+
+fn new_bitmap_shared(img: Arc<Img>, fmt: Fmt) -> u32 {
     let mut impls = source_impls();
     impls.extend_from_slice(&[("Lock", bm_lock as crate::api::Handler), ("SetResolution", ok), ("SetPalette", bm_set_palette)]);
     new("IWICBitmap", &impls, Obj::Bitmap { img: Arc::new(Mutex::new(img)), fmt, raw: None })
@@ -1353,7 +1419,8 @@ fn bm_set_palette(c: &mut Ctx) -> u32 {
     };
     with(|m| match m.get(&this) {
         Some(Obj::Bitmap { img, fmt, raw }) => {
-            let mut i = img.lock().unwrap();
+            let mut g = img.lock().unwrap();
+            let i = Arc::make_mut(&mut *g);
             // (an indexed bitmap made from memory: its pixels through the new palette)
             if let Some((data, stride)) = raw {
                 let (w, h) = (i.w, i.h);
@@ -1372,7 +1439,10 @@ fn f_create_bitmap(c: &mut Ctx) -> u32 {
     let Some(f) = fmt_of(read_guid(fmt)) else {
         return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
     };
-    mem::putp(out, new_bitmap(Img::new(w, h, vec![0; (w * h * 4) as usize]), f));
+    let Some(n) = image_bytes(w, h) else {
+        return E_OUTOFMEMORY;
+    };
+    mem::putp(out, new_bitmap(Img::new(w, h, vec![0; n]), f));
     0
 }
 
@@ -1382,6 +1452,18 @@ fn f_bitmap_from_memory(c: &mut Ctx) -> u32 {
     let Some(f) = fmt_of(read_guid(fmt)) else {
         return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
     };
+    if image_bytes(w, h).is_none() {
+        return E_OUTOFMEMORY;
+    }
+    // (rows of the format at `stride`: a buffer too short for them, as Windows and Wine
+    // refuse it, instead of a picture read past the copy)
+    let row = (w as u64 * f.bits() as u64).div_ceil(8);
+    if (stride as u64) < row {
+        return E_INVALIDARG;
+    }
+    if (size as u64) < memory_needed(stride, h, row) {
+        return WINCODEC_ERR_INSUFFICIENTBUFFER;
+    }
     let data = mem::slice(buf, size).to_vec();
     let b = new_bitmap(decode(f, w, h, stride, &data, &[]), f);
     if f.indexed() {
@@ -1401,7 +1483,8 @@ fn f_bitmap_from_source(c: &mut Ctx) -> u32 {
     let Some((img, f)) = read_source(c, src) else {
         return E_INVALIDARG;
     };
-    mem::putp(out, new_bitmap(Img::new(img.w, img.h, img.px.clone()), f));
+    // (the pixels shared until one of them is locked for writing)
+    mem::putp(out, new_bitmap_shared(img, f));
     0
 }
 
@@ -1411,7 +1494,7 @@ fn f_bitmap_from_source_rect(c: &mut Ctx) -> u32 {
     let Some((img, f)) = read_source(c, src) else {
         return E_INVALIDARG;
     };
-    if x + w > img.w || y + h > img.h {
+    if !inside(x, y, w, h, img.w, img.h) {
         return E_INVALIDARG;
     }
     mem::putp(out, new_bitmap(crop(&img, (x, y, w, h)), f));

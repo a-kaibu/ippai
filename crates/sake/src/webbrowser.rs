@@ -84,12 +84,15 @@ const IID_IOLEINPLACESITE: &str = "00000119-0000-0000-C000-000000000046";
 
 /// Which interface of the object an IID asks for
 pub fn which(iid: &[u8]) -> Option<usize> {
-    IFACES.iter().position(|ids| ids.iter().any(|s| guid(s) == iid))
+    // (parsed once: every QueryInterface parsed up to 13 GUID strings)
+    static T: std::sync::OnceLock<Vec<Vec<[u8; 16]>>> = std::sync::OnceLock::new();
+    T.get_or_init(|| IFACES.iter().map(|ids| ids.iter().map(|s| guid(s)).collect()).collect()).iter().position(|ids| ids.iter().any(|g| g == iid))
 }
 
 /// Which connection point an IID asks for
 pub fn event_index(iid: &[u8]) -> Option<usize> {
-    EVENTS.iter().position(|s| guid(s) == iid)
+    static T: std::sync::OnceLock<Vec<[u8; 16]>> = std::sync::OnceLock::new();
+    T.get_or_init(|| EVENTS.iter().map(|s| guid(s)).collect()).iter().position(|g| g == iid)
 }
 
 /// The IWebBrowser2 slots whose value is a property: (the get's slot, VARIANT_BOOL (2 bytes)
@@ -223,6 +226,20 @@ fn release(c: &mut Ctx) -> u32 {
             if s.site != 0 {
                 vcall(c, s.site, 2, &[]);
             }
+            // its connection points (each held a reference to the control: none is out now),
+            // their sinks' references and the blocks go too (a few hundred bytes per control
+            // were left behind)
+            for &p in s.points.iter().filter(|&&p| p != 0) {
+                if let Some(pt) = points(|m| m.remove(&p)) {
+                    for (_, sink) in pt.sinks {
+                        if sink != 0 {
+                            vcall(c, sink, 2, &[]);
+                        }
+                    }
+                }
+                mem::heap_free(p);
+            }
+            mem::heap_free(b);
             0
         }
         None => with(b, |s| s.refs).unwrap_or(0),
@@ -240,10 +257,12 @@ fn bstr(chars: &[u16]) -> u32 {
 
 /// A BSTR's characters (by its length prefix; NULL is empty)
 fn bstr_text(p: u32) -> Vec<u16> {
-    if p == 0 {
+    if p < 4 {
         return Vec::new();
     }
-    let n = r32(p - 4) / 2;
+    // (a plain LPWSTR passed for a BSTR, or a stale VARIANT: its "length" is any number; at
+    // most 1 M characters, not a multi-GB Vec)
+    let n = (r32(p - 4) / 2).min(1 << 20);
     (0..n).map(|i| r16(p + 2 * i)).collect()
 }
 
@@ -942,8 +961,9 @@ fn point_vtable() -> u32 {
 
 /// CoCreateInstance(CLSID_WebBrowser): None for another class, else the HRESULT
 pub fn create_instance(clsid: u32, iid: u32, out: u32) -> Option<u32> {
+    static CLS: std::sync::OnceLock<[[u8; 16]; 2]> = std::sync::OnceLock::new();
     let cls = mem::slice(clsid, 16);
-    if cls != guid(CLSID_WEBBROWSER) && cls != guid(CLSID_WEBBROWSER_V1) {
+    if !CLS.get_or_init(|| [guid(CLSID_WEBBROWSER), guid(CLSID_WEBBROWSER_V1)]).iter().any(|g| g == cls) {
         return None;
     }
     let Some(i) = which(mem::slice(iid, 16)) else {

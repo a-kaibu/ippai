@@ -486,6 +486,30 @@ pub fn is_socket(h: u32) -> bool {
     with(|st, _| st.handles.contains_key(&h))
 }
 
+/// The most a SO_RCVBUF / SO_SNDBUF counts for (programs set 1 GiB "to be safe"; sums of
+/// two such values used to wrap to a tiny cap)
+const MAX_BUF: u32 = 4 << 20;
+/// The least (Windows' default 8 KB)
+const MIN_BUF: u32 = 8192;
+fn buf_size(v: u32) -> usize {
+    v.clamp(MIN_BUF, MAX_BUF) as usize
+}
+/// How much a stream connection holds unread before its sender waits
+pub(crate) fn pipe_cap(rcvbuf: u32, sndbuf: u32) -> usize {
+    buf_size(rcvbuf) + buf_size(sndbuf)
+}
+/// Whether a datagram of `n` bytes still fits a receive queue holding `queued` bytes (Windows
+/// drops datagrams once the receive buffer is full; at least one always fits)
+pub(crate) fn dgram_fits(queued: usize, n: usize, rcvbuf: u32) -> bool {
+    queued == 0 || queued + n <= buf_size(rcvbuf)
+}
+/// The most one send takes (a stream send of more sends this much; the program sends the rest)
+const MAX_SEND: u32 = 16 << 20;
+/// The most WSABUFs / WSAPOLLFDs one call takes
+const MAX_BUFS: u32 = 1 << 16;
+/// The most OVERLAPPED flags kept for WSAGetOverlappedResult (only non-zero ones are kept)
+const MAX_OV_FLAGS: usize = 4096;
+
 fn new_handle() -> u32 {
     obj::add(Obj::Other("socket"))
 }
@@ -493,6 +517,32 @@ fn new_handle() -> u32 {
 impl State {
     fn touch(&mut self) {
         self.dirty = true;
+    }
+    /// The flags an overlapped operation on `ov` ended with: only non-zero ones are kept (the
+    /// map used to grow by every OVERLAPPED address ever used), at most MAX_OV_FLAGS
+    fn set_ov_flags(&mut self, ov: u32, fl: u32) {
+        if fl == 0 {
+            self.ov_flags.remove(&ov);
+            return;
+        }
+        if self.ov_flags.len() >= MAX_OV_FLAGS && !self.ov_flags.contains_key(&ov) {
+            self.ov_flags.clear();
+        }
+        self.ov_flags.insert(ov, fl);
+    }
+    /// The first connection queued on listener `id` that still exists (one closed through its
+    /// handle while queued is dropped from the queue, not unwrapped)
+    fn queued(&mut self, id: u32, take: bool) -> Option<u32> {
+        loop {
+            let q = *self.socks.get(&id)?.queue.front()?;
+            if self.socks.contains_key(&q) {
+                if take {
+                    self.socks.get_mut(&id)?.queue.pop_front();
+                }
+                return Some(q);
+            }
+            self.socks.get_mut(&id)?.queue.pop_front();
+        }
     }
     fn id(&self, h: u32) -> Result<u32, u32> {
         self.handles.get(&h).copied().ok_or(WSAENOTSOCK)
@@ -518,7 +568,7 @@ impl State {
     fn full(&self, id: u32) -> bool {
         let Some(s) = self.socks.get(&id) else { return false };
         match s.conn.and_then(|p| self.socks.get(&p)) {
-            Some(o) if s.stream() => o.rx.len() >= (o.rcvbuf.max(8192) + s.sndbuf.max(8192)) as usize,
+            Some(o) if s.stream() => o.rx.len() >= pipe_cap(o.rcvbuf, s.sndbuf),
             _ => false,
         }
     }
@@ -594,7 +644,7 @@ impl State {
                             // (WSARecvMsg reports its flags in the WSAMSG only)
                             let outfl = if msg != 0 { 0 } else { outfl };
                             if msg == 0 {
-                                self.ov_flags.insert(p.ov, outfl);
+                                self.set_ov_flags(p.ov, outfl);
                             }
                             finish(&p, status, n, outfl, acts);
                             self.refresh(id, acts);
@@ -626,10 +676,13 @@ impl State {
     /// Moves the first queued connection of listener `id` into socket handle `acc` (AcceptEx)
     fn accept_into(&mut self, id: u32, acc: u32, acts: &mut Vec<Act>) -> Result<(), u32> {
         let aid = self.id(acc)?;
-        let Some(q) = self.socks.get_mut(&id).unwrap().queue.pop_front() else { return Err(WSAEWOULDBLOCK) };
-        let mut new = self.socks.remove(&q).unwrap();
+        let Some(q) = self.queued(id, true) else { return Err(WSAEWOULDBLOCK) };
+        if !self.socks.contains_key(&aid) {
+            return Err(WSAENOTSOCK);
+        }
+        let Some(mut new) = self.socks.remove(&q) else { return Err(WSAEWOULDBLOCK) };
         // the accepted connection takes the place of the given socket
-        let old = self.socks.remove(&aid).unwrap();
+        let Some(old) = self.socks.remove(&aid) else { return Err(WSAENOTSOCK) };
         new.nhandles = old.nhandles;
         new.notify = old.notify;
         new.mask = old.mask;
@@ -643,8 +696,9 @@ impl State {
         // the server side was given a handle of its own when it was made; it goes now
         self.handles.remove(&q);
         acts.push(Act::Close(q));
-        let l = self.socks.get_mut(&id).unwrap();
-        l.reported &= !FD_ACCEPT;
+        if let Some(l) = self.socks.get_mut(&id) {
+            l.reported &= !FD_ACCEPT;
+        }
         self.touch();
         self.refresh(id, acts);
         self.refresh(aid, acts);
@@ -822,8 +876,17 @@ fn scatter(bufs: &[(u32, u32)], mut data: &[u8]) {
 }
 
 /// WSABUF array { ULONG len; CHAR *buf }
+/// (a count past MAX_BUFS, or an array outside the guest, is taken as none: the call then
+/// fails or sends nothing, not an allocation of the count)
+/// Whether a WSABUF array of `n` at `p` can be read (wsabufs takes it)
+fn bufs_ok(p: u32, n: u32) -> bool {
+    n <= MAX_BUFS && (n == 0 || p != 0 && mem::in_guest(p, n * 2 * ps()))
+}
 fn wsabufs(p: u32, n: u32) -> Vec<(u32, u32)> {
     let k = ps();
+    if !bufs_ok(p, n) {
+        return Vec::new();
+    }
     (0..n).map(|i| (rp(p + 2 * k * i + k), r32(p + 2 * k * i))).collect()
 }
 
@@ -1387,19 +1450,19 @@ fn accept(c: &mut Ctx, wsa: bool) -> u32 {
     let take = |st: &mut State, acts: &mut Vec<Act>| -> Option<Result<u32, u32>> {
         // (closed while waiting: WSAEINTR, as in Windows)
             let Ok(id) = st.id(h) else { return Some(Err(10004)) };
-        let l = st.socks.get_mut(&id).unwrap();
-        if !l.listening {
+        if !st.socks.get(&id)?.listening {
             return Some(Err(WSAEINVAL));
         }
-        let q = l.queue.pop_front()?;
+        let q = st.queued(id, true)?;
+        let l = st.socks.get_mut(&id)?;
         let (nb, notify, mask) = (l.nonblock, l.notify, l.mask);
         l.reported &= !FD_ACCEPT;
-        let s = st.socks.get_mut(&q).unwrap();
+        let s = st.socks.get_mut(&q)?;
         s.nonblock = nb;
         s.notify = notify;
         s.mask = mask;
-        if sa != 0 {
-            let _ = write_sa(sa, lenp, s.peer.as_ref().unwrap());
+        if let (true, Some(peer)) = (sa != 0, s.peer.as_ref()) {
+            let _ = write_sa(sa, lenp, peer);
         }
         st.touch();
         st.refresh(id, acts);
@@ -1411,13 +1474,13 @@ fn accept(c: &mut Ctx, wsa: bool) -> u32 {
         let peek = |st: &mut State, _: &mut Vec<Act>| -> Option<Result<(u32, Addr, Addr), u32>> {
             // (closed while waiting: WSAEINTR, as in Windows)
             let Ok(id) = st.id(h) else { return Some(Err(10004)) };
-            let l = &st.socks[&id];
-            if !l.listening {
+            if !st.socks.get(&id)?.listening {
                 return Some(Err(WSAEINVAL));
             }
-            let q = *l.queue.front()?;
+            let q = st.queued(id, false)?;
             let s = &st.socks[&q];
-            Some(Ok((q, s.peer.clone().unwrap(), s.local.clone().unwrap())))
+            let (Some(peer), Some(local)) = (s.peer.clone(), s.local.clone()) else { return Some(Err(WSAECONNRESET)) };
+            Some(Ok((q, peer, local)))
         };
         let got = if nonblock { with(peek).unwrap_or(Err(WSAEWOULDBLOCK)) } else { block(Some(c), u32::MAX, peek).unwrap() };
         let (q, peer, local) = match got {
@@ -1447,8 +1510,8 @@ fn accept(c: &mut Ctx, wsa: bool) -> u32 {
             // CF_REJECT (or anything else): the connection is refused
             _ => {
                 with(|st, _| {
-                    if let Ok(id) = st.id(h) {
-                        st.socks.get_mut(&id).unwrap().queue.retain(|&x| x != q);
+                    if let Some(l) = st.id(h).ok().and_then(|id| st.socks.get_mut(&id)) {
+                        l.queue.retain(|&x| x != q);
                     }
                 });
                 close_socket(q);
@@ -1493,7 +1556,7 @@ fn send_data(st: &mut State, id: u32, data: &[u8], to: Option<Addr>, flags: u32,
         let nonblock = s.nonblock;
         let (cap, used) = {
             let o = &st.socks[&p];
-            ((o.rcvbuf.max(8192) + st.socks[&id].sndbuf.max(8192)) as usize, o.rx.len())
+            (pipe_cap(o.rcvbuf, st.socks[&id].sndbuf), o.rx.len())
         };
         let room = cap.saturating_sub(used);
         let n = if room == 0 {
@@ -1590,7 +1653,12 @@ fn send_data(st: &mut State, id: u32, data: &[u8], to: Option<Addr>, flags: u32,
         }
     }
     for t in targets {
-        let o = st.socks.get_mut(&t).unwrap();
+        let Some(o) = st.socks.get_mut(&t) else { continue };
+        // (a full receive buffer: the datagram is lost, as on Windows)
+        let queued: usize = o.dgrams.iter().map(|d| d.1.len()).sum();
+        if !dgram_fits(queued, data.len(), o.rcvbuf) {
+            continue;
+        }
         o.dgrams.push_back((seen_as(&src, o.af), data.to_vec(), seen_as(&dst, o.af)));
         st.serve(t, acts);
         st.refresh(t, acts);
@@ -1599,19 +1667,26 @@ fn send_data(st: &mut State, id: u32, data: &[u8], to: Option<Addr>, flags: u32,
     Ok(data.len() as u32)
 }
 
-fn gather(bufs: &[(u32, u32)]) -> Vec<u8> {
+/// The bytes of the buffers, MAX_SEND at most; WSAEFAULT for a buffer outside the guest
+fn gather(bufs: &[(u32, u32)]) -> Result<Vec<u8>, u32> {
+    let mut left = MAX_SEND;
     let mut v = Vec::new();
     for &(p, n) in bufs {
+        let n = n.min(left);
+        if n != 0 && !mem::in_guest(p, n) {
+            return Err(WSAEFAULT);
+        }
         v.extend_from_slice(mem::slice(p, n));
+        left -= n;
     }
-    v
+    Ok(v)
 }
 
 /// send_data's "the pipe is full, wait for room" (not a Winsock error)
 const SEND_WAIT: u32 = 0xffff_fffe;
 
 fn send_common(mut c: Option<&mut Ctx>, h: u32, bufs: &[(u32, u32)], to: u32, tolen: u32, flags: u32) -> Result<u32, u32> {
-    let data = gather(bufs);
+    let data = gather(bufs)?;
     loop {
         let r = on(h, |st, id, acts| {
             let to = if to != 0 && !st.socks[&id].stream() { Some(read_sa(to, tolen)?) } else { None };
@@ -1704,7 +1779,8 @@ fn wsa_send(c: &mut Ctx, to: bool) -> u32 {
     ov_start(ov);
     let bufs = wsabufs(bp, n);
     let fl = c.a(4);
-    let r = send_common(Some(c), h, &bufs, top, tolen, fl);
+    // (an array that is not there: WSAEFAULT, not a send of nothing)
+    let r = if !bufs_ok(bp, n) { Err(WSAEFAULT) } else { send_common(Some(c), h, &bufs, top, tolen, fl) };
     complete_now(h, ov, routine, r.map(|n| (n, 0)), sentp)
 }
 
@@ -1717,9 +1793,7 @@ fn complete_now(h: u32, ov: u32, routine: u32, r: Result<(u32, u32), u32>, bytes
             if ov != 0 {
                 let p = Pend { kind: PendKind::Forever, ov, routine, tid: crate::cur().tid, handle: h };
                 let mut acts = Vec::new();
-                with(|st, _| {
-                    st.ov_flags.insert(ov, fl);
-                });
+                with(|st, _| st.set_ov_flags(ov, fl));
                 acts.push(Act::Complete(h, ov, 0, n, true));
                 if routine != 0 {
                     acts.push(Act::Apc(p.tid, routine, [0, n, ov, fl]));
@@ -1821,6 +1895,9 @@ fn write_control(m: u32, msgs: &[(u32, u32, Vec<u8>)]) -> bool {
 fn wsa_recv(c: &mut Ctx, from: bool) -> u32 {
     let (h, bp, n, gotp, flp) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let (fromp, lenp, ov, routine) = if from { (c.a(5), c.a(6), c.a(7), c.a(8)) } else { (0, 0, c.a(5), c.a(6)) };
+    if !bufs_ok(bp, n) {
+        return err(WSAEFAULT);
+    }
     recv_ex(c, h, &wsabufs(bp, n), gotp, flp, fromp, lenp, ov, routine, 0)
 }
 
@@ -1894,7 +1971,7 @@ fn recv_ex(c: &mut Ctx, h: u32, bufs: &[(u32, u32)], gotp: u32, flp: u32, fromp:
             let p = Pend { kind: PendKind::Forever, ov, routine, tid, handle: h };
             let fl = if msg != 0 { 0 } else { fl };
             if msg == 0 {
-                with(|st, _| st.ov_flags.insert(ov, fl));
+                with(|st, _| st.set_ov_flags(ov, fl));
             }
             finish(&p, STATUS_BUFFER_OVERFLOW, n, fl, &mut acts);
             run(acts);
@@ -1956,7 +2033,9 @@ pub fn cancel(h: u32, ov: u32, mine: bool) -> bool {
                 i += 1;
             }
         }
-        st.touch();
+        if found {
+            st.touch();
+        }
         found
     })
 }
@@ -2048,7 +2127,12 @@ fn select(c: &mut Ctx) -> u32 {
             return err(WSAEINVAL);
         }
         let ms = r32(tv).saturating_mul(1000).saturating_add(r32(tv + 4) / 1000);
-        std::thread::sleep(Duration::from_millis(ms.min(60_000) as u64));
+        // (a frame sleep of ported code: in slices, so a save state's pause parks the thread)
+        let end = std::time::Instant::now() + Duration::from_millis(ms.min(60_000) as u64);
+        while let Some(d) = end.checked_duration_since(std::time::Instant::now()).filter(|d| !d.is_zero()) {
+            kura::snap::sleep(d.min(Duration::from_millis(50)));
+            crate::snap::point();
+        }
         return err(WSAEINVAL);
     }
     let bad = with(|st, _| r.iter().chain(&w).chain(&e).any(|h| st.id(*h).is_err()));
@@ -2129,6 +2213,9 @@ fn WSAPoll(c: &mut Ctx) -> u32 {
     }
     let k = ps();
     let size = 2 * k;
+    if n > MAX_BUFS || !mem::in_guest(fds, n * size) {
+        return err(WSAEFAULT);
+    }
     let ents: Vec<(u32, u16)> = (0..n).map(|i| (rp(fds + size * i), r16(fds + size * i + k))).collect();
     if ents.iter().any(|e| e.1 & !0x0337 != 0) {
         return err(WSAEINVAL);
@@ -2395,10 +2482,19 @@ fn ioctlsocket(c: &mut Ctx) -> u32 {
             FIONREAD | SIOCATMARK => ioctl(st, id, h, code, 0, 0, p, 4, 0),
             _ => Err(WSAEINVAL),
         };
-        st.touch();
+        // (a query changes nothing: no wakeup of every waiting thread, per frame per socket)
+        if code == FIONBIO {
+            st.touch();
+        }
         st.refresh(id, acts);
         r.map(|_| 0)
     }))
+}
+
+/// WSAIoctl codes that only read (FIONREAD, SIOCATMARK, the extension functions, address and
+/// interface lists, the base handles): they wake nobody
+pub(crate) fn query_only(code: u32) -> bool {
+    matches!(code, FIONREAD | SIOCATMARK | 0xc8000006 | 0x48000016 | 0x4004747b | 0x48000022 | 0x4800001b | 0x4800001c | 0x4800001d)
 }
 
 /// WSAIoctl(s, code, in, inlen, out, outlen, &returned, ov, routine)
@@ -2428,11 +2524,12 @@ fn WSAIoctl(c: &mut Ctx) -> u32 {
         // SIO_ADDRESS_LIST_CHANGE: pending until cancelled (no change ever comes)
         ov_start(ov);
         return with(|st, _| {
-            let id = st.id(h).unwrap();
+            // (closed on another thread since is_socket)
+            let Some(s) = st.id(h).ok().and_then(|id| st.socks.get_mut(&id)) else { return err(WSAENOTSOCK) };
             let k = ps();
             wp(ov, STATUS_PENDING);
             wp(ov + k, 0);
-            st.socks.get_mut(&id).unwrap().pend.push(Pend { kind: PendKind::Forever, ov, routine, tid, handle: h });
+            s.pend.push(Pend { kind: PendKind::Forever, ov, routine, tid, handle: h });
             st.touch();
             err(WSA_IO_PENDING)
         });
@@ -2442,7 +2539,9 @@ fn WSAIoctl(c: &mut Ctx) -> u32 {
     } else {
         on(h, |st, id, acts| {
             let r = ioctl(st, id, h, code, inp, inlen, out, outlen, retp);
-            st.touch();
+            if !query_only(code) {
+                st.touch();
+            }
             st.refresh(id, acts);
             r
         })
@@ -2888,7 +2987,9 @@ fn setsockopt(c: &mut Ctx) -> u32 {
             }
             _ => Err(WSAEINVAL),
         };
-        st.touch();
+        if r.is_ok() {
+            st.touch();
+        }
         st.refresh(id, acts);
         r
     }))
@@ -3077,46 +3178,51 @@ fn TransmitFile(c: &mut Ctx) -> u32 {
     let (h, file, n, ov, tb) = (c.a(0), c.a(1), c.a(2), c.a(4), c.a(5));
     ov_start(ov);
     let k = ps();
-    let mut data = Vec::new();
-    if tb != 0 {
-        let (p, l) = (rp(tb), r32(tb + k));
-        if p != 0 {
-            data.extend_from_slice(mem::slice(p, l));
-        }
-    }
-    if file != 0 {
-        let Some(f) = obj::file(file) else {
-            last(WSAEINVAL);
-            return 0;
-        };
-        if ov != 0 {
-            f.seek(std::io::SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
-        }
-        let want = if n == 0 { u32::MAX } else { n };
-        let tmp = mem::heap_alloc(65536, false);
-        let mut left = want;
-        while left > 0 {
-            let got = f.read_into(tmp, left.min(65536));
-            if got == 0 {
-                break;
-            }
-            data.extend_from_slice(mem::slice(tmp, got));
-            left -= got;
-        }
-        mem::heap_free(tmp);
-    }
-    if tb != 0 {
-        let (p, l) = (rp(tb + 2 * k), r32(tb + 3 * k));
-        if p != 0 {
-            data.extend_from_slice(mem::slice(p, l));
-        }
-    }
-    let r = on(h, |st, id, acts| {
-        if !st.socks[&id].stream() {
+    // (sent piece by piece as it is read, as sends that wait for room: the file is not read
+    // whole into memory first)
+    let r = (|| -> Result<u32, u32> {
+        if !on(h, |st, id, _| Ok(st.socks[&id].stream()))? {
             return Err(WSAENOTCONN);
         }
-        send_data(st, id, &data, None, 0, acts)
-    });
+        let mut sent = 0u32;
+        let mut put = |c: &mut Ctx, p: u32, l: u32| -> Result<(), u32> {
+            if p != 0 && l != 0 {
+                sent = sent.saturating_add(send_common(Some(c), h, &[(p, l)], 0, 0, 0)?);
+            }
+            Ok(())
+        };
+        if tb != 0 {
+            put(c, rp(tb), r32(tb + k))?;
+        }
+        if file != 0 {
+            let Some(f) = obj::file(file) else { return Err(WSAEINVAL) };
+            if ov != 0 {
+                f.seek(std::io::SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
+            }
+            let mut left = if n == 0 { u32::MAX } else { n };
+            let tmp = mem::heap_alloc(65536, false);
+            if tmp == 0 {
+                return Err(WSAENOBUFS);
+            }
+            let r: Result<(), u32> = (|| {
+                while left > 0 {
+                    let got = f.read_into(tmp, left.min(65536));
+                    if got == 0 {
+                        break;
+                    }
+                    put(c, tmp, got)?;
+                    left -= got;
+                }
+                Ok(())
+            })();
+            mem::heap_free(tmp);
+            r?;
+        }
+        if tb != 0 {
+            put(c, rp(tb + 2 * k), r32(tb + 3 * k))?;
+        }
+        Ok(sent)
+    })();
     match r {
         Ok(n) => {
             iocp::complete(h, ov, 0, n, true);
@@ -3303,6 +3409,79 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// any two SO_RCVBUF / SO_SNDBUF values: the pipe holds between 16 KB and 8 MB, never
+        /// wraps (two 0x8000_0000s used to sum to 0), and grows with each value
+        #[test]
+        fn pipe_cap_is_bounded(r in any::<u32>(), s in any::<u32>(), d in 0u32..1 << 20) {
+            let c = pipe_cap(r, s);
+            prop_assert!((2 * MIN_BUF as usize..=2 * MAX_BUF as usize).contains(&c));
+            prop_assert!(pipe_cap(r.saturating_add(d), s) >= c);
+        }
+
+        /// datagrams sent to an unread socket: the queue stays within its receive buffer (or
+        /// one datagram), whatever the sizes
+        #[test]
+        fn datagram_queue_is_bounded(rcv in any::<u32>(), sizes in proptest::collection::vec(0usize..70_000, 1..400)) {
+            let mut queued = 0usize;
+            let mut kept = 0;
+            for n in sizes {
+                if dgram_fits(queued, n, rcv) {
+                    queued += n;
+                    kept += 1;
+                }
+            }
+            prop_assert!(kept >= 1);
+            prop_assert!(queued <= buf_size(rcv).max(70_000));
+        }
+    }
+
+    #[test]
+    fn ov_flags_keep_only_nonzero() {
+        let mut st = State::default();
+        for ov in 0..100_000u32 {
+            st.set_ov_flags(ov * 32, 0);
+        }
+        assert!(st.ov_flags.is_empty());
+        st.set_ov_flags(64, 2);
+        assert_eq!(st.ov_flags.get(&64), Some(&2));
+        // (reused for an operation that ended with no flags: 0 again)
+        st.set_ov_flags(64, 0);
+        assert_eq!(st.ov_flags.get(&64), None);
+        for ov in 0..100_000u32 {
+            st.set_ov_flags(ov * 32, 1);
+        }
+        assert!(st.ov_flags.len() <= MAX_OV_FLAGS);
+    }
+
+    #[test]
+    fn queries_wake_nobody() {
+        for c in [FIONREAD, SIOCATMARK, 0xc8000006, 0x48000016] {
+            assert!(query_only(c), "{c:x}");
+        }
+        for c in [FIONBIO, 0x98000004, 0x9800000c, 0x28000017] {
+            assert!(!query_only(c), "{c:x}");
+        }
+    }
+
+    /// A listener whose queued connection was closed through its handle: accept skips it
+    #[test]
+    fn closed_queued_connections_are_skipped() {
+        let mut st = State::default();
+        let mut l = Sock::new(AF_INET, SOCK_STREAM, 6);
+        l.listening = true;
+        l.queue.extend([7, 8, 9]);
+        st.socks.insert(1, l);
+        st.socks.insert(9, Sock::new(AF_INET, SOCK_STREAM, 6));
+        assert_eq!(st.queued(1, false), Some(9));
+        assert_eq!(st.socks[&1].queue.len(), 1);
+        assert_eq!(st.queued(1, true), Some(9));
+        assert_eq!(st.queued(1, true), None);
+        assert_eq!(st.queued(2, true), None);
+    }
+
     #[test]
     fn matching() {
         let any4 = Addr::v4([0; 4], 80);
