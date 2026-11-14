@@ -193,6 +193,62 @@ static void nv12_views(void) {
     ID3D11Texture2D_Release(t);
 }
 
+/* NV12 render targets: R8 (luma) and R8G8 (chroma) views cleared, an even box updated and one
+   copied from another NV12 texture; the bytes back through a staging copy */
+static void nv12_targets(void) {
+    BYTE px[8 * 6], qx[8 * 6], box[4 * 3];
+    for (int i = 0; i < 48; i++) px[i] = i * 5, qx[i] = 200 - i;
+    for (int i = 0; i < 12; i++) box[i] = 0x80 + i;
+    UINT sup = 0;
+    ID3D11Device_CheckFormatSupport(dev, DXGI_FORMAT_NV12, &sup);
+    printf("NV12 render target %d\n", !!(sup & D3D11_FORMAT_SUPPORT_RENDER_TARGET));
+    D3D11_TEXTURE2D_DESC d = { 8, 4, 1, 1, DXGI_FORMAT_NV12, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, 0, 0 };
+    D3D11_SUBRESOURCE_DATA init = { px, 8, 0 }, init2 = { qx, 8, 0 };
+    ID3D11Texture2D *t = NULL, *o = NULL, *s = NULL;
+    printf("  texture: %#lx\n", ID3D11Device_CreateTexture2D(dev, &d, &init, &t));
+    ID3D11Device_CreateTexture2D(dev, &d, &init2, &o);
+    if (!t || !o) return;
+    static const DXGI_FORMAT vf[] = { DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM };
+    ID3D11RenderTargetView *rtv[2] = { NULL, NULL };
+    for (int i = 0; i < 2; i++) {
+        D3D11_RENDER_TARGET_VIEW_DESC v = { vf[i], D3D11_RTV_DIMENSION_TEXTURE2D };
+        printf("  render target view as %d: %#lx\n", vf[i], ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)t, &v, &rtv[i]));
+    }
+    if (rtv[0]) {
+        float c[4] = { 0.5f, 0, 0, 0 };
+        ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv[0], c);
+    }
+    if (rtv[1]) {
+        float c[4] = { 0.25f, 0.75f, 0, 0 };
+        ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv[1], c);
+    }
+    D3D11_BOX b = { 2, 0, 0, 6, 2, 1 };
+    ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)t, 0, &b, box, 4, 0);
+    D3D11_BOX cb = { 0, 2, 0, 2, 4, 1 };
+    ID3D11DeviceContext_CopySubresourceRegion(ctx, (ID3D11Resource *)t, 0, 6, 2, 0, (ID3D11Resource *)o, 0, &cb);
+    d.Usage = D3D11_USAGE_STAGING;
+    d.BindFlags = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Device_CreateTexture2D(dev, &d, NULL, &s);
+    if (s) {
+        ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)s, (ID3D11Resource *)t);
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)s, 0, D3D11_MAP_READ, 0, &m))) {
+            for (int y = 0; y < 6; y++) {
+                printf("  row %d:", y);
+                for (int x = 0; x < 8; x++) printf(" %02x", ((BYTE *)m.pData)[y * m.RowPitch + x]);
+                printf("\n");
+            }
+            ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)s, 0);
+        }
+        ID3D11Texture2D_Release(s);
+    }
+    for (int i = 0; i < 2; i++)
+        if (rtv[i]) ID3D11RenderTargetView_Release(rtv[i]);
+    ID3D11Texture2D_Release(o);
+    ID3D11Texture2D_Release(t);
+}
+
 static void reader(const WCHAR *path, const GUID *sub, const char *name) {
     UINT token = 0;
     IMFDXGIDeviceManager *m = NULL;
@@ -300,6 +356,7 @@ int main(void) {
     WriteFile(f, file_wmv, sizeof file_wmv, &w, NULL);
     CloseHandle(f);
     nv12_views();
+    nv12_targets();
     reader(path, &MFVideoFormat_RGB32, "RGB32");
     reader(path, &MFVideoFormat_NV12, "NV12");
     DeleteFileW(path);

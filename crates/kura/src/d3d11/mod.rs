@@ -240,6 +240,21 @@ pub struct Texture {
     /// a staging texture made without initial data that nothing wrote on the page yet: zeros
     /// there (a new WebGPU texture), so a subresource's first Map reads nothing back
     pub pristine: bool,
+    /// NV12: its chroma plane's texture (see `Nv12`)
+    pub nv12: Option<Nv12>,
+}
+
+/// An NV12 texture's chroma plane: a texture of its own (w / 2 x h / 2 R8G8, the texture's
+/// layers), held by it; its views of the chroma plane are views of that one, of every kind. The
+/// texture's bytes (`bits`) are what the guest has; the page's luma texture and this one follow
+/// them (`nv12_push`) and, after a draw or clear into either plane (`drawn`), are read back
+/// into them before anything reads or writes the bytes (`nv12_pull`).
+pub struct Nv12 {
+    pub chroma: u32,
+    pub gpu: u32,
+    /// the chroma bytes (every layer's) the chroma texture holds
+    pub last: Vec<u8>,
+    pub drawn: bool,
 }
 
 /// The page's texels are the guest's bytes (read back as they are).
@@ -702,6 +717,9 @@ impl D11 {
                 }
                 if t.gpu != 0 {
                     gpu::record(|q| q.cmd(&[gpu::DESTROY_TEXTURE, t.gpu]));
+                }
+                if let Some(n) = t.nv12 {
+                    self.unbind(n.chroma);
                 }
             }
             Data::View(v) => {
@@ -1326,6 +1344,7 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
         clean: Vec::new(),
         bits: HashMap::new(),
         pristine: false,
+        nv12: None,
     }))
 }
 
@@ -1338,11 +1357,25 @@ unsafe fn upload_texture(t: &mut Texture, sub: u32, mem: usize, pitch: u32, slic
         return;
     }
     let (level, layer, lw, lh, ld) = sub_size(t, sub);
-    // (NV12: whole subresources only, its rows the luma then the chroma ones)
-    if t.fmt == check::NV12 && bx.is_some_and(|b| b[..2] != [0, 0] || b[3] < lw || b[4] < lh) {
+    let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, lw, lh, ld]);
+    // (NV12: a box on even luma texels; `mem` its luma rows, then its chroma rows)
+    if t.fmt == check::NV12 {
+        let (w, h) = (x1.min(lw).saturating_sub(x0), y1.min(lh).saturating_sub(y0));
+        if (x0 | y0 | w | h) % 2 != 0 || w == 0 || h == 0 {
+            return;
+        }
+        nv12_keep(t, sub, mem, pitch, [x0, y0, w, h]);
+        let src = mem as *const u8;
+        let mut out = Vec::with_capacity((w * h) as usize);
+        for y in 0..h {
+            out.extend_from_slice(std::slice::from_raw_parts(src.add((y * pitch) as usize), w as usize));
+        }
+        gpu::record(|q| {
+            let off = q.blob(&out);
+            q.cmd(&[gpu::WRITE_TEXTURE2, t.gpu, level, layer, x0, y0, w, h, w, off]);
+        });
         return;
     }
-    let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, lw, lh, ld]);
     // (2D: one slice, whatever the box's front and back)
     let (z0, z1) = if t.dim == 3 { (z0.min(ld), z1.min(ld)) } else { (0, 1) };
     let Some(f) = format::info(t.fmt) else { return };
@@ -2150,6 +2183,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             }
             let o = new_texture(d, dim, w, h, layers, mips, fmt, usage, bind, misc & 4 != 0, t.samples);
             let id = d.id_of(o);
+            if fmt == check::NV12 {
+                nv12_make(d, id);
+            }
             if let Some(Data::Texture(x)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
                 (x.cpu, x.misc, x.samples) = (t.cpu, misc, (t.samples, t.quality));
                 // (ANGLE makes a staging texture for each upload and maps it once to write)
@@ -2573,17 +2609,16 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
     if out == 0 {
         return S_FALSE;
     }
-    // NV12's chroma plane (an R8G8 view): a texture of its own, w / 2 x h / 2, copied from the
-    // texture's bytes when they change (as a buffer view's)
-    if r.fmt == check::NV12 && matches!(v.fmt, 49 | 50) {
-        let (w, h, layers) = (t.w, t.h, t.layers);
-        let tex = new_texture(d, 2, w / 2, h / 2, layers, 1, v.fmt, 0, 8, false, 1);
-        let tid = d.id_of(tex);
-        d.bind(tid);
-        d.release(tid);
+    // NV12's chroma plane (an R8G8 view of any kind): a view of its texture (see `Nv12`)
+    let chroma = match &t.nv12 {
+        Some(n) if v.fmt == 49 => Some(n.chroma),
+        _ => None,
+    };
+    if let Some(cid) = chroma {
+        d.bind(cid);
         d.bind(rid);
         let buf = Some(BufSrc { buf: rid, off: 0, bytes: 0, last: Vec::new() });
-        let o = d.new_obj(IF_SRV, Data::View(View { res: tid, buf, ..v }));
+        let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::View(View { res: cid, buf, ..v }));
         wrp(out, 0, o);
         return S_OK;
     }
@@ -2613,12 +2648,34 @@ unsafe fn create_buffer_srv(d: &mut D11, rid: u32, bv: check::BufView, out: u32)
     S_OK
 }
 
-/// An NV12 texture's chroma view (see create_view): its texture brought up to date with the
-/// chroma rows of the texture's bytes, every layer.
+/// An NV12 texture's chroma view (see create_view): the planes brought up to date.
 fn nv12_view_sync(d: &mut D11, view: u32) {
     let Some(Data::View(v)) = d.objs.get(&view).map(|o| &o.data) else { return };
-    let (Some(b), res) = (&v.buf, v.res) else { return };
-    let Some(Data::Texture(t)) = d.objs.get(&b.buf).map(|o| &o.data) else { return };
+    let Some(b) = &v.buf else { return };
+    let id = b.buf;
+    unsafe { nv12_pull(d, id) };
+    nv12_push(d, id);
+}
+
+/// NV12 texture `id`'s chroma texture (see `Nv12`), made with it.
+unsafe fn nv12_make(d: &mut D11, id: u32) {
+    let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return };
+    let (w, h, layers, bind) = (t.w, t.h, t.layers, t.bind & (0x08 | 0x20 | 0x80));
+    let tex = new_texture(d, 2, w / 2, h / 2, layers, 1, 49, 0, bind | 0x08, false, 1);
+    let cid = d.id_of(tex);
+    d.bind(cid);
+    d.release(cid);
+    let gpu = match d.objs.get(&cid).map(|o| &o.data) {
+        Some(Data::Texture(c)) => c.gpu,
+        _ => 0,
+    };
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        t.nv12 = Some(Nv12 { chroma: cid, gpu, last: Vec::new(), drawn: false });
+    }
+}
+
+/// The chroma bytes of every layer of an NV12 texture's bytes (rows of its pitch).
+fn nv12_chroma_bytes(t: &Texture) -> Vec<u8> {
     let (pitch, rows) = format::pitch_rows(t.fmt, t.w, t.h);
     let luma = (pitch * t.h) as usize;
     let chroma = (pitch * (rows - t.h)) as usize;
@@ -2629,20 +2686,123 @@ fn nv12_view_sync(d: &mut D11, view: u32) {
             now[l as usize * chroma..l as usize * chroma + n].copy_from_slice(&bits[luma..luma + n]);
         }
     }
-    if now == b.last {
+    now
+}
+
+/// The chroma texture of NV12 texture `id` brought up to date with its bytes.
+fn nv12_push(d: &mut D11, id: u32) {
+    let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return };
+    let Some(n) = &t.nv12 else { return };
+    let now = nv12_chroma_bytes(t);
+    if now == n.last {
         return;
     }
-    let layers = t.layers;
-    if let Some(Data::Texture(x)) = d.objs.get_mut(&res).map(|o| &mut o.data) {
+    let (pitch, layers, cid) = (format::pitch_rows(t.fmt, t.w, t.h).0, t.layers, n.chroma);
+    let chroma = now.len() / layers.max(1) as usize;
+    if let Some(Data::Texture(x)) = d.objs.get_mut(&cid).map(|o| &mut o.data) {
         for l in 0..layers {
             unsafe { upload_texture(x, l, now.as_ptr() as usize + l as usize * chroma, pitch, 0, None) };
         }
     }
-    if let Some(Data::View(v)) = d.objs.get_mut(&view).map(|o| &mut o.data) {
-        if let Some(b) = v.buf.as_mut() {
-            b.last = now;
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        if let Some(n) = t.nv12.as_mut() {
+            n.last = now;
         }
     }
+}
+
+/// After a draw or clear into a plane of NV12 texture `id`: both planes read back into its
+/// bytes (the page's are what the guest sees).
+unsafe fn nv12_pull(d: &mut D11, id: u32) {
+    let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return };
+    let Some(n) = t.nv12.as_ref().filter(|n| n.drawn) else { return };
+    let (w, h, layers, luma_gpu, chroma_gpu) = (t.w, t.h, t.layers, t.gpu, n.gpu);
+    let (pitch, rows) = format::pitch_rows(t.fmt, w, h);
+    let size = pitch * rows;
+    let tmp = ((*d.calls).alloc)(size.max(16)) as u32;
+    if tmp == 0 {
+        return;
+    }
+    let mut got = Vec::new();
+    for l in 0..layers {
+        std::ptr::write_bytes(tmp as *mut u8, 0, size as usize);
+        let mut reqs = Vec::new();
+        for (g, gw, gh, at) in [(luma_gpu, w, h, tmp), (chroma_gpu, w / 2, h / 2, tmp + pitch * h)] {
+            d.next_gpu += 1;
+            let req = 0x4000_0000 | d.next_gpu;
+            let c = [gpu::READBACK, req, g, l << 16, 0, 0, gw, gh, at, pitch];
+            gpu::record(|q| q.cmd(&c));
+            reqs.push(req);
+        }
+        for req in reqs {
+            gpu::wait_readback(req);
+        }
+        got.push(std::slice::from_raw_parts(tmp as *const u8, size as usize).to_vec());
+    }
+    ((*d.calls).free)(tmp as *mut u8);
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        for (l, b) in got.into_iter().enumerate() {
+            t.bits.insert(l as u32, b);
+        }
+        let now = nv12_chroma_bytes(t);
+        if let Some(n) = t.nv12.as_mut() {
+            n.last = now;
+            n.drawn = false;
+        }
+    }
+}
+
+/// A view a draw, dispatch or clear writes: if of an NV12 texture's plane, the planes brought
+/// up to date with its bytes first, then marked drawn (`nv12_pull`).
+fn nv12_target(d: &mut D11, view: u32) {
+    let Some(Data::View(v)) = d.objs.get(&view).map(|o| &o.data) else { return };
+    let id = match (&v.buf, d.objs.get(&v.res).map(|o| &o.data)) {
+        (Some(b), _) => b.buf,
+        (None, Some(Data::Texture(t))) if t.nv12.is_some() => v.res,
+        _ => return,
+    };
+    if !matches!(d.objs.get(&id).map(|o| &o.data), Some(Data::Texture(t)) if t.nv12.is_some()) {
+        return;
+    }
+    nv12_push(d, id);
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        if let Some(n) = t.nv12.as_mut() {
+            n.drawn = true;
+        }
+    }
+}
+
+/// Keeps a box (x, y, width, height on luma texels, even) of NV12 bytes into subresource `sub`:
+/// `mem` the box's luma rows, then its chroma rows (`pitch` apart).
+unsafe fn nv12_keep(t: &mut Texture, sub: u32, mem: usize, pitch: u32, [x0, y0, w, h]: [u32; 4]) {
+    let (gp, rows) = format::pitch_rows(t.fmt, t.w, t.h);
+    let lh = t.h;
+    let keep = t.bits.entry(sub).or_insert_with(|| vec![0; (gp * rows) as usize]);
+    for r in 0..h {
+        let at = ((y0 + r) * gp + x0) as usize;
+        keep[at..at + w as usize].copy_from_slice(std::slice::from_raw_parts((mem + (r * pitch) as usize) as *const u8, w as usize));
+    }
+    for r in 0..h / 2 {
+        let at = ((lh + y0 / 2 + r) * gp + x0) as usize;
+        keep[at..at + w as usize].copy_from_slice(std::slice::from_raw_parts((mem + ((h + r) * pitch) as usize) as *const u8, w as usize));
+    }
+}
+
+/// A box of NV12 bytes of subresource `sub` (see `nv12_keep`), rows `w` apart.
+fn nv12_box(t: &Texture, sub: u32, [x0, y0, w, h]: [u32; 4]) -> Vec<u8> {
+    let gp = format::pitch_rows(t.fmt, t.w, t.h).0;
+    let mut out = vec![0u8; (w * (h + h / 2)) as usize];
+    if let Some(b) = t.bits.get(&sub) {
+        for r in 0..h {
+            let at = ((y0 + r) * gp + x0) as usize;
+            out[(r * w) as usize..((r + 1) * w) as usize].copy_from_slice(&b[at..at + w as usize]);
+        }
+        for r in 0..h / 2 {
+            let at = ((t.h + y0 / 2 + r) * gp + x0) as usize;
+            out[((h + r) * w) as usize..((h + r + 1) * w) as usize].copy_from_slice(&b[at..at + w as usize]);
+        }
+    }
+    out
 }
 
 /// A buffer view's texture, brought up to date with its buffer.
@@ -3001,6 +3161,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         50 => {
             // ClearRenderTargetView(view, color)
             let v = d.id_of(a(1));
+            nv12_target(d, v);
             if let Some((tex, level, layer)) = view_target(d, v) {
                 let layers = view_layers(d, v);
                 let mut c = [rd(a(2), 0), rd(a(2), 1), rd(a(2), 2), rd(a(2), 3)];
@@ -3400,6 +3561,8 @@ fn texture_written(d: &mut D11, id: u32) {
 /// hashes as before it, every format, 2D and 3D).
 unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32, pitch: u32, slice: u32) {
     let id = d.id_of(res);
+    // (an NV12 texture drawn into: its bytes from the page first, a box changes only itself)
+    nv12_pull(d, id);
     let usage = match d.objs.get(&id).map(|o| &o.data) {
         Some(Data::Buffer(b)) => b.usage,
         Some(Data::Texture(t)) => t.usage,
@@ -3572,8 +3735,27 @@ unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub:
             return;
         }
     }
-    // (NV12: whole subresources only, as UpdateSubresource)
-    if (fa_nv12 || fb_nv12) && !whole {
+    // NV12 (to NV12: copy_compatible): a box on even luma texels; the luma plane on the page,
+    // both in the bytes (the chroma texture follows them)
+    if fa_nv12 || fb_nv12 {
+        if (x0 | y0 | at[0] | at[1] | w | h) % 2 != 0 {
+            return;
+        }
+        nv12_pull(d, si);
+        nv12_pull(d, di);
+        texture_written(d, di);
+        let Some(Data::Texture(b)) = d.objs.get(&si).map(|o| &o.data) else { return };
+        let bytes = nv12_box(b, ssub, [x0, y0, w, h]);
+        let (ag, bg) = (match d.objs.get(&di).map(|o| &o.data) {
+            Some(Data::Texture(a)) => a.gpu,
+            _ => 0,
+        }, b.gpu);
+        let c = [gpu::COPY, bg, slayer << 16, x0, y0, w, h, ag, dlayer << 16, at[0], at[1], w, h, 0];
+        gpu::record(|q| q.cmd(&c));
+        if let Some(Data::Texture(a)) = d.objs.get_mut(&di).map(|o| &mut o.data) {
+            nv12_keep(a, dsub, bytes.as_ptr() as usize, w, [at[0], at[1], w, h]);
+        }
+        d.targets = None;
         return;
     }
     texture_written(d, di);
@@ -3956,7 +4138,12 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
             eprintln!("d3d11:   vs cb{i}: {}", words(c, 0, 16).join(" "));
         }
     }
-    // targets
+    // targets (NV12 planes among them: see nv12_target)
+    for &v in st.rtvs.iter().chain(&st.uavs[0]) {
+        if v != 0 {
+            nv12_target(d, v);
+        }
+    }
     let mut colors = Vec::new();
     let mut formats = Vec::new();
     for &v in &st.rtvs {
@@ -4316,6 +4503,11 @@ unsafe fn dispatch(d: &mut D11, st: &State, x: u32, y: u32, z: u32) {
     if cs == 0 || x == 0 || y == 0 || z == 0 || x > 65535 || y > 65535 || z > 65535 {
         return;
     }
+    for &v in &st.uavs[1] {
+        if v != 0 {
+            nv12_target(d, v);
+        }
+    }
     let code = match d.objs.get(&cs).map(|o| &o.data) {
         Some(Data::Shader(s)) => s.code.clone(),
         _ => return,
@@ -4324,7 +4516,8 @@ unsafe fn dispatch(d: &mut D11, st: &State, x: u32, y: u32, z: u32) {
     fn tex_of(d: &D11, v: u32) -> Option<(u32, u32, &View)> {
         let Some(Data::View(vv)) = d.objs.get(&v).map(|o| &o.data) else { return None };
         match d.objs.get(&vv.res).map(|o| &o.data) {
-            Some(Data::Texture(t)) if vv.buf.is_none() => Some((t.gpu, t.page, vv)),
+            // (a buffer's view: its own texture is no storage; an NV12 chroma view's is)
+            Some(Data::Texture(t)) if vv.buf.as_ref().is_none_or(|b| matches!(d.objs.get(&b.buf).map(|o| &o.data), Some(Data::Texture(_)))) => Some((t.gpu, t.page, vv)),
             _ => None,
         }
     }

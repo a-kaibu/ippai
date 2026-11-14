@@ -320,6 +320,8 @@ pub(crate) fn clear_texel(format: &str, c: [f32; 4]) -> u64 {
     match format {
         "rgba8unorm" => u(c[0]) | u(c[1]) << 8 | u(c[2]) << 16 | u(c[3]) << 24,
         "bgra8unorm" => u(c[2]) | u(c[1]) << 8 | u(c[0]) << 16 | u(c[3]) << 24,
+        "rg8unorm" => u(c[0]) | u(c[1]) << 8,
+        "r8unorm" => u(c[0]),
         "rgba16float" => h(0) | h(1) << 16 | h(2) << 32 | h(3) << 48,
         "rg16float" => h(0) | h(1) << 16,
         "r16float" => h(0),

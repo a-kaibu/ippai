@@ -836,7 +836,8 @@ fn render_targets_read_back_their_bytes() {
     for f in formats() {
         let Some(c) = check::format(f) else { continue };
         // D3D11_FORMAT_SUPPORT_RENDER_TARGET
-        if !c.0 || c.1 & 0x4000 == 0 {
+        // (NV12: boxes of even texels only, nv12_boxes_and_targets)
+        if !c.0 || c.1 & 0x4000 == 0 || f == check::NV12 {
             continue;
         }
         let i = format::info(f).unwrap();
@@ -933,12 +934,12 @@ fn nv12_planes() {
     let mut rng = Rng(0x0bad_cafe_1234_5678);
     assert_eq!(format::pitch_rows(103, 6, 4), (6, 6));
     assert_eq!(format::texture_bytes(103, 64, 48, 1, 1, 1, 1), 64 * 72);
-    // CheckFormatSupport: 2D, load, sample, CPU lockable; no render target, blending or UAV
+    // CheckFormatSupport: 2D, load, sample, render target (of a plane), CPU lockable
     let sup = check::support(103).unwrap();
     assert_eq!(sup & 0x220, 0x220);
-    assert_eq!(sup & (0x4000 | 0x8000 | 0x200_0000), 0);
+    assert_eq!(sup & 0x4000, 0x4000, "render targets of a plane");
     // refused: odd sizes, mips, a render target, 3D
-    for (s, bind) in [(Shape(2, 5, 4, 1, 1), 8), (Shape(2, 4, 3, 1, 1), 8), (Shape(2, 8, 8, 1, 2), 8), (Shape(2, 8, 8, 1, 1), 0x28), (Shape(3, 8, 8, 2, 1), 8)] {
+    for (s, bind) in [(Shape(2, 5, 4, 1, 1), 8), (Shape(2, 4, 3, 1, 1), 8), (Shape(2, 8, 8, 1, 2), 8), (Shape(3, 8, 8, 2, 1), 8)] {
         assert_eq!(dev.tex_bound(s, 103, bind, None), 0, "{} {}x{}x{} mips {} bind {bind:#x}", s.0, s.1, s.2, s.3, s.4);
     }
     let mut req = 0x5400_0000;
@@ -1000,6 +1001,131 @@ fn nv12_planes() {
         }
         dev.release(st);
         dev.release(t);
+    }
+    dev.done();
+}
+
+/// An NV12 texture's planes as views of every kind: a render target view of either plane
+/// cleared (the page's texels come back into its bytes: Map of a copy), boxes of
+/// UpdateSubresource (luma rows then chroma rows) and CopySubresourceRegion on even texels
+/// (both planes, the rest as it was), in any order with clears between; against a model of the
+/// bytes.
+#[test]
+fn nv12_boxes_and_targets() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let mut rng = Rng(0x5eed_0f_0123_4567);
+    let (w, h) = (16u32, 8u32);
+    let s = Shape(2, w, h, 1, 1);
+    let size = (w * h * 3 / 2) as usize;
+    let data = random_subs(&mut rng, s, 103);
+    let t = dev.tex_bound(s, 103, 0x28, Some(&data));
+    assert_ne!(t, 0, "NV12 render target");
+    let other = dev.tex_bound(s, 103, 8, Some(&random_subs(&mut rng, s, 103)));
+    let mut model = data[0].clone();
+    let st = dev.tex(s, 103, true, None);
+    let read = |dev: &Dev| {
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, st, t]);
+        dev.read(st, s, 103, 0)
+    };
+    let other_bytes = {
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, st, other]);
+        dev.read(st, s, 103, 0)
+    };
+    let rtv = |fmt: u32| {
+        let desc = mem(20);
+        put(desc, &[fmt, 4, 0]);
+        let o = mem(8);
+        put(o, &[0]);
+        assert_eq!(call1(m(IF_DEVICE, 9), &[dev.dev, t, desc, o]), 0, "render target view as {fmt}");
+        rd1(o)
+    };
+    let (luma, chroma) = (rtv(61), rtv(49));
+    // (a view as NV12 itself, or depth: refused)
+    let desc = mem(20);
+    put(desc, &[103, 4, 0]);
+    let o = mem(8);
+    assert_ne!(call1(m(IF_DEVICE, 9), &[dev.dev, t, desc, o]), 0);
+    let mut steps = 0;
+    for round in 0..96u32 {
+        let kind = rng.bytes(1)[0] % 4;
+        match kind {
+            0 => {
+                // clear a plane to a color (8-bit UNORM steps)
+                let (v, is_luma) = if round % 2 == 0 { (luma, true) } else { (chroma, false) };
+                let k = rng.bytes(2);
+                let c = mem(16);
+                put(c, &[(k[0] as f32 / 255.0).to_bits(), (k[1] as f32 / 255.0).to_bits(), 0, 0]);
+                call1(m(IF_CONTEXT, 50), &[dev.ctx, v, c]);
+                if is_luma {
+                    model[..(w * h) as usize].fill(k[0]);
+                } else {
+                    for p in model[(w * h) as usize..].chunks_mut(2) {
+                        p.copy_from_slice(&k);
+                    }
+                }
+            }
+            1 => {
+                // UpdateSubresource of an even box: its luma rows, then its chroma rows
+                let r = rng.bytes(4);
+                let (x0, y0) = (2 * (r[0] as u32 % (w / 2)), 2 * (r[1] as u32 % (h / 2)));
+                let (bw, bh) = (2 * (1 + r[2] as u32 % ((w - x0) / 2)), 2 * (1 + r[3] as u32 % ((h - y0) / 2)));
+                let up = rng.bytes((bw * (bh + bh / 2)) as usize);
+                let p = mem(up.len() as u32);
+                put_bytes(p, &up);
+                let bx = mem(24);
+                put(bx, &[x0, y0, 0, x0 + bw, y0 + bh, 1]);
+                call1(m(IF_CONTEXT, 48), &[dev.ctx, t, 0, bx, p, bw, 0]);
+                for y in 0..bh {
+                    for x in 0..bw {
+                        model[((y0 + y) * w + x0 + x) as usize] = up[(y * bw + x) as usize];
+                    }
+                }
+                for y in 0..bh / 2 {
+                    for x in 0..bw {
+                        model[((h + y0 / 2 + y) * w + x0 + x) as usize] = up[((bh + y) * bw + x) as usize];
+                    }
+                }
+            }
+            2 => {
+                // CopySubresourceRegion of an even box of the other texture
+                let r = rng.bytes(6);
+                let (x0, y0) = (2 * (r[0] as u32 % (w / 2)), 2 * (r[1] as u32 % (h / 2)));
+                let (bw, bh) = (2 * (1 + r[2] as u32 % ((w - x0) / 2)), 2 * (1 + r[3] as u32 % ((h - y0) / 2)));
+                let (ax, ay) = (2 * (r[4] as u32 % ((w - bw) / 2 + 1)), 2 * (r[5] as u32 % ((h - bh) / 2 + 1)));
+                let bx = mem(24);
+                put(bx, &[x0, y0, 0, x0 + bw, y0 + bh, 1]);
+                call1(m(IF_CONTEXT, 46), &[dev.ctx, t, 0, ax, ay, 0, other, 0, bx]);
+                for y in 0..bh {
+                    for x in 0..bw {
+                        model[((ay + y) * w + ax + x) as usize] = other_bytes[((y0 + y) * w + x0 + x) as usize];
+                    }
+                }
+                for y in 0..bh / 2 {
+                    for x in 0..bw {
+                        model[((h + ay / 2 + y) * w + ax + x) as usize] = other_bytes[((h + y0 / 2 + y) * w + x0 + x) as usize];
+                    }
+                }
+            }
+            _ => {
+                // an odd box: nothing
+                let bx = mem(24);
+                put(bx, &[1, 0, 0, 3, 2, 1]);
+                let p = mem(64);
+                call1(m(IF_CONTEXT, 48), &[dev.ctx, t, 0, bx, p, 2, 0]);
+            }
+        }
+        steps += 1;
+        assert_eq!(read(&dev).len(), size);
+        assert_eq!(read(&dev), model, "after step {round}");
+    }
+    assert!(steps == 96);
+    for v in [luma, chroma] {
+        call1(m(IF_RTV, 2), &[v]);
+    }
+    for x in [st, t, other] {
+        dev.release(x);
     }
     dev.done();
 }
