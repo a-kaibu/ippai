@@ -346,7 +346,7 @@ fn D3DXVec2TransformCoord(c: &mut Ctx) -> u32 {
 /// The D3DXVec*Transform*Array forms (out, out stride, in, in stride, matrix, n): `f` maps one
 /// N-float input to the output floats, written at each output stride (bytes between them
 /// untouched, as d3dx9); returns out.
-fn transform_array<const N: usize>(c: &mut Ctx, f: impl Fn([f32; N], &M) -> Vec<f32>) -> u32 {
+fn transform_array<const N: usize, const K: usize>(c: &mut Ctx, f: impl Fn([f32; N], &M) -> [f32; K]) -> u32 {
     let (out, os, inp, is, n) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(5));
     let m = rm(c.a(4));
     for i in 0..n {
@@ -356,16 +356,16 @@ fn transform_array<const N: usize>(c: &mut Ctx, f: impl Fn([f32; N], &M) -> Vec<
     out
 }
 fn D3DXVec3TransformCoordArray(c: &mut Ctx) -> u32 {
-    transform_array::<3>(c, |v, m| coord(v, m).to_vec())
+    transform_array::<3, 3>(c, |v, m| coord(v, m))
 }
 fn D3DXVec3TransformNormalArray(c: &mut Ctx) -> u32 {
-    transform_array::<3>(c, |v, m| transform4([v[0], v[1], v[2], 0.0], m)[..3].to_vec())
+    transform_array::<3, 3>(c, |v, m| { let t = transform4([v[0], v[1], v[2], 0.0], m); [t[0], t[1], t[2]] })
 }
 fn D3DXVec3TransformArray(c: &mut Ctx) -> u32 {
-    transform_array::<3>(c, |v, m| transform4([v[0], v[1], v[2], 1.0], m).to_vec())
+    transform_array::<3, 4>(c, |v, m| transform4([v[0], v[1], v[2], 1.0], m))
 }
 fn D3DXVec2TransformCoordArray(c: &mut Ctx) -> u32 {
-    transform_array::<2>(c, |v, m| coord([v[0], v[1], 0.0], m)[..2].to_vec())
+    transform_array::<2, 2>(c, |v, m| { let t = coord([v[0], v[1], 0.0], m); [t[0], t[1]] })
 }
 fn D3DXVec2TransformNormal(c: &mut Ctx) -> u32 {
     let v: [f32; 2] = rv(c.a(1));
@@ -373,13 +373,13 @@ fn D3DXVec2TransformNormal(c: &mut Ctx) -> u32 {
     c.a(0)
 }
 fn D3DXVec2TransformNormalArray(c: &mut Ctx) -> u32 {
-    transform_array::<2>(c, |v, m| transform4([v[0], v[1], 0.0, 0.0], m)[..2].to_vec())
+    transform_array::<2, 2>(c, |v, m| { let t = transform4([v[0], v[1], 0.0, 0.0], m); [t[0], t[1]] })
 }
 fn D3DXVec2TransformArray(c: &mut Ctx) -> u32 {
-    transform_array::<2>(c, |v, m| transform4([v[0], v[1], 0.0, 1.0], m).to_vec())
+    transform_array::<2, 4>(c, |v, m| transform4([v[0], v[1], 0.0, 1.0], m))
 }
 fn D3DXVec4TransformArray(c: &mut Ctx) -> u32 {
-    transform_array::<4>(c, |v, m| transform4(v, m).to_vec())
+    transform_array::<4, 4>(c, |v, m| transform4(v, m))
 }
 fn world_view_proj(proj: u32, view: u32, world: u32) -> M {
     let mut m = ID;
@@ -474,15 +474,30 @@ fn buf_release(c: &mut Ctx) -> u32 {
 
 /// A new ID3DXBuffer holding `data`.
 pub fn buffer(data: &[u8]) -> u32 {
+    let o = u32::try_from(data.len()).map_or(0, new_buffer);
+    if o != 0 {
+        mem::write(r32(o + 8), data);
+    }
+    o
+}
+
+/// A new ID3DXBuffer of `n` zero bytes, 0 when the guest heap has no room for it.
+fn new_buffer(n: u32) -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| vtable("ID3DXBuffer", &[(qi_no, 12), (add_ref, 4), (buf_release, 4), (buf_pointer, 4), (buf_size, 4)]));
     let o = mem::heap_alloc(16, true);
-    let p = mem::heap_alloc((data.len() as u32).max(4), true);
-    mem::write(p, data);
+    if o == 0 {
+        return 0;
+    }
+    let p = mem::heap_alloc(n.max(4), true);
+    if p == 0 {
+        mem::heap_free(o);
+        return 0;
+    }
     w32(o, vt);
     w32(o + 4, 1);
     w32(o + 8, p);
-    w32(o + 12, data.len() as u32);
+    w32(o + 12, n);
     o
 }
 
@@ -521,9 +536,11 @@ fn D3DXSaveSurfaceToFileInMemory(c: &mut Ctx) -> u32 {
     save_in_memory(c, true)
 }
 
+/// D3DXCreateBuffer(size, &buffer): zeroed; E_OUTOFMEMORY when the guest heap can't hold it.
 fn D3DXCreateBuffer(c: &mut Ctx) -> u32 {
-    mem::putp(c.a(1), buffer(&vec![0; c.a(0) as usize]));
-    0
+    let o = new_buffer(c.a(0));
+    mem::putp(c.a(1), o);
+    if o == 0 { 0x8007000e } else { 0 }
 }
 
 /// D3DXCreateEffect(device, data, length, defines, include, flags, pool, effect, errors) and the
@@ -940,7 +957,7 @@ fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
         return texture_from_dds(c, dev, data, &d, mips, usage, pool, info, out);
     }
     let Some((iw, ih, mut px, ff)) = image_info(data) else {
-        eprintln!("sake: D3DXCreateTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]);
+        log_once(&NOT_DECODED, || eprintln!("sake: D3DXCreateTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]));
         return 0x88760b59;
     };
     write_info(info, iw, ih, ff);
@@ -956,14 +973,7 @@ fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
         0xffff_fffd | 0xffff_fffe => 1,
         v => v,
     };
-    if key != 0 {
-        for p in px.chunks_mut(4) {
-            let argb = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
-            if argb == key {
-                p.copy_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
+    color_key(&mut px, key);
     let pt = mem::heap_alloc(8, true);
     let hr = com_call(c, dev, 23, &[tw, th, if levels == 0xffff_ffff { 0 } else { levels }, usage, fmt, pool, pt, 0]);
     let tex = r32(pt);
@@ -982,23 +992,7 @@ fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
             continue;
         }
         let (pitch, bits) = (r32(lr), r32(lr + 4));
-        for y in 0..lh {
-            let sy = (y as u64 * ih as u64 / lh.max(1) as u64) as u32;
-            for x in 0..lw {
-                let sx = (x as u64 * iw as u64 / lw.max(1) as u64) as u32;
-                let i = 4 * (sy * iw + sx) as usize;
-                let (b, g, r, a) = (px[i], px[i + 1], px[i + 2], px[i + 3]);
-                let f = |v: u8| v as f32 / 255.0;
-                if let Some((v, bpp)) = pack(fmt, [f(r), f(g), f(b), f(a)]) {
-                    let at = bits + y * pitch + x * bpp;
-                    match bpp {
-                        4 => w32(at, v),
-                        2 => mem::w16(at, v as u16),
-                        _ => mem::w8(at, v as u8),
-                    }
-                }
-            }
-        }
+        put_scaled(&px, iw, (0, 0, iw, ih), fmt, lw, lh, bits, pitch);
         com_call(c, tex, 20, &[level]);
     }
     mem::heap_free(desc);
@@ -1077,7 +1071,7 @@ fn cube_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 11]) -> u32 {
     }
     let Some((iw, ih, mut px, ff)) = image_info(data) else {
         mem::heap_free(pt);
-        eprintln!("sake: D3DXCreateCubeTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]);
+        log_once(&NOT_DECODED, || eprintln!("sake: D3DXCreateCubeTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]));
         return 0x88760b59;
     };
     write_info(info, iw, ih, ff);
@@ -1092,45 +1086,29 @@ fn cube_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 11]) -> u32 {
         0xffff_ffff => 0,
         v => v,
     };
-    if key != 0 {
-        for p in px.chunks_mut(4) {
-            if u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == key {
-                p.copy_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
+    color_key(&mut px, key);
     let cube = match make(c, edge, levels, fmt) {
         Ok(t) => t,
         Err(hr) => return hr,
     };
     let n = com_call(c, cube, 13, &[]).max(1);
     let lr = mem::heap_alloc(8, true);
-    for face in 0..6 {
-        for level in 0..n {
-            let e = (edge >> level).max(1);
+    let desc = mem::heap_alloc(32, true);
+    for level in 0..n {
+        // (the level's size as the cube texture has it: GetLevelDesc)
+        w32(desc + 24, (edge >> level).max(1));
+        com_call(c, cube, 17, &[level, desc]);
+        let e = r32(desc + 24);
+        for face in 0..6 {
             if com_call(c, cube, 19, &[face, level, lr, 0, 0]) != 0 {
                 continue;
             }
             let (pitch, bits) = (r32(lr), r32(lr + 4));
-            for y in 0..e {
-                let sy = (y as u64 * ih as u64 / e as u64) as u32;
-                for x in 0..e {
-                    let sx = (x as u64 * iw as u64 / e as u64) as u32;
-                    let i = 4 * (sy * iw + sx) as usize;
-                    let v = |k: usize| px[i + k] as f32 / 255.0;
-                    if let Some((t, bpp)) = pack(fmt, [v(2), v(1), v(0), v(3)]) {
-                        let at = bits + y * pitch + x * bpp;
-                        match bpp {
-                            4 => w32(at, t),
-                            2 => mem::w16(at, t as u16),
-                            _ => mem::w8(at, t as u8),
-                        }
-                    }
-                }
-            }
+            put_scaled(&px, iw, (0, 0, iw, ih), fmt, e, e, bits, pitch);
             com_call(c, cube, 20, &[face, level]);
         }
     }
+    mem::heap_free(desc);
     mem::heap_free(lr);
     mem::putp(out, cube);
     0
@@ -1171,6 +1149,61 @@ fn D3DXCreateCubeTextureFromFileExA(c: &mut Ctx) -> u32 {
 fn D3DXCreateCubeTextureFromFileExW(c: &mut Ctx) -> u32 {
     cube_file(c, true, true)
 }
+/// BGRA texels equal to color `key` (as A8R8G8B8; 0 none) become transparent black.
+fn color_key(px: &mut [u8], key: u32) {
+    if key != 0 {
+        for p in px.chunks_exact_mut(4) {
+            if u32::from_le_bytes([p[0], p[1], p[2], p[3]]) == key {
+                p.copy_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+}
+
+/// The `src` rectangle (left, top, right, bottom) of the BGRA image `px` (`iw` texels a row)
+/// scaled (nearest) to `dw` x `dh` texels of D3DFORMAT `fmt`, written a row at a time at `bits`,
+/// `pitch` bytes apart. A8R8G8B8/X8R8G8B8 are the image's own bytes (rows copied whole at 1:1);
+/// other formats go through `pack`. The source column of each x is worked out once.
+#[allow(clippy::too_many_arguments)]
+fn put_scaled(px: &[u8], iw: u32, src: (u32, u32, u32, u32), fmt: u32, dw: u32, dh: u32, bits: u32, pitch: u32) {
+    let (sl, st, sr, sb) = src;
+    let Some((_, bpp)) = pack(fmt, [0.0; 4]) else { return };
+    if dw == 0 || dh == 0 || sr <= sl || sb <= st {
+        return;
+    }
+    let xs: Vec<usize> = (0..dw as u64).map(|x| 4 * (sl as u64 + x * (sr - sl) as u64 / dw as u64) as usize).collect();
+    let direct = matches!(fmt, 21 | 22);
+    let same = direct && sr - sl == dw;
+    let mut row = vec![0u8; dw as usize * bpp as usize];
+    for y in 0..dh {
+        let sy = st as u64 + y as u64 * (sb - st) as u64 / dh as u64;
+        let line = &px[4 * (sy as usize) * iw as usize..];
+        if same {
+            row.copy_from_slice(&line[4 * sl as usize..][..dw as usize * 4]);
+        } else if direct {
+            for (o, &i) in row.chunks_exact_mut(4).zip(&xs) {
+                o.copy_from_slice(&line[i..i + 4]);
+            }
+        } else {
+            let f = |v: u8| v as f32 / 255.0;
+            for (o, &i) in row.chunks_exact_mut(bpp as usize).zip(&xs) {
+                let p = &line[i..i + 4];
+                let (v, _) = pack(fmt, [f(p[2]), f(p[1]), f(p[0]), f(p[3])]).unwrap();
+                o.copy_from_slice(&v.to_le_bytes()[..bpp as usize]);
+            }
+        }
+        mem::write(bits.wrapping_add(y.wrapping_mul(pitch)), &row);
+    }
+}
+
+/// An image-decode failure is reported once a session (titles retry each frame).
+static NOT_DECODED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn log_once(flag: &std::sync::atomic::AtomicBool, f: impl FnOnce()) {
+    if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        f();
+    }
+}
+
 /// A RECT* as (left, top, right, bottom), or the whole `w` x `h` for NULL.
 fn rect_or(p: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
     if p == 0 {
@@ -1183,8 +1216,8 @@ fn rect_or(p: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
 /// rectangle (scaled, nearest), color key pixels transparent.
 #[allow(clippy::too_many_arguments)]
 fn surface_from(c: &mut Ctx, surf: u32, dst: u32, data: &[u8], src: u32, key: u32, info: u32) -> u32 {
-    let Some((iw, ih, px, ff)) = image_info(data) else {
-        eprintln!("sake: D3DXLoadSurface: image not decoded ({:02x?})", &data[..data.len().min(8)]);
+    let Some((iw, ih, mut px, ff)) = image_info(data) else {
+        log_once(&NOT_DECODED, || eprintln!("sake: D3DXLoadSurface: image not decoded ({:02x?})", &data[..data.len().min(8)]));
         return 0x88760b59;
     };
     write_info(info, iw, ih, ff);
@@ -1197,37 +1230,20 @@ fn surface_from(c: &mut Ctx, surf: u32, dst: u32, data: &[u8], src: u32, key: u3
     if sr <= sl || sb <= st || dr <= dl || db <= dt {
         return 0;
     }
-    let lr = mem::heap_alloc(8, true);
-    let hr = com_call(c, surf, 13, &[lr, dst, 0]);
-    if hr != 0 {
-        mem::heap_free(lr);
-        return hr;
+    // (the rectangle locked is the clamped one the loop writes: the locked bits start at its corner)
+    let lr = mem::heap_alloc(8 + 16, true);
+    let rect = if dst == 0 { 0 } else { lr + 8 };
+    for (k, v) in [dl, dt, dr, db].into_iter().enumerate() {
+        w32(lr + 8 + 4 * k as u32, v);
     }
+    let hr = com_call(c, surf, 13, &[lr, rect, 0]);
     let (pitch, bits) = (r32(lr), r32(lr + 4));
     mem::heap_free(lr);
-    let (dw, dh) = (dr - dl, db - dt);
-    for y in 0..dh {
-        let sy = st + (y as u64 * (sb - st) as u64 / dh as u64) as u32;
-        for x in 0..dw {
-            let sx = sl + (x as u64 * (sr - sl) as u64 / dw as u64) as u32;
-            let i = 4 * (sy * iw + sx) as usize;
-            let (b, g, r, mut a) = (px[i], px[i + 1], px[i + 2], px[i + 3]);
-            if key != 0 && u32::from_le_bytes([b, g, r, a]) == key {
-                a = 0;
-            }
-            let f = |v: u8| v as f32 / 255.0;
-            let (r, g, b) = if a == 0 && key != 0 { (0, 0, 0) } else { (r, g, b) };
-            if let Some((v, bpp)) = pack(fmt, [f(r), f(g), f(b), f(a)]) {
-                // (the locked bits start at the rectangle's corner)
-                let at = bits + y * pitch + x * bpp;
-                match bpp {
-                    4 => w32(at, v),
-                    2 => mem::w16(at, v as u16),
-                    _ => mem::w8(at, v as u8),
-                }
-            }
-        }
+    if hr != 0 {
+        return hr;
     }
+    color_key(&mut px, key);
+    put_scaled(&px, iw, (sl, st, sr, sb), fmt, dr - dl, db - dt, bits, pitch);
     com_call(c, surf, 14, &[]);
     0
 }
@@ -1327,7 +1343,8 @@ fn D3DXAssembleShader(c: &mut Ctx) -> u32 {
             0
         }
         Err(e) => {
-            eprintln!("sake: D3DXAssembleShader: {e}\n{src}");
+            static NOT_ASSEMBLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            log_once(&NOT_ASSEMBLED, || eprintln!("sake: D3DXAssembleShader: {e}\n{src}"));
             if out != 0 {
                 mem::putp(out, 0);
             }
@@ -1387,8 +1404,45 @@ fn unpack(fmt: u32, v: u32) -> Option<[f32; 4]> {
     })
 }
 
+/// `px`, `sw` x `sh` texels of `sfmt` (`sbpp` bytes each, rows packed), scaled (nearest, as
+/// D3DX_FILTER_POINT) to `dw` x `dh` texels of `dfmt`, handed out a row at a time; texels equal to
+/// color `key` (compared as A8R8G8B8; 0 none) become transparent black. The same format without a
+/// key copies texels as they are; the source column of each x is worked out once.
+fn convert_rows(px: &[u8], (sfmt, sbpp, sw, sh): (u32, u32, u32, u32), (dfmt, dbpp, dw, dh): (u32, u32, u32, u32), key: u32, mut put: impl FnMut(u32, &[u8])) {
+    if sw == 0 || sh == 0 || dw == 0 || dh == 0 {
+        return;
+    }
+    let (sb, db) = (sbpp as usize, dbpp as usize);
+    let xs: Vec<usize> = (0..dw as u64).map(|x| sb * (x * sw as u64 / dw as u64) as usize).collect();
+    let raw = sfmt == dfmt && key == 0;
+    let mut row = vec![0u8; dw as usize * db];
+    for y in 0..dh {
+        let sy = (y as u64 * sh as u64 / dh as u64) as usize;
+        let line = &px[sy * sw as usize * sb..][..sw as usize * sb];
+        if raw && sw == dw {
+            row.copy_from_slice(line);
+        } else if raw {
+            for (o, &i) in row.chunks_exact_mut(db).zip(&xs) {
+                o.copy_from_slice(&line[i..i + sb]);
+            }
+        } else {
+            for (o, &i) in row.chunks_exact_mut(db).zip(&xs) {
+                let mut b = [0u8; 4];
+                b[..sb].copy_from_slice(&line[i..i + sb]);
+                let mut v = unpack(sfmt, u32::from_le_bytes(b)).unwrap();
+                if key != 0 && pack(21, v).unwrap().0 == key {
+                    v = [0.0; 4];
+                }
+                o.copy_from_slice(&pack(dfmt, v).unwrap().0.to_le_bytes()[..db]);
+            }
+        }
+        put(y, &row);
+    }
+}
+
 /// `sw` x `sh` texels scaled (nearest, as D3DX_FILTER_POINT) to `dw` x `dh`; texels equal to
 /// color `key` (as A8R8G8B8; 0 none) become transparent black.
+#[cfg(test)]
 fn blit(px: &[[f32; 4]], sw: u32, sh: u32, dw: u32, dh: u32, key: u32) -> Vec<[f32; 4]> {
     let mut out = Vec::with_capacity((dw * dh) as usize);
     for y in 0..dh {
@@ -1441,16 +1495,13 @@ fn D3DXLoadSurfaceFromSurface(c: &mut Ctx) -> u32 {
     }
     let (sw, sh) = (sr - sl, sb - st);
     let (spitch, sbits) = (r32(slr), r32(slr + 4));
-    let mut px = Vec::with_capacity((sw * sh) as usize);
-    for y in 0..sh {
-        for x in 0..sw {
-            let at = sbits + y * spitch + x * sbpp;
-            let v = match sbpp {
-                4 => r32(at),
-                2 => mem::r16(at) as u32,
-                _ => mem::r8(at) as u32,
-            };
-            px.push(unpack(sfmt, v).unwrap());
+    // (the source rows as they are, sbpp bytes a texel)
+    let row = sw as usize * sbpp as usize;
+    let mut px = vec![0u8; row * sh as usize];
+    for (y, r) in px.chunks_exact_mut(row).enumerate() {
+        let at = sbits.wrapping_add((y as u32).wrapping_mul(spitch));
+        if mem::accessible(at, row as u32, false, false) >= row as u32 {
+            r.copy_from_slice(mem::slice(at, row as u32));
         }
     }
     com_call(c, ssurf, 14, &[]);
@@ -1461,18 +1512,7 @@ fn D3DXLoadSurfaceFromSurface(c: &mut Ctx) -> u32 {
     }
     let (dpitch, dbits) = (r32(dlr), r32(dlr + 4));
     let (dw, dh) = (dr - dl, db - dt);
-    let out = blit(&px, sw, sh, dw, dh, key);
-    for y in 0..dh {
-        for x in 0..dw {
-            let (t, _) = pack(dfmt, out[(y * dw + x) as usize]).unwrap();
-            let at = dbits + y * dpitch + x * dbpp;
-            match dbpp {
-                4 => w32(at, t),
-                2 => mem::w16(at, t as u16),
-                _ => mem::w8(at, t as u8),
-            }
-        }
-    }
+    convert_rows(&px, (sfmt, sbpp, sw, sh), (dfmt, dbpp, dw, dh), key, |y, r| mem::write(dbits.wrapping_add(y.wrapping_mul(dpitch)), r));
     com_call(c, dsurf, 14, &[]);
     mem::heap_free(scratch);
     0
@@ -2076,5 +2116,132 @@ mod lifetime_tests {
         assert_eq!(release_count(o), (0, true));
         assert_eq!(release_count(o), (0, false));
         mem::heap_free(o);
+    }
+}
+
+/// Review b05: texture/surface loads write whole rows (A8R8G8B8/X8R8G8B8 as the image's own
+/// bytes, a source column table per level) and surface-to-surface conversion goes row by row
+/// without the 16-byte-a-texel intermediates; both checked against the texel-by-texel forms they
+/// replace. D3DXCreateBuffer refuses a size the guest heap can't hold.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    const FMTS: &[u32] = &[21, 22, 32, 23, 24, 25, 26, 28, 50, 51];
+
+    /// the texel-by-texel load of texture_from/surface_from before the review
+    #[allow(clippy::too_many_arguments)]
+    fn put_scaled_ref(px: &[u8], iw: u32, (sl, st, sr, sb): (u32, u32, u32, u32), fmt: u32, dw: u32, dh: u32, bits: u32, pitch: u32) {
+        for y in 0..dh {
+            let sy = st + (y as u64 * (sb - st) as u64 / dh as u64) as u32;
+            for x in 0..dw {
+                let sx = sl + (x as u64 * (sr - sl) as u64 / dw as u64) as u32;
+                let i = 4 * (sy * iw + sx) as usize;
+                let f = |v: u8| v as f32 / 255.0;
+                if let Some((v, bpp)) = pack(fmt, [f(px[i + 2]), f(px[i + 1]), f(px[i]), f(px[i + 3])]) {
+                    let at = bits + y * pitch + x * bpp;
+                    match bpp {
+                        4 => w32(at, v),
+                        2 => mem::w16(at, v as u16),
+                        _ => mem::w8(at, v as u8),
+                    }
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        /// put_scaled writes exactly what the texel-by-texel load wrote, for every format, size,
+        /// source rectangle and pitch, and nothing in a row's padding
+        #[test]
+        fn rows_are_the_texel_load(k in 0..FMTS.len(), iw in 1u32..12, ih in 1u32..12, r in any::<[u8; 4]>(), dw in 1u32..20, dh in 1u32..20, pad in 0u32..9, seed in any::<u64>()) {
+            let fmt = FMTS[k];
+            let bpp = pack(fmt, [0.0; 4]).unwrap().1;
+            let mut s = seed | 1;
+            let px: Vec<u8> = (0..iw * ih * 4).map(|_| { s ^= s << 13; s ^= s >> 7; s ^= s << 17; s as u8 }).collect();
+            let (a, b) = (r[0] as u32 % iw, r[1] as u32 % iw);
+            let (c, d) = (r[2] as u32 % ih, r[3] as u32 % ih);
+            let src = (a.min(b), c.min(d), a.max(b) + 1, c.max(d) + 1);
+            let pitch = dw * bpp + pad;
+            let _g = enter();
+            let n = pitch * dh;
+            let (m1, m2) = (mem::heap_alloc(n, false), mem::heap_alloc(n, false));
+            mem::fill(m1, n, 0xcd);
+            mem::fill(m2, n, 0xcd);
+            put_scaled(&px, iw, src, fmt, dw, dh, m1, pitch);
+            put_scaled_ref(&px, iw, src, fmt, dw, dh, m2, pitch);
+            let same = mem::slice(m1, n) == mem::slice(m2, n);
+            mem::heap_free(m1);
+            mem::heap_free(m2);
+            prop_assert!(same);
+        }
+
+        /// convert_rows is blit + pack of the unpacked texels (the old D3DXLoadSurfaceFromSurface)
+        /// for every pair of formats, size and color key
+        #[test]
+        fn converted_rows_are_the_blit(k1 in 0..FMTS.len(), k2 in 0..FMTS.len(), sw in 1u32..10, sh in 1u32..10, dw in 1u32..20, dh in 1u32..20, t in prop::collection::vec(any::<u32>(), 100), key_at in any::<prop::sample::Index>(), keyed in any::<bool>()) {
+            let (sfmt, dfmt) = (FMTS[k1], FMTS[k2]);
+            let (sbpp, dbpp) = (pack(sfmt, [0.0; 4]).unwrap().1, pack(dfmt, [0.0; 4]).unwrap().1);
+            // (texels as the source format stores them: its own packing of what it unpacks)
+            let tex: Vec<u32> = t[..(sw * sh) as usize].iter().map(|&v| pack(sfmt, unpack(sfmt, v).unwrap()).unwrap().0).collect();
+            let raw: Vec<u8> = tex.iter().flat_map(|v| v.to_le_bytes()[..sbpp as usize].to_vec()).collect();
+            let key = if keyed { pack(21, unpack(sfmt, tex[key_at.index(tex.len())]).unwrap()).unwrap().0 } else { 0 };
+            let want = blit(&tex.iter().map(|&v| unpack(sfmt, v).unwrap()).collect::<Vec<_>>(), sw, sh, dw, dh, key);
+            let mut got = Vec::new();
+            let mut rows = 0;
+            convert_rows(&raw, (sfmt, sbpp, sw, sh), (dfmt, dbpp, dw, dh), key, |y, r| { assert_eq!(y, rows); rows += 1; got.extend_from_slice(r); });
+            prop_assert_eq!(rows, dh);
+            let want: Vec<u8> = want.iter().flat_map(|v| pack(dfmt, *v).unwrap().0.to_le_bytes()[..dbpp as usize].to_vec()).collect();
+            prop_assert_eq!(got, want);
+        }
+    }
+
+    /// a texture load at the image's own size in A8R8G8B8 is the decoded rows as they are
+    #[test]
+    fn same_size_argb_is_a_row_copy() {
+        let _g = enter();
+        let (iw, ih) = (37, 5);
+        let px: Vec<u8> = (0..iw * ih * 4).map(|i| (i * 7 + 3) as u8).collect();
+        let pitch = iw * 4 + 12;
+        let m = mem::heap_alloc(pitch * ih, true);
+        put_scaled(&px, iw, (0, 0, iw, ih), 21, iw, ih, m, pitch);
+        for y in 0..ih {
+            assert_eq!(mem::slice(m + y * pitch, iw * 4), &px[(y * iw * 4) as usize..][..(iw * 4) as usize]);
+            assert!(mem::slice(m + y * pitch + iw * 4, 12).iter().all(|&b| b == 0));
+        }
+        mem::heap_free(m);
+    }
+
+    /// D3DXCreateBuffer: a size the guest heap can't hold is E_OUTOFMEMORY with no buffer (it
+    /// used to build the bytes on the host first); a small one is zeroed and that long
+    #[test]
+    fn create_buffer_sizes() {
+        let _g = enter();
+        let out = mem::heap_alloc(4, true);
+        w32(out, 0x1234);
+        assert_eq!(call(D3DXCreateBuffer, &[0xffff_fff0, out]), 0x8007000e);
+        assert_eq!(r32(out), 0);
+        assert_eq!(call(D3DXCreateBuffer, &[100, out]), 0);
+        let o = r32(out);
+        assert_eq!(r32(o + 12), 100);
+        assert!(mem::slice(r32(o + 8), 100).iter().all(|&b| b == 0));
+        assert_eq!(release_count(o), (0, true));
+        mem::heap_free(r32(o + 8));
+        mem::heap_free(o);
+        mem::heap_free(out);
+    }
+
+    /// a decode failure is printed once, however often a title retries
+    #[test]
+    fn log_once_once() {
+        let f = std::sync::atomic::AtomicBool::new(false);
+        let mut n = 0;
+        for _ in 0..5 {
+            log_once(&f, || n += 1);
+        }
+        assert_eq!(n, 1);
     }
 }

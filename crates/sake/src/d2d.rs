@@ -1976,12 +1976,14 @@ mod guest_size_tests {
             let data = mem::heap_alloc(64, true);
             let len = pitch as u64 * (h.max(1) as u64 - 1) + w as u64 * 4;
             match pixels(data, pitch, w, h) {
+                // (the 64-byte block is not the end of what is readable: the guest memory after it
+                // is mapped too, so the bound is what mem::accessible answers)
                 Some(s) => {
                     prop_assert!(h > 0 && pitch >= w * 4);
                     prop_assert_eq!(s.len() as u64, len);
-                    prop_assert!(len <= 64);
+                    prop_assert!(len <= 64 || mem::accessible(data, len as u32, false, false) as u64 >= len);
                 }
-                None => prop_assert!(h == 0 || (pitch as u64) < w as u64 * 4 || len > 64),
+                None => prop_assert!(h == 0 || (pitch as u64) < w as u64 * 4 || len > u32::MAX as u64 || (mem::accessible(data, len as u32, false, false) as u64) < len),
             }
             mem::heap_free(data);
         }
