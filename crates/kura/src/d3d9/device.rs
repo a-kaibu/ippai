@@ -361,7 +361,7 @@ pub fn rs_valid(i: u32) -> bool {
 /// (what Windows has in the states no one sets: legacy and unused ones)
 const UNSET: u32 = 0xbaad_cafe;
 
-fn default_state() -> State {
+pub(crate) fn default_state() -> State {
     let mut rs = vec![0u32; 256];
     let f1 = 1.0f32.to_bits();
     for i in [0, 42, 47, 50, 61, 62, 63, 138, 149, 150, 165, 169, 177].into_iter().chain(96..128).chain(210..256) {
@@ -570,7 +570,7 @@ fn f2u(v: f32) -> u32 {
 /// layout, shaders, pipeline, samplers) and their uniform blocks (`Uni`), before it runs: the
 /// calls named here change neither (a value set again, the uniforms' own states, getters,
 /// locks); every other call may (#118). The first is the second too.
-unsafe fn stale(d: &D3d, iface: u32, m: u32, a: &dyn Fn(usize) -> u32) -> (bool, bool) {
+unsafe fn stale(d: &D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usize) -> u32) -> (bool, bool) {
     const BOTH: (bool, bool) = (true, true);
     const UNI: (bool, bool) = (false, true);
     const NONE: (bool, bool) = (false, false);
@@ -581,6 +581,13 @@ unsafe fn stale(d: &D3d, iface: u32, m: u32, a: &dyn Fn(usize) -> u32) -> (bool,
         // (GetDevice and Capture read the device's state, queries none of it: Siglus captures
         // a block around every draw, and each one made the next draw prepare from scratch)
         IF_STATEBLOCK if m == 3 || m == 4 => return NONE,
+        // (an Apply that changes nothing: Siglus applies one around every draw too)
+        IF_STATEBLOCK if m == 5 => {
+            return match (d.dev.as_ref(), d.objs.get(&this).map(|o| &o.data)) {
+                (Some(dev), Some(Data::StateBlock(b))) if dev.recording.is_none() && !super::stateblock::differs(&dev.st, &b.st, &b.mask) => NONE,
+                _ => BOTH,
+            };
+        }
         IF_QUERY => return NONE,
         IF_DEVICE => {}
         _ => return BOTH,
@@ -657,7 +664,7 @@ unsafe fn stale(d: &D3d, iface: u32, m: u32, a: &dyn Fn(usize) -> u32) -> (bool,
 
 pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32, after: &mut After) -> u32 {
     let a = |i: usize| *args.add(i);
-    let (p, u) = stale(d, iface, m, &a);
+    let (p, u) = stale(d, iface, m, this, &a);
     if let Some(dev) = d.dev.as_mut() {
         dev.prep_gen += p as u64;
         dev.uni_gen += u as u64;

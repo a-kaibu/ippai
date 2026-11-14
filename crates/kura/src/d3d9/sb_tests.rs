@@ -508,3 +508,42 @@ fn recorded_blocks_hold_far_constants() {
     call(IF_DEVICE, 2, &[dev]);
     call(IF_D3D9, 2, &[d3d]);
 }
+
+/// An Apply that changes nothing (a block captured from the state the device has: Siglus
+/// around every draw) keeps the draws prepared; one that changes a state does not.
+#[test]
+fn an_apply_that_changes_nothing_keeps_the_preparation() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    let o = mem(4);
+    unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+    let d3d = rd(o, 0);
+    let pp = mem(14);
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+        wr(pp, i as u32, x);
+    }
+    assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
+    let dev = rd(o, 0);
+    let gens = || D3D.lock().unwrap().as_ref().unwrap().dev.as_ref().map(|d| (d.prep_gen, d.uni_gen)).unwrap();
+    for ty in [1, 2, 3] {
+        assert_eq!(call(IF_DEVICE, 59, &[dev, ty, o]), 0);
+        let sb = rd(o, 0);
+        let g0 = gens();
+        for _ in 0..5 {
+            assert_eq!(call(IF_STATEBLOCK, 5, &[sb]), 0);
+        }
+        assert_eq!(gens(), g0, "type {ty}: Apply of the same state");
+        // (CULLMODE 22 and ALPHAREF 24: one of them is in each type)
+        assert_eq!(call(IF_DEVICE, 57, &[dev, 22, 4 - ty]), 0);
+        assert_eq!(call(IF_DEVICE, 57, &[dev, 24, 77 + ty]), 0);
+        let g1 = gens();
+        assert_eq!(call(IF_STATEBLOCK, 5, &[sb]), 0);
+        assert!(gens().0 > g1.0, "type {ty}: Apply that changes a state");
+        call(IF_STATEBLOCK, 2, &[sb]);
+    }
+    call(IF_DEVICE, 2, &[dev]);
+    call(IF_D3D9, 2, &[d3d]);
+}

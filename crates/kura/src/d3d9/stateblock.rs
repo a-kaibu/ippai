@@ -325,6 +325,101 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
     }
 }
 
+/// Whether `copy_masked(dst, src, m)` would change `dst` (an Apply that changes nothing keeps
+/// the draws prepared: Siglus applies a D3DSBT_ALL block around every draw). Floats compare
+/// by value: a NaN counts as a change.
+pub fn differs(dst: &State, src: &State, m: &Mask) -> bool {
+    for (w, &bits) in m.rs.iter().enumerate() {
+        let mut b = bits;
+        while b != 0 {
+            let i = w * 64 + b.trailing_zeros() as usize;
+            b &= b - 1;
+            if let (Some(d), Some(s)) = (dst.rs.get(i), src.rs.get(i)) {
+                if d != s {
+                    return true;
+                }
+            }
+        }
+    }
+    for s in 0..8 {
+        for t in 0..33 {
+            if m.tss[s] >> t & 1 != 0 && dst.tss[s][t] != src.tss[s][t] {
+                return true;
+            }
+        }
+    }
+    for s in 0..SAMPLERS {
+        for t in 0..14 {
+            if m.ss[s] >> t & 1 != 0 && dst.ss[s][t] != src.ss[s][t] {
+                return true;
+            }
+        }
+        if m.textures >> s & 1 != 0 && dst.textures[s] != src.textures[s] {
+            return true;
+        }
+    }
+    for s in 0..16 {
+        if m.streams >> s & 1 != 0 && dst.streams[s] != src.streams[s]
+            || m.freq >> s & 1 != 0 && dst.freq[s] != src.freq[s]
+            || m.vsi >> s & 1 != 0 && dst.vsi[s] != src.vsi[s]
+            || m.psi >> s & 1 != 0 && dst.psi[s] != src.psi[s]
+        {
+            return true;
+        }
+    }
+    if (dst.vsb ^ src.vsb) & m.vsb as u32 != 0 || (dst.psb ^ src.psb) & m.psb as u32 != 0 {
+        return true;
+    }
+    for (i, d) in dst.vsi_more.iter().enumerate().take(src.vsi_more.len()) {
+        if bit(&m.vsi_more, i) && *d != src.vsi_more[i] {
+            return true;
+        }
+    }
+    for (i, d) in dst.vsb_more.iter().enumerate().take(src.vsb_more.len()) {
+        if bit(&m.vsb_more, i) && *d != src.vsb_more[i] {
+            return true;
+        }
+    }
+    if m.indices && dst.indices != src.indices
+        || m.decl && (dst.decl, dst.fvf) != (src.decl, src.fvf)
+        || m.vs && dst.vs != src.vs
+        || m.ps && dst.ps != src.ps
+    {
+        return true;
+    }
+    for (bits, d, s) in [(&m.vsf, &dst.vsf, &src.vsf), (&m.psf, &dst.psf, &src.psf)] {
+        for i in 0..d.len().min(s.len()) {
+            if bit(bits, i) && d[i] != s[i] {
+                return true;
+            }
+        }
+    }
+    if m.every_transform && dst.transforms != src.transforms {
+        return true;
+    }
+    for t in &m.transforms {
+        if dst.transforms.get(t) != src.transforms.get(t) {
+            return true;
+        }
+    }
+    if m.viewport && dst.viewport != src.viewport || m.scissor && dst.scissor != src.scissor || m.material && dst.material != src.material {
+        return true;
+    }
+    for l in &m.lights {
+        if let Some(x) = src.lights.get(l) {
+            if dst.lights.get(l) != Some(x) {
+                return true;
+            }
+        }
+    }
+    for i in 0..6 {
+        if m.clip >> i & 1 != 0 && dst.clip[i] != src.clip[i] {
+            return true;
+        }
+    }
+    m.npatch && dst.npatch != src.npatch
+}
+
 /// A block's own copy: the masked states of `st`, no objects outside the mask (so that the
 /// block binds only what it holds).
 pub fn masked_copy(st: &State, m: &Mask) -> State {
@@ -364,4 +459,113 @@ pub struct Block {
 pub struct Recording {
     pub st: State,
     pub mask: Mask,
+}
+
+#[cfg(test)]
+mod differs_tests {
+    use super::super::device::default_state;
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Every field of two states, bit for bit (the reference `differs` is checked against)
+    fn same(a: &State, b: &State) -> bool {
+        let f4 = |x: &[[f32; 4]], y: &[[f32; 4]]| x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.map(f32::to_bits) == q.map(f32::to_bits));
+        let mut ta: Vec<_> = a.transforms.iter().map(|(k, v)| (*k, v.map(f32::to_bits))).collect();
+        let mut tb: Vec<_> = b.transforms.iter().map(|(k, v)| (*k, v.map(f32::to_bits))).collect();
+        ta.sort_unstable();
+        tb.sort_unstable();
+        let mut la: Vec<_> = a.lights.iter().collect();
+        let mut lb: Vec<_> = b.lights.iter().collect();
+        la.sort_unstable_by_key(|x| *x.0);
+        lb.sort_unstable_by_key(|x| *x.0);
+        a.rs == b.rs && a.tss == b.tss && a.ss == b.ss && a.textures == b.textures && a.streams == b.streams && a.freq == b.freq
+            && (a.indices, a.fvf, a.decl, a.vs, a.ps, a.vsb, a.psb, a.npatch) == (b.indices, b.fvf, b.decl, b.vs, b.ps, b.vsb, b.psb, b.npatch)
+            && f4(&a.vsf, &b.vsf) && f4(&a.psf, &b.psf) && a.vsi == b.vsi && a.psi == b.psi && ta == tb
+            && a.viewport == b.viewport && a.scissor == b.scissor && a.material.map(f32::to_bits) == b.material.map(f32::to_bits)
+            && la == lb && f4(&a.clip, &b.clip) && a.vsi_more == b.vsi_more && a.vsb_more == b.vsb_more
+    }
+
+    /// A change of one field of `st` (field, index, value), the kinds Set* makes
+    fn change(st: &mut State, (f, i, v): (u8, u16, u32)) {
+        let i = i as usize;
+        let x = (v % 5) as f32;
+        match f % 16 {
+            0 => st.rs[i % 256] = v % 4,
+            1 => st.tss[i % 8][i % 33] = v % 4,
+            2 => st.ss[i % SAMPLERS][i % 14] = v % 4,
+            3 => st.textures[i % SAMPLERS] = v % 3,
+            4 => st.streams[i % 16] = (v % 3, v % 2, 0),
+            5 => st.freq[i % 16] = v % 3,
+            6 => (st.indices, st.vs, st.ps) = (v % 2, v % 3, v % 2),
+            7 => (st.decl, st.fvf) = (v % 2, v % 3),
+            8 => {
+                let n = st.vsf.len();
+                st.vsf[i % n][i % 4] = x
+            }
+            9 => {
+                let n = st.psf.len();
+                st.psf[i % n][0] = x
+            }
+            10 => st.vsi[i % 16][0] = x as i32,
+            11 => st.vsb ^= 1 << (i % 16),
+            12 => drop(st.transforms.insert((i % 4) as u32 + 256 * (v % 2), [x; 16])),
+            13 => drop(st.lights.insert((i % 4) as u32, (vec![v as u8; 104], v % 2 == 0))),
+            14 => st.clip[i % 6][0] = x,
+            _ => {
+                if !st.vsi_more.is_empty() {
+                    let (n, k) = (st.vsi_more.len(), st.vsb_more.len());
+                    st.vsi_more[i % n][1] = x as i32;
+                    st.vsb_more[i % k] = v % 2;
+                }
+                (st.viewport[0], st.scissor[1], st.material[2], st.npatch) = (v % 3, v as i32 % 3, x, v % 2);
+            }
+        }
+    }
+
+    proptest! {
+        /// `differs` says whether `copy_masked` would change the state, for random states
+        /// (hardware and software vertex processing) and every kind of mask: ALL, PIXEL,
+        /// VERTEX and recorded ones.
+        #[test]
+        fn differs_is_whether_apply_changes(
+            soft in any::<bool>(),
+            base in prop::collection::vec((any::<u8>(), any::<u16>(), any::<u32>()), 0..20),
+            dst_more in prop::collection::vec((any::<u8>(), any::<u16>(), any::<u32>()), 0..4),
+            src_more in prop::collection::vec((any::<u8>(), any::<u16>(), any::<u32>()), 0..4),
+            kind in 0u8..4,
+            rec in prop::collection::vec((prop::sample::select(vec![44u32, 47, 49, 51, 53, 55, 57, 65, 67, 69, 75, 79, 87, 92, 94, 96, 98, 100, 102, 104, 107, 109, 111, 113]), 0u32..300, 1u32..40), 0..12),
+        ) {
+            let mut st = default_state();
+            if soft {
+                st.vsf.resize(8192, [0.0; 4]);
+                st.vsi_more = vec![[0; 4]; 2048 - 16];
+                st.vsb_more = vec![0; 2048 - 16];
+            }
+            for c in base {
+                change(&mut st, c);
+            }
+            let (mut dst, mut src) = (st.clone(), st);
+            for c in dst_more {
+                change(&mut dst, c);
+            }
+            for c in src_more {
+                change(&mut src, c);
+            }
+            let m = match kind {
+                0 => Mask::all(&src),
+                1 => Mask::pixel(&src),
+                2 => Mask::vertex(&src),
+                _ => {
+                    let mut m = Mask::default();
+                    for (meth, x, n) in rec {
+                        m.record(meth, &|k| [0, x, x % 7, n][k.min(3)]);
+                    }
+                    m
+                }
+            };
+            let mut after = dst.clone();
+            copy_masked(&mut after, &src, &m);
+            prop_assert_eq!(differs(&dst, &src, &m), !same(&after, &dst));
+        }
+    }
 }
