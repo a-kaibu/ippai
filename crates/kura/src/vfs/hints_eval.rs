@@ -83,6 +83,8 @@ struct Variant {
     foresee: bool,
     /// What every start reads, at the first read (hints::boot_chunks).
     boot: bool,
+    /// The foresight's bytes per read at most (0: vfs.rs PREDICT_BYTES).
+    budget: u64,
 }
 
 /// What a game's trees' tables foresee (`masu foresee`), over its files.
@@ -143,7 +145,7 @@ impl Foresight {
 
     /// The chunks (file, chunk) a first read of `files[f]`'s chunk `c` foresees, as vfs.rs
     /// `predicted` would; `scanned`: members (file, start) looked at already.
-    fn hints(&self, files: &[File], f: usize, c: usize, scanned: &mut HashSet<(usize, u64)>) -> Vec<(usize, usize)> {
+    fn hints(&self, files: &[File], f: usize, c: usize, scanned: &mut HashSet<(usize, u64)>, budget: u64) -> Vec<(usize, usize)> {
         let file = &files[f];
         let start: u64 = file.chunks[..c].iter().map(|x| x.1).sum();
         let end = start + file.chunks[c].1;
@@ -212,7 +214,7 @@ impl Foresight {
                     if n > super::SIBLING_MAX || n == 0 {
                         continue;
                     }
-                    if bytes + n > crate::vfs::PREDICT_BYTES {
+                    if bytes + n > budget {
                         return out;
                     }
                     bytes += n;
@@ -253,7 +255,7 @@ fn replay(files: &[File], dirs: &HashMap<String, Vec<usize>>, seq: &[(usize, usi
         }
         // (every read asks the foresight, as kura does: what it reaches names)
         if let Some(fs) = fs.filter(|_| v.foresee) {
-            for k in fs.hints(files, f, c, &mut scanned) {
+            for k in fs.hints(files, f, c, &mut scanned, if v.budget == 0 { crate::vfs::PREDICT_BYTES } else { v.budget }) {
                 if k != (f, c) && have.insert(k) {
                     hinted.insert(k);
                 }
@@ -341,20 +343,23 @@ fn hints_eval() {
         return;
     };
     let variants = [
-        Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX, foresee: false, boot: false },
-        Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false, boot: false },
-        Variant { name: "foresee only", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: true, boot: false },
-        Variant { name: "as is + foresee", pol: policy, whole_max: WHOLE_MAX, foresee: true, boot: false },
-        Variant { name: "as is + boot", pol: policy, whole_max: WHOLE_MAX, foresee: false, boot: true },
-        Variant { name: "as is + foresee + boot", pol: policy, whole_max: WHOLE_MAX, foresee: true, boot: true },
-        Variant { name: "siblings x0", pol: |n| scale(policy(n), 0.0, 1.0), whole_max: WHOLE_MAX, foresee: false, boot: false },
-        Variant { name: "siblings x2", pol: |n| scale(policy(n), 2.0, 1.0), whole_max: WHOLE_MAX, foresee: false, boot: false },
-        Variant { name: "siblings x4", pol: |n| scale(policy(n), 4.0, 1.0), whole_max: WHOLE_MAX, foresee: false, boot: false },
-        Variant { name: "chunks x0", pol: |n| scale(policy(n), 1.0, 0.0), whole_max: WHOLE_MAX, foresee: false, boot: false },
-        Variant { name: "chunks x2", pol: |n| scale(policy(n), 1.0, 2.0), whole_max: WHOLE_MAX, foresee: false, boot: false },
-        Variant { name: "chunks x4", pol: |n| scale(policy(n), 1.0, 4.0), whole_max: WHOLE_MAX, foresee: false, boot: false },
-        Variant { name: "whole 64 MiB", pol: policy, whole_max: 64 << 20, foresee: false, boot: false },
-        Variant { name: "whole none", pol: policy, whole_max: 0, foresee: false, boot: false },
+        Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 },
+        Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false, boot: false, budget: 0 },
+        Variant { name: "foresee only", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: true, boot: false, budget: 0 },
+        Variant { name: "as is + foresee", pol: policy, whole_max: WHOLE_MAX, foresee: true, boot: false, budget: 0 },
+        Variant { name: "as is + boot", pol: policy, whole_max: WHOLE_MAX, foresee: false, boot: true, budget: 0 },
+        Variant { name: "as is + foresee + boot", pol: policy, whole_max: WHOLE_MAX, foresee: true, boot: true, budget: 0 },
+        Variant { name: "as is + foresee 16 MiB + boot", pol: policy, whole_max: WHOLE_MAX, foresee: true, boot: true, budget: 16 << 20 },
+        Variant { name: "as is + foresee 8 MiB + boot", pol: policy, whole_max: WHOLE_MAX, foresee: true, boot: true, budget: 8 << 20 },
+        Variant { name: "as is + foresee 4 MiB + boot", pol: policy, whole_max: WHOLE_MAX, foresee: true, boot: true, budget: 4 << 20 },
+        Variant { name: "siblings x0", pol: |n| scale(policy(n), 0.0, 1.0), whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 },
+        Variant { name: "siblings x2", pol: |n| scale(policy(n), 2.0, 1.0), whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 },
+        Variant { name: "siblings x4", pol: |n| scale(policy(n), 4.0, 1.0), whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 },
+        Variant { name: "chunks x0", pol: |n| scale(policy(n), 1.0, 0.0), whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 },
+        Variant { name: "chunks x2", pol: |n| scale(policy(n), 1.0, 2.0), whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 },
+        Variant { name: "chunks x4", pol: |n| scale(policy(n), 1.0, 4.0), whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 },
+        Variant { name: "whole 64 MiB", pol: policy, whole_max: 64 << 20, foresee: false, boot: false, budget: 0 },
+        Variant { name: "whole none", pol: policy, whole_max: 0, foresee: false, boot: false, budget: 0 },
     ];
     // engine -> variant -> score; and by kind of what was missed with the hints as they are
     let mut by: BTreeMap<String, Vec<Score>> = BTreeMap::new();
@@ -478,8 +483,8 @@ fn replay_counts_what_hints_foresaw() {
         dirs.entry(f.path.rsplit_once('/').map_or("", |d| d.0).to_string()).or_default().push(i);
     }
     let seq: Vec<(usize, usize)> = (0..20).map(|i| (i, 0)).chain((0..3).map(|c| (20, c))).collect();
-    let as_is = Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX, foresee: false, boot: false };
-    let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false, boot: false };
+    let as_is = Variant { name: "as is", pol: policy, whole_max: WHOLE_MAX, foresee: false, boot: false, budget: 0 };
+    let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false, boot: false, budget: 0 };
     let s = replay(&files, &dirs, &seq, &as_is, None);
     // (v000 waits and hints 001..019; the movie's 3 chunks wait)
     assert_eq!((s.reads, s.misses, s.wasted), (23, 4, 0));
@@ -516,8 +521,8 @@ fn replay_counts_what_the_tables_foresaw() {
     let fs = Foresight::new(&files, &[table], &[members]);
     let dirs = HashMap::new();
     let seq = [(0, 0), (0, 1), (1, 0), (2, 0), (3, 0)];
-    let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false, boot: false };
-    let only = Variant { name: "foresee only", pol: none.pol, whole_max: 0, foresee: true, boot: false };
+    let none = Variant { name: "none", pol: |_| Policy { siblings: 0, chunks: 0 }, whole_max: 0, foresee: false, boot: false, budget: 0 };
+    let only = Variant { name: "foresee only", pol: none.pol, whole_max: 0, foresee: true, boot: false, budget: 0 };
     assert_eq!(replay(&files, &dirs, &seq, &none, Some(&fs)).misses, 5, "not asked: as none");
     // (01_start's chunk names bg01a's chunk and v001; v001, read, is followed by v002 and far
     // in 02_next)
@@ -528,7 +533,7 @@ fn replay_counts_what_the_tables_foresaw() {
     assert_eq!((s.misses, s.wasted), (1, 1010));
     assert_eq!(replay(&files, &dirs, &seq, &only, Some(&Foresight::new(&files, &[], &[]))).misses, 5);
     // (the start's hints: the archive's ends at the first read, a voice not)
-    let boot = Variant { name: "boot", pol: none.pol, whole_max: 0, foresee: false, boot: true };
+    let boot = Variant { name: "boot", pol: none.pol, whole_max: 0, foresee: false, boot: true, budget: 0 };
     let s = replay(&files, &dirs, &[(1, 0), (0, 0), (0, 1), (2, 0)], &boot, None);
     assert_eq!((s.misses, s.wasted), (2, 0));
 }
