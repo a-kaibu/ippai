@@ -503,6 +503,36 @@ mod tests {
     }
 
     proptest! {
+        /// Any cut or damage of colors.wmv: opening it as media and decoding its frames never
+        /// panics, and what opens has its samples inside the packed bytes.
+        #[test]
+        fn a_damaged_wmv_never_panics(cut in 0usize..11_000, flips in prop::collection::vec((0usize..11_000, any::<u8>()), 0..8), rgb in any::<bool>()) {
+            let mut b = include_bytes!("testdata/colors.wmv").to_vec();
+            for (o, x) in flips {
+                let n = b.len();
+                b[o % n] ^= x;
+            }
+            b.truncate(cut.min(b.len()));
+            if let Some(m) = source::open_asf(&b) {
+                let packed = m.packed.clone().unwrap();
+                for t in &m.tracks {
+                    if let mp4::Track::Video(v) = t {
+                        for x in &v.samples {
+                            prop_assert!(packed.read(None, x.off, x.size as usize).is_some_and(|r| r.len() == x.size as usize));
+                        }
+                        let mut s = VStream::new(v.clone(), packed.clone());
+                        s.set_out(VOut::Decoded(if rgb { source::RGB32 } else { source::NV12 }));
+                        for _ in 0..40 {
+                            match s.read(None) {
+                                Ok(Some(p)) => prop_assert!(!p.bytes.is_empty()),
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         /// Frames of a WMV wanted in any order (seeks back, jumps over key frames) and as any
         /// 4:2:0 or RGB format: what reading from the start gives.
         #[test]

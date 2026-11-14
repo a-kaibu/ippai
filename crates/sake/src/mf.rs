@@ -1955,6 +1955,7 @@ pub fn init() {
     implement("mfplat", "MFCreateDXGIDeviceManager", MFCreateDXGIDeviceManager);
     session::init();
     topology::init();
+    dxgi::init();
     reader::init();
     plat::init();
     source::init();
@@ -1964,6 +1965,7 @@ mod mp4;
 pub mod movie;
 pub mod session;
 mod topology;
+mod dxgi;
 mod source;
 mod vstream;
 mod plat;

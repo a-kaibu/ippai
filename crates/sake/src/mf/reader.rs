@@ -653,6 +653,9 @@ struct Reader {
     duration: u64,
     source: u32,
     processing: bool,
+    /// MF_SOURCE_READER_D3D_MANAGER: the program's IMFDXGIDeviceManager (a reference), or 0;
+    /// RGB frames are then D3D11 textures (dxgi.rs)
+    d3d: u32,
     /// asynchronous mode: the program's IMFSourceReaderCallback (a reference of the reader's)
     callback: u32,
     /// its requests not yet answered, in order; whether a worker thread answers them now
@@ -1027,7 +1030,7 @@ fn MFCreateMemoryBuffer(c: &mut Ctx) -> u32 {
 
 /// A buffer's bytes (None: not one of ours).
 fn buffer_bytes(b: u32) -> Option<Vec<u8>> {
-    buf(b, |x| mem::slice(x.data, x.len).to_vec())
+    buf(b, |x| mem::slice(x.data, x.len).to_vec()).or_else(|| super::dxgi::cached(b))
 }
 
 // --- samples ------------------------------------------------------------------------------
@@ -1179,7 +1182,7 @@ fn sm_total(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    let n: u32 = sample(c.a(0), |s| s.bufs.clone()).unwrap_or_default().iter().map(|&b| buf(b, |x| x.len).unwrap_or(0)).sum();
+    let n: u32 = sample(c.a(0), |s| s.bufs.clone()).unwrap_or_default().iter().map(|&b| buf(b, |x| x.len).or_else(|| super::dxgi::length(b)).unwrap_or(0)).sum();
     w32(c.a(1), n);
     0
 }
@@ -1237,6 +1240,13 @@ fn new_sample(time: Option<u64>, dur: Option<u64>, bytes: Option<&[u8]>) -> u32 
     b
 }
 
+/// A sample (one reference) of buffer `b` (whose reference it takes).
+fn new_sample_of(time: Option<u64>, dur: Option<u64>, b: u32) -> u32 {
+    let s = new_sample(time, dur, None);
+    sample(s, |x| x.bufs = vec![b]);
+    s
+}
+
 fn MFCreateSample(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 {
         return E_POINTER;
@@ -1286,6 +1296,7 @@ fn sr_release(c: &mut Ctx) -> u32 {
             }
             release(c, r.callback);
             release(c, r.source);
+            release(c, r.d3d);
             drop(r.streams);
             if let Some(d) = r.data {
                 source::release_data(c, d);
@@ -1543,11 +1554,31 @@ fn read_one(c: &mut Ctx, this: u32, i: u32) -> (u32, u32, u32, u64, u32) {
     if !on {
         return (MF_E_INVALIDREQUEST, k as u32, 0, 0, 0);
     }
+    // (RGB frames of a reader with a device: textures)
+    let mut tex = None;
     let got = match kind {
         Kind::Audio(s) => s.lock().unwrap_or_else(|e| e.into_inner()).read_in(Some(c)),
-        Kind::Video(s) => s.lock().unwrap_or_else(|e| e.into_inner()).read(Some(c)),
+        Kind::Video(s) => {
+            let mut v = s.lock().unwrap_or_else(|e| e.into_inner());
+            if let VOut::Decoded(sub) = v.out {
+                tex = super::dxgi::format_of(sub).map(|f| (f, v.v.w, v.v.h));
+            }
+            v.read(Some(c))
+        }
     };
+    let d3d = if tex.is_some() { reader(this, |r| r.d3d).unwrap_or(0) } else { 0 };
     match got {
+        Ok(Some(p)) if d3d != 0 => {
+            let (fmt, w, h) = tex.unwrap();
+            let dev = super::dxgi::manager_device(c, d3d);
+            let b = if dev != 0 { super::dxgi::frame_buffer(c, dev, w, h, fmt, &p.bytes) } else { None };
+            release(c, dev);
+            let s = match b {
+                Some(b) => new_sample_of(Some(p.time), Some(p.dur), b),
+                None => new_sample(Some(p.time), Some(p.dur), Some(&p.bytes)),
+            };
+            (0, k as u32, 0, p.time, s)
+        }
         Ok(Some(p)) => (0, k as u32, 0, p.time, new_sample(Some(p.time), Some(p.dur), Some(&p.bytes))),
         Ok(None) => (0, k as u32, ENDOFSTREAM, dur, 0),
         // MF_SOURCE_READERF_ERROR
@@ -1686,6 +1717,11 @@ fn reader_vtable() -> u32 {
     })
 }
 
+/// MF_SOURCE_READER_D3D_MANAGER {ec822da2-e1e9-4b29-a0d8-563c719f5269}
+fn k_d3d_manager() -> Guid {
+    guid(0xec82_2da2, 0xe1e9, 0x4b29, [0xa0, 0xd8, 0x56, 0x3c, 0x71, 0x9f, 0x52, 0x69])
+}
+
 /// MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING
 fn k_processing() -> [Guid; 2] {
     [
@@ -1704,6 +1740,10 @@ fn new_reader(c: &mut Ctx, attributes: u32, data: Arc<Data>, media: &Media, sour
         _ => 0,
     };
     let processing = at.as_ref().is_some_and(|s| k_processing().iter().any(|k| matches!(s.get(k), Some(Val::U32(v)) if *v != 0)));
+    let d3d = match at.as_ref().and_then(|s| s.get(&k_d3d_manager()).cloned()) {
+        Some(Val::Unk(u)) => u,
+        _ => 0,
+    };
     let selected = source::first_selected(media);
     let mut streams = Vec::new();
     let mut duration = media.duration.unwrap_or(0);
@@ -1730,6 +1770,7 @@ fn new_reader(c: &mut Ctx, attributes: u32, data: Arc<Data>, media: &Media, sour
     let b = object(reader_vtable(), 1);
     add_ref(c, callback);
     add_ref(c, source);
+    add_ref(c, d3d);
     READERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(
         b,
         Reader {
@@ -1739,6 +1780,7 @@ fn new_reader(c: &mut Ctx, attributes: u32, data: Arc<Data>, media: &Media, sour
             duration,
             source,
             processing,
+            d3d,
             callback,
             queue: Default::default(),
             busy: false,
@@ -2254,6 +2296,7 @@ mod tests {
             duration: 0,
             source: 0,
             processing: false,
+            d3d: 0,
             callback: 1,
             queue: Default::default(),
             busy: false,

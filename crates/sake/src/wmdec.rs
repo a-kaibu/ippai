@@ -271,7 +271,7 @@ fn backend(i: &Info) -> Option<Box<dyn Codec>> {
             Some(Box::new(MsMpeg4 { d, last: None }))
         }
         Info::Audio { tag: tag @ (0x160 | 0x161), channels, rate, align, bytes_per_sec, extra, .. } => {
-            let d = wmcodec::wma::Decoder::new(*tag, *channels, *rate, bytes_per_sec * 8, *align, extra).ok()?;
+            let d = wmcodec::wma::Decoder::new(*tag, *channels, *rate, bytes_per_sec.saturating_mul(8), *align, extra).ok()?;
             Some(Box::new(Wma { d, align: *align as usize, end: 0 }))
         }
         _ => None,
