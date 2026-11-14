@@ -526,6 +526,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     let rect = 0;
     let observer: ResizeObserver | undefined;
     let timer: ReturnType<typeof setInterval> | undefined;
+    let stopWatch: (() => void) | undefined;
     const settle = () => {
       if (!settled) {
         settled = true;
@@ -537,6 +538,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       finished = true;
       clearInterval(timer);
       observer?.disconnect();
+      stopWatch?.();
       // onExit/onAbort run after Emscripten has stopped guest calls. Calling
       // _free here would abort again and recursively enter this callback.
       rect = 0;
@@ -549,15 +551,34 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       }
       if (rootExited && !childProcesses.size && !pendingChildren) exited = true;
     };
+    const failed = () => {
+      settle();
+      finish();
+      toast.error("プログラムを起動できませんでした。");
+    };
+    // (a second or third 4 GB memory is what a phone refuses: then the module makes its own, or
+    // its start fails through the catch below; a throw here used to escape spawn with
+    // pendingChildren up for good, and the page never went back to the list)
+    let memory: WebAssembly.Memory | undefined;
+    if (build.memory)
+      try {
+        memory = new WebAssembly.Memory({ initial: 65535, maximum: 65535, shared: true });
+      } catch (e) {
+        recorder?.note(`spawn: no 4 GB memory for the child (${String(e)})`);
+      }
+    let offscreen: OffscreenCanvas;
+    try {
+      offscreen = surface.transferControlToOffscreen();
+    } catch {
+      return failed();
+    }
     void factory({
       ...moduleArg,
       arguments: [request.exe],
       vnvmKernel: kernel,
       vnvmFs: sharedFs,
-      vnvmCanvas: surface.transferControlToOffscreen(),
-      wasmMemory: build.memory
-        ? new WebAssembly.Memory({ initial: 65535, maximum: 65535, shared: true })
-        : undefined,
+      vnvmCanvas: offscreen,
+      wasmMemory: memory,
       vnvmEnv: { ...moduleArg.vnvmEnv, SAKE_PID: String(request.pid) },
       onExit: finish,
       onAbort: () => {
@@ -599,7 +620,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
           observer = new ResizeObserver(resize);
           observer.observe(canvas);
           module._vnhost_render_start();
-          watch(
+          stopWatch = watch(
             module,
             () => activeModule === module,
             () => !finished,
@@ -607,11 +628,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
           void audio.then((out) => out.attach(module));
         }, 100);
       })
-      .catch(() => {
-        settle();
-        finish();
-        toast.error("プログラムを起動できませんでした。");
-      });
+      .catch(failed);
   }
   log(`${run} を起動中`);
   const sake = await factory(moduleArg);
@@ -642,7 +659,11 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   }
   if (!nosave && params.get("game")) stopPlay = trackPlay(params.get("game")!);
   recorder.attach(sake);
-  if (!nosave) saveNow = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved);
+  if (!nosave) {
+    // (the game quits: the upload tried now, even in the pause after a failed one)
+    const save = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved);
+    saveNow = () => save(true);
+  }
   // for tests/play.mjs (headless Chromium can't present WebGPU canvases)
   (window as unknown as { vnvmSake: SakeModule }).vnvmSake = activeModule;
   // (tests: &grow=<MiB> takes that much of sake's memory at once while the game runs, so that
@@ -991,18 +1012,24 @@ function readAhead(
   };
 }
 
-/** With the module drawing: the page's events for its frames (vnvm-frame), and the exit. */
-function watch(sake: SakeModule, active: () => boolean = () => true, live: () => boolean = () => true): void {
+/** With the module drawing: the page's events for its frames (vnvm-frame), and the exit.
+ * Returns what stops its decoders (a child process that ended: play.ts spawn's finish). */
+function watch(
+  sake: SakeModule,
+  active: () => boolean = () => true,
+  live: () => boolean = () => true,
+): () => void {
   const info = sake._malloc(32) >>> 0;
   let serial = 0;
+  const note = (l: string) => (console.log(l), recorder?.note(l));
   // Siglus movies: decoded here for the guest (web/src/video.ts)
-  const video =
-    typeof VideoDecoder !== "undefined" ? new Video(sake, (l) => (console.log(l), recorder?.note(l))) : null;
+  const video = typeof VideoDecoder !== "undefined" ? new Video(sake, note) : null;
   // sound in codecs sake has no decoder of its own for (MP3 through msacm32: web/src/adec.ts)
-  if (typeof AudioDecoder !== "undefined") new AudioDecode(sake, (l) => (console.log(l), recorder?.note(l)));
+  const adec = typeof AudioDecoder !== "undefined" ? new AudioDecode(sake, note) : null;
   // JPEG pictures of WIC / GDI+ / D3DX / OLE: the browser's decoder (web/src/idec.ts)
-  if (typeof ImageDecoder !== "undefined" && globalThis.crypto?.subtle)
-    new ImageDecode(sake, (l) => (console.log(l), recorder?.note(l)));
+  const idec =
+    typeof ImageDecoder !== "undefined" && globalThis.crypto?.subtle ? new ImageDecode(sake, note) : null;
+  let videoErrors = 0;
   // the drawing's WebGPU device lost and made again, or not (host/vngpu.js)
   let lost = 0;
   const frame = () => {
@@ -1025,7 +1052,12 @@ function watch(sake: SakeModule, active: () => boolean = () => true, live: () =>
         else toast(n.text);
       }
     }
-    video?.tick();
+    // (a throw here used to end this frame loop for good: no more frames, the exit unseen)
+    try {
+      video?.tick();
+    } catch (e) {
+      if (++videoErrors <= 5) note(`video: ${String(e)}`);
+    }
     sake._vnhost_render_info(info);
     const [s, bits, width, height] = Array.from(new Uint32Array(sake.wasmMemory.buffer, info, 4));
     if (active() && s !== serial && width && height) {
@@ -1037,6 +1069,11 @@ function watch(sake: SakeModule, active: () => boolean = () => true, live: () =>
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
+  return () => {
+    video?.stop();
+    adec?.stop();
+    idec?.stop();
+  };
 }
 
 /** Where the pointer last was on the canvas (canvas pixels): 自動送り's clicks go there. */
@@ -1268,7 +1305,12 @@ let exited = false;
 /** The program the game started in its own place (a launcher's game), run when it exits. */
 let nextRun: { run: string; args: string } | undefined;
 
+let closing = false;
 function closeGame(): void {
+  // (once: every process's frame loop still scheduled calls it, and a second wrapUp and leave
+  // went back twice, out of the app)
+  if (closing) return;
+  closing = true;
   auto?.stop();
   setUi({ auto: null });
   if (nextRun) {

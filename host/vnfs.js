@@ -16,8 +16,12 @@ addToLibrary({
     const h = vnfsSharedH();
     // (off until the first child process: a single process keeps its own file system)
     if (!h || !Atomics.load(h, 3)) return 0;
-    while (Atomics.compareExchange(h, 0, 0, 1) !== 0) {
-      if (ENVIRONMENT_IS_PTHREAD) Atomics.wait(h, 0, 1);
+    // (the lock word holds its holder's process id, not 1: a process that ends holding it,
+    // a crash in the middle, has it released for the others, host/pre.js `exited`)
+    const me = vnvmPid || 0x10;
+    let c;
+    while ((c = Atomics.compareExchange(h, 0, 0, me)) !== 0) {
+      if (ENVIRONMENT_IS_PTHREAD) Atomics.wait(h, 0, c);
       // The page's export can only wait for a short in-memory transaction;
       // tree loading and network reads happen outside this lock.
     }

@@ -14,7 +14,8 @@ import {
   fetchRetry,
   getChunk,
   HttpError,
-  keepChunk,
+  isFull,
+  storeChunk,
   treeChunks,
   treeChunkSizes,
 } from "./net";
@@ -499,6 +500,18 @@ export async function saveOffline(
     const server = limit(SERVER_AT_ONCE);
     const held = byteLimit(SAVE_RUN_BYTES);
     let next = 0;
+    // (the device filled up meanwhile: the save stops at once; before, every later chunk's write
+    // failed unseen, was counted as saved, and the rest of the game came down for nothing)
+    let full: unknown = null;
+    const keep = async (u: string, data: Uint8Array<ArrayBuffer>) => {
+      try {
+        await storeChunk(cache, u, data);
+      } catch (e) {
+        if (!isFull(e)) return;
+        full ??= e;
+        throw e;
+      }
+    };
     const primed = new Map<number, Promise<void>>();
     const window = (w: number) => {
       if (!primed.has(w))
@@ -523,12 +536,12 @@ export async function saveOffline(
       return withChunkLock(h, async () => {
         if (await cache.match(url).catch(() => undefined)) return;
         const data = await direct.get(h, { signal, request: opt.request });
-        if (data) await keepChunk(cache, url, data);
+        if (data) await keep(url, data);
         else await server(() => getChunk(base, h, { cache, priority: "low", signal, request: opt.request }));
       });
     };
     const one = async (i: number) => {
-      while (next < missing.length && !signal.aborted) {
+      while (next < missing.length && !signal.aborted && !full) {
         // (a game playing meanwhile waits for a read of its own: SAVE_BUSY_WIDTH go on)
         while (i >= SAVE_BUSY_WIDTH && gameBusy() && !signal.aborted)
           await new Promise((r) => setTimeout(r, 50));
@@ -564,7 +577,7 @@ export async function saveOffline(
           const left: string[] = [];
           for (const h of run) {
             const data = got.get(h);
-            if (data) await keepChunk(cache, url(h), data);
+            if (data) await keep(url(h), data);
             // (not in the GET's answer, not what its name says, or the worker's: alone)
             else if (todo.includes(h) || !mine.includes(h)) {
               left.push(h);
@@ -580,8 +593,12 @@ export async function saveOffline(
         }
       }
     };
-    await Promise.all(Array.from({ length: DIRECT_AT_ONCE }, (_, i) => one(i)));
+    await Promise.all(Array.from({ length: DIRECT_AT_ONCE }, (_, i) => one(i))).catch((e: unknown) => {
+      if (!full) throw e;
+    });
     if (signal.aborted) throw signal.reason;
+    if (full)
+      throw new Error("端末の空き容量がなくなったため、保存を止めました（空き容量を確認してください）");
     // done only when every chunk is on the device now (the browser may have dropped some)
     const now = await onDevice();
     const lost = hashes.filter((h) => !now.has(h)).length;

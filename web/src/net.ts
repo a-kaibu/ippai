@@ -226,11 +226,22 @@ export async function getChunk(
   }
 }
 
-/** Keeps chunk `data` (checked against its name) at `url` in `cache`, as getChunk does. */
+/** Stores chunk `data` (checked against its name) at `url` in `cache`; rejects when it could
+ * not be (the device full: QuotaExceededError, isFull). */
+export function storeChunk(cache: ChunkStore, url: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
+  return cache.put(url, new Response(data, { headers: { [CHECKED]: "1", [SIZE]: String(data.length) } }));
+}
+
+/** Keeps chunk `data` at `url` in `cache` if it can, as getChunk does (a cache, not a promise:
+ * a chunk not kept is fetched again). */
 export function keepChunk(cache: ChunkStore, url: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
-  return cache
-    .put(url, new Response(data, { headers: { [CHECKED]: "1", [SIZE]: String(data.length) } }))
-    .catch(() => undefined);
+  return storeChunk(cache, url, data).catch(() => undefined);
+}
+
+/** Whether `e` says the device (the origin's quota) has no room left. */
+export function isFull(e: unknown): boolean {
+  const name = (e as { name?: unknown } | null)?.name;
+  return name === "QuotaExceededError" || (e instanceof Error && /quota/i.test(e.message));
 }
 
 /** Bytes of chunks kept at most: the newest are kept. */

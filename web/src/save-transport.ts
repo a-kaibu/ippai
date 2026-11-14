@@ -1,13 +1,24 @@
-/** Serialize writes per game and keep the last acknowledged revision. */
+/** Bytes per second an upload is given at least before it is given up (a phone's poor link). */
+const SLOW_LINK = 64 * 1024;
+
+/** Serialize writes per game and keep the last acknowledged revision. Every request has a time
+ * limit (`waitMs`, an upload also a second per SLOW_LINK bytes): one that stalls without failing
+ * (a phone moving between networks) used to hold every later save of the game behind it. */
 export class SaveTransport {
   private revisions = new Map<string, string>();
   private queues = new Map<string, Promise<void>>();
   /** what a game started from when the server could not be reached (this browser's copy) */
   private bases = new Map<string, Uint8Array>();
   // (fetch called as this.request would be an illegal invocation: bound to the window)
-  constructor(private request: typeof fetch = (input, init) => fetch(input, init)) {}
+  constructor(
+    private request: typeof fetch = (input, init) => fetch(input, init),
+    private waitMs = 30_000,
+  ) {}
+  private limit(bytes = 0): AbortSignal {
+    return AbortSignal.timeout(this.waitMs + Math.ceil((bytes / SLOW_LINK) * 1000));
+  }
   async load(url: string): Promise<Uint8Array | null> {
-    const r = await this.request(url, { cache: "no-store" });
+    const r = await this.request(url, { cache: "no-store", signal: this.limit() });
     if (r.status === 404) {
       this.revisions.set(url, '"0"');
       return null;
@@ -37,7 +48,7 @@ export class SaveTransport {
   private async learnRevision(url: string): Promise<void> {
     const base = this.bases.get(url);
     if (!base) throw new Error("セーブの読み込みが未完了です");
-    const r = await this.request(url, { cache: "no-store" });
+    const r = await this.request(url, { cache: "no-store", signal: this.limit() });
     if (r.status === 404) {
       this.revisions.set(url, '"0"');
     } else {
@@ -62,11 +73,12 @@ export class SaveTransport {
           headers: { "if-match": this.revisions.get(url)! },
           body: snapshot,
           keepalive: snapshot.length < 60000,
+          signal: this.limit(snapshot.length),
         });
         if (r.status === 412) {
           // The write may have committed while its acknowledgement was lost. Accept only
           // byte-identical content; a genuinely different save must remain a conflict.
-          const current = await this.request(url, { cache: "no-store" });
+          const current = await this.request(url, { cache: "no-store", signal: this.limit(snapshot.length) });
           if (current.ok && current.headers.get("etag")) {
             const bytes = new Uint8Array(await current.arrayBuffer());
             if (bytes.length === snapshot.length && bytes.every((b, i) => b === snapshot[i])) {

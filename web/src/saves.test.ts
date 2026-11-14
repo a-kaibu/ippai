@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, expect, test } from "vite-plus/test";
-import { loadSaves, savesFor, storeSaves, type SaveFiles } from "./saves";
+import { afterAll, beforeAll, expect, test, vi } from "vite-plus/test";
+import { keepSaving, loadSaves, savesFor, storeSaves, type SaveFiles, type SavesModule } from "./saves";
 
 // The saved-game blobs across pages and devices (saves.ts): a model of ippai serve's /saves
 // (crates/ippai/src/saves.rs: a revision per name, If-Match, its revisions kept) and of each
@@ -209,4 +209,125 @@ test("an older page's copy, not known to be sent, is kept aside when the server'
   expect(eq(await page(phone, s), blob(7))).toBe(true);
   expect(phone.kept().some((b) => eq(b, blob(6)))).toBe(true);
   expect(eq(phone.m.get("game.bin"), blob(7))).toBe(true);
+});
+
+/** keepSaving over `d` and `s` with a game whose files are `files()` (the export), a clock the
+ * test moves, and the 5 s timer and page events left out (the test calls the save itself). */
+async function keeper(d: Device, s: Server, files: () => Uint8Array<ArrayBuffer>, last: Uint8Array | null) {
+  // (a page's start first: it learns the server's revision, or that it was out of reach)
+  await page(d, s);
+  let changes = 0;
+  let t = 0;
+  let reads = 0;
+  const m = { _vnhost_vfs_changes: () => changes } as unknown as SavesModule;
+  const g = globalThis as unknown as { addEventListener?: unknown };
+  const had = g.addEventListener;
+  g.addEventListener ??= () => {};
+  vi.useFakeTimers();
+  const save = keepSaving(m, "game", [], last, {
+    now: () => t,
+    read: () => (reads++, files()),
+  });
+  vi.useRealTimers();
+  if (!had) delete g.addEventListener;
+  let writes = 0;
+  const write = d.files.write.bind(d.files);
+  d.files.write = async (f, data) => {
+    if (f.endsWith(".bin")) writes++;
+    return write(f, data);
+  };
+  return {
+    save,
+    write: () => void changes++,
+    at: (ms: number) => void (t = ms),
+    counts: () => ({ reads, writes, puts: s.history.length }),
+  };
+}
+
+test("offline, a changed save is written to this browser once, and the upload backs off", async () => {
+  const s = new Server();
+  const d = new Device();
+  online = true;
+  let current = blob(1);
+  const k = await keeper(d, s, () => current as Uint8Array<ArrayBuffer>, null);
+  s.up = false;
+  current = blob(2);
+  k.write();
+  await k.save();
+  expect(k.counts()).toEqual({ reads: 1, writes: 1, puts: 0 });
+  expect(eq(d.m.get("game.bin"), blob(2))).toBe(true);
+  // (nothing new written by the game, and the next try not due: no export, no write, no request)
+  for (let i = 1; i <= 5; i++) {
+    k.at(i * 1000);
+    await k.save();
+  }
+  expect(k.counts()).toEqual({ reads: 1, writes: 1, puts: 0 });
+  // (due again: the upload only, not this browser's copy again)
+  s.up = true;
+  k.at(60_000);
+  await k.save();
+  expect(k.counts()).toEqual({ reads: 1, writes: 1, puts: 1 });
+  expect(eq(s.data, blob(2))).toBe(true);
+  // (sent: nothing more to do)
+  k.at(120_000);
+  await k.save();
+  expect(k.counts().puts).toBe(1);
+});
+
+test("offline, the game writing the same bytes again makes no new local write", async () => {
+  const s = new Server();
+  const d = new Device();
+  online = true;
+  s.up = false;
+  const k = await keeper(d, s, () => blob(3) as Uint8Array<ArrayBuffer>, blob(1));
+  for (let i = 0; i < 4; i++) {
+    k.write();
+    k.at(i * 10);
+    await k.save();
+  }
+  expect(k.counts()).toEqual({ reads: 4, writes: 1, puts: 0 });
+  s.up = true;
+});
+
+test("a forced save (the game quits) uploads at once, even in the pause after a failure", async () => {
+  const s = new Server();
+  const d = new Device();
+  online = true;
+  s.up = false;
+  const k = await keeper(d, s, () => blob(4) as Uint8Array<ArrayBuffer>, blob(1));
+  k.write();
+  await k.save();
+  s.up = true;
+  k.at(1);
+  await k.save();
+  expect(k.counts().puts).toBe(0);
+  await k.save(true);
+  expect(k.counts().puts).toBe(1);
+  expect(eq(s.data, blob(4))).toBe(true);
+});
+
+test("saves asked for while one is stuck wait as one, not one per tick", async () => {
+  const s = new Server();
+  const d = new Device();
+  online = true;
+  let release = () => {};
+  const stuck = new Promise<void>((r) => (release = r));
+  const request = s.request;
+  s.request = async (u, init) => {
+    if (init?.method === "PUT") await stuck;
+    return request(u, init);
+  };
+  let current = blob(5);
+  const k = await keeper(d, s, () => current as Uint8Array<ArrayBuffer>, blob(1));
+  k.write();
+  const first = k.save();
+  const waiting = Array.from({ length: 50 }, () => k.save());
+  // (all the waiting ones are the same promise)
+  expect(new Set(waiting).size).toBe(1);
+  current = blob(6);
+  k.write();
+  release();
+  await Promise.all([first, ...waiting]);
+  expect(k.counts().reads).toBe(2);
+  expect(eq(s.data, blob(6))).toBe(true);
 });

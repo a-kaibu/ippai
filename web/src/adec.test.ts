@@ -222,3 +222,58 @@ test("a new generation gets a new decoder; a stream gone closes its decoder", as
   a.tick();
   expect(made[1]!.closed).toBe(true);
 });
+
+test("stop(): the doorbell no longer looked at, the decoders closed (a child process ended)", async () => {
+  const k = new FakeKura();
+  k.wasmMemory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  let lists = 0;
+  const list = k._vnhost_adec_list.bind(k);
+  k._vnhost_adec_list = (out, max) => (lists++, list(out, max));
+  const { Kind, made } = fakeDecoder();
+  const a = new AudioDecode(k, () => {}, Kind, chunk, true);
+  const ring = () => {
+    const i32 = new Int32Array(k.wasmMemory.buffer);
+    Atomics.add(i32, 512 / 4, 1);
+    Atomics.notify(i32, 512 / 4);
+  };
+  k.streams.set(3, { gen: 0, codec: "mp3", rate: 44100, ch: 1, desc: [], queue: [[10]], taken: 0 });
+  ring();
+  await tick(20);
+  expect(lists).toBeGreaterThan(0);
+  expect(made.length).toBe(1);
+  a.stop();
+  expect(made[0]!.closed).toBe(true);
+  const seen = lists;
+  ring();
+  await tick(20);
+  ring();
+  await tick(20);
+  expect(lists).toBe(seen);
+});
+
+test("a tick that throws does not end the watching", async () => {
+  const k = new FakeKura();
+  k.wasmMemory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  let lists = 0;
+  const list = k._vnhost_adec_list.bind(k);
+  k._vnhost_adec_list = (out, max) => {
+    if (++lists === 1) throw new RangeError("offset is out of bounds");
+    return list(out, max);
+  };
+  const notes: string[] = [];
+  const { Kind, made } = fakeDecoder();
+  const a = new AudioDecode(k, (l) => notes.push(l), Kind, chunk, true);
+  const ring = () => {
+    const i32 = new Int32Array(k.wasmMemory.buffer);
+    Atomics.add(i32, 512 / 4, 1);
+    Atomics.notify(i32, 512 / 4);
+  };
+  ring();
+  await tick(20);
+  k.streams.set(3, { gen: 0, codec: "mp3", rate: 44100, ch: 1, desc: [], queue: [[10]], taken: 0 });
+  ring();
+  await tick(20);
+  expect(notes.some((l) => l.includes("RangeError"))).toBe(true);
+  expect(made.length).toBe(1);
+  a.stop();
+});

@@ -8,6 +8,7 @@
 // instead: MP3 and Opus give one per chunk, Vorbis none for its first; a chunk that gives none
 // (a bad frame) is let go once the decoder has nothing queued and nothing came for QUIET ms.
 
+import { watchDoorbell } from "./doorbell";
 import { memGate, type Gate } from "./memgate";
 
 export interface AdecWasm {
@@ -39,13 +40,6 @@ type Chunk = (init: {
   timestamp: number;
   data: Uint8Array;
 }) => EncodedAudioChunk | { type: "key"; timestamp: number; data: Uint8Array };
-
-type WaitAsync = (
-  a: Int32Array,
-  i: number,
-  v: number,
-  t: number,
-) => { async: boolean; value: Promise<string> | string };
 
 const MAX = 32;
 const ROW = 10;
@@ -94,20 +88,25 @@ export class AudioDecode {
     if (watch) void this.watch();
   }
 
-  private async watch(): Promise<void> {
-    const i32 = () => new Int32Array(this.wasm.wasmMemory.buffer);
-    let seen = Atomics.load(i32(), this.doorbell >>> 2);
-    for (;;) {
-      const w = (Atomics as unknown as { waitAsync: WaitAsync }).waitAsync(
-        i32(),
-        this.doorbell >>> 2,
-        seen,
-        1000,
-      );
-      if (w.async) await w.value;
-      seen = Atomics.load(i32(), this.doorbell >>> 2);
-      this.tick();
-    }
+  private stopped = false;
+
+  private watch(): Promise<void> {
+    return watchDoorbell(
+      () => this.wasm.wasmMemory.buffer,
+      this.doorbell,
+      () => this.tick(),
+      this.note,
+      () => this.stopped,
+      "adec",
+    );
+  }
+
+  /** The process ended (play.ts): no more looks, and the decoders closed. */
+  stop(): void {
+    this.stopped = true;
+    for (const s of this.streams.values()) this.drop(s);
+    this.streams.clear();
+    for (const [, d] of this.held.splice(0)) d.close();
   }
 
   /** New and closed streams, and chunks to feed (on each doorbell). */

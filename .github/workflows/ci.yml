@@ -590,8 +590,8 @@ jobs:
         run: node tests/fetch-bridge.test.mjs
       - name: Fetch scheduler tests (one budget, fetch once, batch presign, hints; tests/sched.test.mjs)
         run: node --test tests/sched.test.mjs
-      - name: Shared VFS, account bridge and node stdio tests (host/vnfs.js, host/account-bridge.js, host/node-stdio.js)
-        run: node --test tests/vfs-shared.mjs tests/account-bridge.mjs tests/node-stdio.mjs
+      - name: Shared VFS, account bridge, node stdio and host JS stability tests (host/vnfs.js, host/account-bridge.js, host/node-stdio.js, host/vnjit.js, host/pre.js, host/tls-bridge.js)
+        run: node --test tests/vfs-shared.mjs tests/account-bridge.mjs tests/node-stdio.mjs tests/host-stability.mjs
       - wait: apt
       - if: steps.cache-5.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0

@@ -1,6 +1,17 @@
 import { expect, test } from "vite-plus/test";
 import { blake3Hex } from "./blake3";
-import { fetchRetry, getChunk, HttpError, treeChunks, trimChunks, watchRetries } from "./net";
+import type { ChunkStore } from "./chunkstore";
+import {
+  fetchRetry,
+  getChunk,
+  HttpError,
+  isFull,
+  keepChunk,
+  storeChunk,
+  treeChunks,
+  trimChunks,
+  watchRetries,
+} from "./net";
 
 const bytes = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
 
@@ -285,4 +296,20 @@ test("a tree's chunk lengths, for the read-ahead's reservations", async () => {
     [h("a"), 16777216],
     [h("b"), 5],
   ]);
+});
+
+test("a chunk the full device could not take: storeChunk says so, keepChunk lets it go", async () => {
+  const quota = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  const full = { put: async () => Promise.reject(quota) } as unknown as ChunkStore;
+  const data = new Uint8Array([1, 2, 3]);
+  await expect(storeChunk(full, "https://s/chunks/ab/abc", data)).rejects.toBe(quota);
+  await expect(keepChunk(full, "https://s/chunks/ab/abc", data)).resolves.toBeUndefined();
+  expect(isFull(quota)).toBe(true);
+  expect(isFull(new Error("QuotaExceededError: no room"))).toBe(true);
+  expect(isFull(new TypeError("Failed to fetch"))).toBe(false);
+  expect(isFull(null)).toBe(false);
+  let kept: Response | undefined;
+  const room = { put: async (_k: unknown, r: Response) => void (kept = r) } as unknown as ChunkStore;
+  await storeChunk(room, "https://s/chunks/ab/abc", data);
+  expect(kept?.headers.get("x-ippai-size")).toBe("3");
 });

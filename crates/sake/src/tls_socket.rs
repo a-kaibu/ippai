@@ -13,8 +13,20 @@ unsafe extern "C" {
 }
 pub(crate) struct Socket {
     pub id: i32,
-    deadline: Instant,
+    /// each read's and write's own limit (WinINet's timeout: the time one wait may take)
+    timeout: u32,
+    opened: Instant,
     pending: VecDeque<u8>,
+}
+/// The whole exchange at most, however much keeps flowing: a peer that trickles a byte now and
+/// then stops the guest thread no longer than this.
+const TOTAL: Duration = Duration::from_secs(600);
+/// The limit of the next read or write (ms): the socket's timeout, or what is left of TOTAL
+/// since `opened` if less; None once TOTAL has passed. (A limit fixed at the open, as before,
+/// cut every download longer than one timeout in the middle.)
+fn op_limit(timeout: u32, opened: Instant, now: Instant) -> Option<u32> {
+    let left = TOTAL.saturating_sub(now.saturating_duration_since(opened)).as_millis();
+    (left > 0).then(|| left.min(timeout as u128) as u32)
 }
 impl Socket {
     pub fn open(host: &str, timeout: u32) -> io::Result<Self> {
@@ -37,23 +49,14 @@ impl Socket {
         }
         Ok(Self {
             id,
-            deadline: Instant::now() + Duration::from_millis(timeout as u64),
+            timeout,
+            opened: Instant::now(),
             pending: VecDeque::new(),
         })
     }
     fn remaining(&self) -> io::Result<u32> {
-        let ms = self
-            .deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis();
-        if ms == 0 {
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "TLS relay deadline",
-            ))
-        } else {
-            Ok(ms.min(u32::MAX as u128) as u32)
-        }
+        op_limit(self.timeout, self.opened, Instant::now())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "TLS relay deadline"))
     }
 }
 impl Read for Socket {
@@ -131,5 +134,24 @@ impl Drop for Socket {
         }
         #[cfg(not(target_os = "emscripten"))]
         let _ = self.id;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each read or write gets the whole timeout again, however long the exchange has run, up
+    /// to TOTAL; then none.
+    #[test]
+    fn every_operation_gets_its_own_timeout_within_the_total() {
+        let t0 = Instant::now();
+        assert_eq!(op_limit(30_000, t0, t0), Some(30_000));
+        assert_eq!(op_limit(30_000, t0, t0 + Duration::from_secs(200)), Some(30_000));
+        assert_eq!(op_limit(30_000, t0, t0 + TOTAL - Duration::from_secs(10)), Some(10_000));
+        assert_eq!(op_limit(30_000, t0, t0 + TOTAL), None);
+        assert_eq!(op_limit(30_000, t0, t0 + TOTAL + Duration::from_secs(1)), None);
+        // (a clock read before the open: the full timeout, not an underflow)
+        assert_eq!(op_limit(100, t0 + Duration::from_secs(1), t0), Some(100));
     }
 }

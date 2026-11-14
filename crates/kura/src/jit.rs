@@ -379,7 +379,8 @@ static RECLAIM_EVERY: AtomicU32 = AtomicU32::new(64);
 /// code goes through the hash table or the call cache (koji never bakes a table index into
 /// code), so a module none of whose table slots either holds is never entered again; its slots
 /// are cleared (vnvm_jit_free) and V8 can collect it. Slots are not reused (the table only
-/// grows: a stale index in the ring never names another module). A module running further up
+/// grows: a stale index in the ring never names another module); a table grown past its bound
+/// is replaced whole (TABLE_FULL). A module running further up
 /// this thread's stack is not affected: clearing a slot does not stop code already in it, and
 /// what it calls next is looked up again.
 fn reclaim(st: &mut State) {
@@ -489,7 +490,7 @@ pub(crate) fn jit_modules() -> [u64; 6] {
 #[cfg(target_os = "emscripten")]
 fn load_module(bytes: &[u8], n: u32) -> i32 {
     let t0 = Instant::now();
-    let base = unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), n) };
+    let base = table_answer(unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), n) });
     MODULES[5].fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
     loaded(base, n, bytes.len())
 }
@@ -600,6 +601,25 @@ static GENERATION: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
     static SEEN: Cell<u32> = const { Cell::new(0) };
+    /// This thread's funcref table is full of slots reclaim cleared (host/vnjit.js answered
+    /// TABLE_FULL): its translations start over with a new table at the next run loop entry.
+    static FRESH_TABLE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// vnvm_jit_load's / vnvm_jit_bundle_load's answer when the thread's table cannot take more
+/// (host/vnjit.js: freed slots are not handed out again, so the table only grows; past its
+/// bound, or when V8 refuses to grow it, the thread starts over with a fresh one).
+const TABLE_FULL: i32 = -2;
+
+/// A load's table index as the callers take it (-1: not loaded); TABLE_FULL also asks for the
+/// fresh table.
+#[cfg_attr(not(target_os = "emscripten"), allow(dead_code))]
+fn table_answer(base: i32) -> i32 {
+    if base == TABLE_FULL {
+        FRESH_TABLE.with(|f| f.set(true));
+        return -1;
+    }
+    base
 }
 
 /// The translated code's byte ranges (start -> end), for telling a store into code from one
@@ -734,7 +754,8 @@ fn drop_states() {
 fn check_generation() {
     mx_check();
     let g = GENERATION.load(Ordering::Relaxed);
-    if SEEN.with(|s| s.replace(g)) != g {
+    // (| not ||: the flag is taken either way)
+    if (SEEN.with(|s| s.replace(g)) != g) | FRESH_TABLE.with(|f| f.take()) {
         STATE.with(|s| *s.borrow_mut() = None);
     }
 }
@@ -1288,13 +1309,13 @@ fn find_saved(mem: &mut Linear, roots: &[u32], exact: bool, trap: (u32, u32)) ->
 #[cfg(target_os = "emscripten")]
 fn part_base(st: &mut State, s: &Saved, part: u16) -> i32 {
     if part == 0 {
-        return *st.saved.get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
+        return *st.saved.get_or_insert_with(|| table_answer(unsafe { vnvm_jit_bundle_load() }));
     }
     *st.late.entry(part).or_insert_with(|| {
         let (wasm, n) = s.late[part as usize - 1];
         // (not in st.loads: kept for good, as the bundle)
         let t0 = Instant::now();
-        let base = unsafe { vnvm_jit_load(wasm.as_ptr(), wasm.len(), n) };
+        let base = table_answer(unsafe { vnvm_jit_load(wasm.as_ptr(), wasm.len(), n) });
         MODULES[5].fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
         // (the first thread to load each part says so: the run log shows the late parts used)
         static SAID: Mutex<Vec<u16>> = Mutex::new(Vec::new());
@@ -2744,6 +2765,27 @@ mod batch_tests {
                 prop_assert!(order.windows(2).all(|w| w[0] < w[1]));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    /// host/vnjit.js's TABLE_FULL: the load failed, and the thread's state (with its table) is
+    /// made again at its next run loop entry, once; any other answer leaves the state alone.
+    #[test]
+    fn a_full_table_starts_the_thread_over_once() {
+        check_generation();
+        with_state(|_| ());
+        assert_eq!(table_answer(12), 12);
+        assert_eq!(table_answer(-1), -1);
+        assert!(!FRESH_TABLE.with(|f| f.get()));
+        assert_eq!(table_answer(TABLE_FULL), -1);
+        assert!(FRESH_TABLE.with(|f| f.get()));
+        check_generation();
+        assert!(STATE.with(|s| s.borrow().is_none()));
+        assert!(!FRESH_TABLE.with(|f| f.get()));
     }
 }
 

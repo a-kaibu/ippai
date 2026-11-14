@@ -175,19 +175,22 @@ function same(a: Uint8Array | null, b: Uint8Array): boolean {
 }
 
 /** Writes `data` as `name`'s blob: this browser's copy, then the server's (rejects when the
- * server's failed; this browser's copy is kept, marked as not sent). */
-export function storeSaves(name: string, data: Uint8Array<ArrayBuffer>): Promise<boolean> {
+ * server's failed; this browser's copy is kept, marked as not sent). `local` false: this
+ * browser's copy already holds these bytes (marked dirty), only the server's is written. */
+export function storeSaves(name: string, data: Uint8Array<ArrayBuffer>, local = true): Promise<boolean> {
   return locked(name, async () => {
     const url = backup(name);
     // This browser's copy first: with the link down the save still survives the page (the
     // server's copy is tried again on the next change check, or the next start). A denied OPFS
     // quota must not prevent server persistence.
-    const base = transport.revision(url) ?? (await readSync(name))?.base ?? null;
-    try {
-      await writeSync(name, { base, dirty: true });
-      await files.write(`${name}.bin`, data);
-    } catch (e) {
-      console.warn("saves: local cache", e);
+    if (local) {
+      const base = transport.revision(url) ?? (await readSync(name))?.base ?? null;
+      try {
+        await writeSync(name, { base, dirty: true });
+        await files.write(`${name}.bin`, data);
+      } catch (e) {
+        console.warn("saves: local cache", e);
+      }
     }
     await transport.store(url, data);
     await writeSync(name, { base: transport.revision(url) ?? null, dirty: false }).catch((e: unknown) =>
@@ -199,44 +202,73 @@ export function storeSaves(name: string, data: Uint8Array<ArrayBuffer>): Promise
 
 /**
  * Keeps saving what the game writes under `roots` for `name`. Returns a function that saves now
- * (when the game quits).
+ * (`force`: the upload too, even in the pause after a failed one: when the game quits or the
+ * page is hidden).
  */
 export function keepSaving(
   m: SavesModule,
   name: string,
   roots: string[],
   last: Uint8Array | null,
-): () => Promise<void> {
+  // (tests: the clock and the export)
+  opt: { now?: () => number; read?: () => Uint8Array<ArrayBuffer> } = {},
+): (force?: boolean) => Promise<void> {
+  const now = opt.now ?? Date.now;
+  const read = opt.read ?? (() => exportSaves(m, roots));
   let pending: Promise<void> | undefined;
+  let queued: Promise<void> | undefined;
   let seen = -1;
-  const perform = async () => {
+  // (`last`: what the server has; `unsent`: what this browser's copy has that the server does not
+  // yet. With the server out of reach the blob is written here once, not again every look, and
+  // the upload is tried again after a growing pause: before, every 5 s exported the whole set,
+  // rewrote it in OPFS and failed the upload, for the rest of the session)
+  let unsent: Uint8Array<ArrayBuffer> | null = null;
+  let failures = 0;
+  let retryAt = 0;
+  const perform = async (force: boolean) => {
     // (a save state is being taken: the memory stays as it is; the next look saves)
     if (snapping()) return;
     // (nothing written since the last look: no export)
     const changes = m._vnhost_vfs_changes?.() ?? -2;
-    if (changes === seen && changes !== -2) return;
+    const fresh = changes !== seen || changes === -2;
+    if (!fresh && (!unsent || (!force && now() < retryAt))) return;
     try {
-      const data = exportSaves(m, roots);
+      const data = fresh ? read() : unsent!;
+      seen = changes;
       if (same(last, data)) {
-        seen = changes;
+        unsent = null;
         return;
       }
-      if (!(await storeSaves(name, data))) return;
+      // (the same bytes as this browser's copy already: only the upload again, and only when due)
+      const local = !same(unsent, data);
+      if (!local && !force && now() < retryAt) return;
+      unsent = data;
+      await storeSaves(name, data, local);
       last = data;
-      seen = changes;
+      unsent = null;
+      failures = 0;
     } catch (e) {
+      failures++;
+      retryAt = now() + Math.min(5000 * 2 ** failures, 5 * 60_000);
       console.warn(`saves: ${String(e)}`);
     }
   };
-  const save = (): Promise<void> => {
-    if (pending) return pending.then(save);
-    pending = perform().finally(() => {
-      pending = undefined;
-    });
-    return pending;
+  // (one look at a time, and at most one more waiting: a stuck upload used to have each 5 s tick
+  // chain another look behind it)
+  const save = (force = false): Promise<void> => {
+    if (!pending) {
+      pending = perform(force).finally(() => {
+        pending = undefined;
+      });
+      return pending;
+    }
+    return (queued ??= pending.then(() => {
+      queued = undefined;
+      return save(force);
+    }));
   };
-  setInterval(save, 5000);
-  addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void save());
-  addEventListener("pagehide", () => void save());
+  setInterval(() => void save(), 5000);
+  addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void save(true));
+  addEventListener("pagehide", () => void save(true));
   return save;
 }

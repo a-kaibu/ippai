@@ -19,6 +19,9 @@ pub fn target(host: &str) -> Option<u32> {
     DESTINATIONS.iter().position(|d| d.1 == host).map(|i| i as u32)
 }
 const HEADER_MAX: usize = 64 * 1024;
+/// Interim (1xx) responses before the final one, at most: a peer that sends `100 Continue`
+/// without end otherwise keeps the guest thread here as long as it likes.
+const INTERIM_MAX: usize = 8;
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
@@ -147,6 +150,7 @@ fn tls_error(e: io::Error) -> Error {
 fn read_response<R: Read>(io: &mut R, method: &str) -> Result<Response, Error> {
     let mut data = vec![];
     let mut temp = [0u8; 4096];
+    let mut interim = 0;
     let (head, status, text, headers) = loop {
         if let Some(end) = data
             .windows(4)
@@ -166,6 +170,10 @@ fn read_response<R: Read>(io: &mut R, method: &str) -> Result<Response, Error> {
             }
             let status = parsed.code.ok_or(Error::InvalidResponse)?;
             if status < 200 && status != 101 {
+                interim += 1;
+                if interim > INTERIM_MAX {
+                    return Err(Error::InvalidResponse);
+                }
                 data.drain(..end);
                 continue;
             }
@@ -219,10 +227,15 @@ fn read_response<R: Read>(io: &mut R, method: &str) -> Result<Response, Error> {
         };
         loop {
             let chunk_header = line(&mut source, 8192)?;
-            let number = chunk_header
+            let mut number = chunk_header
                 .split(|b| *b == b';')
                 .next()
                 .ok_or(Error::InvalidResponse)?;
+            // (RFC 9112 7.1.1: whitespace may come before the extension, `1a ;x` or `1a  `,
+            // as older IIS and Apache send)
+            while let [rest @ .., b' ' | b'\t'] = number {
+                number = rest;
+            }
             if number.is_empty() || number.len() > 16 || !number.iter().all(u8::is_ascii_hexdigit) {
                 return Err(Error::InvalidResponse);
             }
@@ -382,6 +395,23 @@ mod tests {
         assert_eq!(ok(b"HTTP/1.1 200 OK\r\n\r\nto the end", true), b"to the end");
         assert_eq!(parse(b"HTTP/1.1 204 No Content\r\n\r\n", 1, true, "GET").unwrap().status, 204);
         assert!(parse(b"HTTP/1.1 200 OK\r\n\r\n", 1, false, "HEAD").unwrap().body.is_empty());
+        // (whitespace after a chunk's size, before its extension or alone)
+        assert_eq!(ok(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2 \t\r\nhi\r\n1 ;x\r\n!\r\n0  \r\n\r\n", false), b"hi!");
+    }
+    #[test]
+    fn interim_responses_are_bounded() {
+        let wire = |n: usize| {
+            let mut w = b"HTTP/1.1 100 Continue\r\n\r\n".repeat(n);
+            w.extend(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+            w
+        };
+        assert_eq!(parse(&wire(INTERIM_MAX), 7, false, "GET").unwrap().body, b"hi");
+        assert!(matches!(parse(&wire(INTERIM_MAX + 1), 7, false, "GET"), Err(Error::InvalidResponse)));
+        // (endless ones stop at the bound, not at the end of the wire)
+        let endless = b"HTTP/1.1 102 Processing\r\n\r\n".repeat(10_000);
+        let mut w = Wire { data: endless, at: 0, step: 64, abrupt: false };
+        assert!(read_response(&mut w, "GET").is_err());
+        assert!(w.at < 64 * 1024);
     }
     #[test]
     fn ambiguous_or_truncated_responses_fail() {
@@ -394,6 +424,8 @@ mod tests {
         assert!(bad(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", true));
         assert!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab", true));
         assert!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n", false));
+        assert!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n \r\n", false));
+        assert!(bad(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1 2\r\nab\r\n", false));
         assert!(bad(b"HTTP/1.1 101 Switching\r\n\r\n", false));
         assert!(bad(b"HTTP/1.1 200 OK\r\n", false));
         let big = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY_MAX + 1);
@@ -402,12 +434,13 @@ mod tests {
     proptest! {
         // Any body, chunked any way and read in any piece size, comes back exactly.
         #[test]
-        fn chunked_bodies_round_trip(body in proptest::collection::vec(any::<u8>(), 0..2000), cuts in proptest::collection::vec(1usize..300, 1..20), step in 1usize..64) {
+        fn chunked_bodies_round_trip(body in proptest::collection::vec(any::<u8>(), 0..2000), cuts in proptest::collection::vec(1usize..300, 1..20), step in 1usize..64, ws in proptest::collection::vec(prop_oneof![Just(""), Just(" "), Just("\t "), Just(" ;e=1")], 1..8)) {
             let mut wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
             let (mut at, mut i) = (0, 0);
             while at < body.len() {
                 let n = cuts[i % cuts.len()].min(body.len() - at);
-                wire.extend(format!("{n:x}\r\n").as_bytes()); wire.extend(&body[at..at + n]); wire.extend(b"\r\n");
+                // (any whitespace before the line's end or its extension, RFC 9112's BWS)
+                wire.extend(format!("{n:x}{}\r\n", ws[i % ws.len()]).as_bytes()); wire.extend(&body[at..at + n]); wire.extend(b"\r\n");
                 at += n; i += 1;
             }
             wire.extend(b"0\r\n\r\n");

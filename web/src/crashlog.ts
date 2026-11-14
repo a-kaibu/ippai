@@ -24,6 +24,7 @@
 import { toast as sonner } from "sonner";
 import { meter, meterLine } from "./meter";
 import { grabScreen, screenLine, screenStats, smallJpeg } from "./screen-stats";
+import { ReportLimit } from "./reportlimit";
 const DIR = "vnvm-logs";
 /** OPFS files kept (the oldest go). */
 const KEEP = 40;
@@ -313,7 +314,12 @@ export class FlightRecorder {
   private page: string[] = [];
   private wasm: Wasm | null = null;
   private info: Uint32Array | null = null;
+  /** kura's crash counter, as last seen (tick) */
   private crashes = 0;
+  /** the page's own errors reported (fatal; their own count: they used to share kura's, and
+   * hid that many of the guest's crashes, the reports with registers and stacks) */
+  private errors = 0;
+  private limit = new ReportLimit();
   private reports = 0;
   private lastHidden = 0;
   private lastLive = Date.now();
@@ -471,19 +477,30 @@ export class FlightRecorder {
   private fatal(reason: string): void {
     this.note(`FATAL ${reason}`);
     if (this.ended) return;
-    void this.save(`crash${++this.crashes}`, reason).then((n) =>
+    // (an error made while saving a report makes no report of its own: that was a loop)
+    if (this.saving || !this.limit.allow(reason)) return;
+    void this.save(`error${++this.errors}`, reason).then((n) =>
       toast(`エラーが起きました。ログを保存しました: ${n}`),
     );
   }
 
   private memory(): void {
+    // (after an abort the runtime throws on every call: one every 30 s, each a crash report)
+    try {
+      this.memoryLine();
+    } catch (e) {
+      this.note(`memory: ${String(e)}`);
+    }
+  }
+
+  private memoryLine(): void {
     const pm = (performance as Performance & { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } })
       .memory;
     const w = this.wasm;
     const wasm = w ? `${(w.wasmMemory.buffer.byteLength / 2 ** 20).toFixed(0)} MB` : "-";
     // (the 4 GB is reserved at the start: what fills is the host heap, malloc's above the guest)
     let heap = "";
-    if (w?._vnhost_mem_info && w._malloc) {
+    if (w?._vnhost_mem_info && w._malloc && !this.aborted) {
       const p = w._malloc(16) >>> 0;
       w._vnhost_mem_info(p);
       const [top, used] = new Float64Array(w.wasmMemory.buffer, p, 2);
@@ -583,9 +600,25 @@ export class FlightRecorder {
   }
 
   /** Writes a report to OPFS and the server; returns its name. */
+  /** a report being saved (fatal makes none meanwhile) */
+  private saving = 0;
+
+  /** Saves and sends a report; never rejects (a failure is a line in the log). */
   async save(kind: string, reason: string, snap?: string): Promise<string> {
     const name = `${this.id}-${kind}`;
     if (this.sensitive) return name;
+    this.saving++;
+    try {
+      await this.saveReport(name, kind, reason, snap);
+    } catch (e) {
+      this.note(`report ${name}: not saved: ${String(e)}`);
+    } finally {
+      this.saving--;
+    }
+    return name;
+  }
+
+  private async saveReport(name: string, kind: string, reason: string, snap?: string): Promise<void> {
     this.reports++;
     this.note(`report ${name}: ${reason.split("\n")[0]}`);
     // (what the page showed, small: one look tells a black screen from a picture)
@@ -603,7 +636,6 @@ export class FlightRecorder {
         ? `report ${name} sent to the server`
         : `report ${name}: the server did not take it (kept in this browser)`,
     );
-    return name;
   }
 
   /** The session file (what the next page load sends if this one dies). */

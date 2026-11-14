@@ -2,9 +2,12 @@
 // No plaintext request or response is given to JavaScript or the relay.
 addToLibrary({
   $sakeTlsSockets: {next:1, sockets:new Map()},
+  // (a socket that timed out is dead: its worker is gone, so every later read or write fails at
+  // once instead of waiting out the whole timeout again for an answer that cannot come)
   $sakeTlsWait: (socket,generation,timeout) => {
+    if(socket.dead)return -1;
     const until=Date.now()+timeout;
-    while(Atomics.load(socket.ctl,0)===generation){const left=until-Date.now();if(left<=0){socket.worker.terminate();return -1;}Atomics.wait(socket.ctl,0,generation,left);}
+    while(Atomics.load(socket.ctl,0)===generation){const left=until-Date.now();if(left<=0){socket.dead=true;socket.worker.terminate();return -1;}Atomics.wait(socket.ctl,0,generation,left);}
     return Atomics.load(socket.ctl,1);
   },
   sake_tls_open__deps:['$sakeTlsSockets','$sakeTlsWait'],
@@ -33,18 +36,18 @@ addToLibrary({
   sake_tls_write__deps:['$sakeTlsSockets','$sakeTlsWait'],
   sake_tls_write__sig:'iipii',
   sake_tls_write:(id,p,n,timeout) => {
-    const socket=sakeTlsSockets.sockets.get(id);if(!socket||n>65536)return -1;
+    const socket=sakeTlsSockets.sockets.get(id);if(!socket||socket.dead||n>65536)return -1;
     socket.tx.set(HEAPU8.subarray(p>>>0,(p>>>0)+n));const generation=Atomics.load(socket.ctl,0);
     socket.worker.postMessage({op:'send',n,timeout});return sakeTlsWait(socket,generation,timeout);
   },
   sake_tls_read__deps:['$sakeTlsSockets','$sakeTlsWait'],
   sake_tls_read__sig:'iipii',
   sake_tls_read:(id,p,n,timeout) => {
-    const socket=sakeTlsSockets.sockets.get(id);if(!socket||n<65536)return -1;
+    const socket=sakeTlsSockets.sockets.get(id);if(!socket||socket.dead||n<65536)return -1;
     const generation=Atomics.load(socket.ctl,0);socket.worker.postMessage({op:'recv'});const got=sakeTlsWait(socket,generation,timeout);
     if(got>0)HEAPU8.set(socket.rx.subarray(0,got),p>>>0);return got;
   },
   sake_tls_close__deps:['$sakeTlsSockets'],
   sake_tls_close__sig:'vi',
-  sake_tls_close:(id) => {const socket=sakeTlsSockets.sockets.get(id);if(socket){socket.worker.postMessage({op:'close'});socket.worker.terminate();sakeTlsSockets.sockets.delete(id);}},
+  sake_tls_close:(id) => {const socket=sakeTlsSockets.sockets.get(id);if(socket){if(!socket.dead){socket.worker.postMessage({op:'close'});socket.worker.terminate();}sakeTlsSockets.sockets.delete(id);}},
 });

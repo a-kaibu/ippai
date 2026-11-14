@@ -6,6 +6,7 @@
 // answer: a browser that decodes it otherwise is never listed to (the guest then decodes every
 // picture itself).
 
+import { watchDoorbell } from "./doorbell";
 import { memGate, type Gate } from "./memgate";
 
 export interface IdecWasm {
@@ -43,13 +44,6 @@ export function planesSize(format: string, w: number, h: number): number {
   if (p.length === 1) return w * h * 4;
   return p[2]!.offset + (p[2]!.offset - p[1]!.offset);
 }
-
-type WaitAsync = (
-  a: Int32Array,
-  i: number,
-  v: number,
-  t: number,
-) => { async: boolean; value: Promise<string> | string };
 
 const MAX = 16;
 
@@ -124,20 +118,22 @@ export class ImageDecode {
     if (watch) void this.watch();
   }
 
-  private async watch(): Promise<void> {
-    const i32 = () => new Int32Array(this.wasm.wasmMemory.buffer);
-    let seen = Atomics.load(i32(), this.doorbell >>> 2);
-    for (;;) {
-      const w = (Atomics as unknown as { waitAsync: WaitAsync }).waitAsync(
-        i32(),
-        this.doorbell >>> 2,
-        seen,
-        1000,
-      );
-      if (w.async) await w.value;
-      seen = Atomics.load(i32(), this.doorbell >>> 2);
-      this.tick();
-    }
+  private stopped = false;
+
+  private watch(): Promise<void> {
+    return watchDoorbell(
+      () => this.wasm.wasmMemory.buffer,
+      this.doorbell,
+      () => this.tick(),
+      this.note,
+      () => this.stopped,
+      "idec",
+    );
+  }
+
+  /** The process ended (play.ts): no more looks. */
+  stop(): void {
+    this.stopped = true;
   }
 
   /** Files waiting: each copied out and decoded (on each doorbell). */

@@ -26,6 +26,9 @@ var vnvmTlsRelay = null;
 var vnvmAccount = null;
 var vnvmSensitive = null;
 var vnvmFs = null;
+// this process's id (SAKE_PID: a process another one started; the first is 0x10), what the
+// shared locks' words hold while one of its threads has them (host/vnfs.js, host/vnkern.js)
+var vnvmPid = 0x10;
 // web/bench.html reads the program's output: the page names a BroadcastChannel (`vnvmPrint`)
 // and its threads' lines go there too (a program's output, sake's console_write on stderr,
 // comes from its thread's worker, not the page)
@@ -64,6 +67,7 @@ Module.preInit = [].concat(Module.preInit || [], () => {
   // used only once a child process starts, kura/src/vfs/shared.rs)
   vnvmFs = Module.vnvmFs || (!ENVIRONMENT_IS_NODE ? ippaiSharedFs() : null);
   vnvmJitBundle = Module.vnvmJit || null;
+  vnvmPid = Number((Module.vnvmEnv && Module.vnvmEnv.SAKE_PID) || (ENVIRONMENT_IS_NODE && process.env.SAKE_PID) || 0x10);
   vnvmTrees = Module.vnvmFiles || null;
   if (!ENVIRONMENT_IS_NODE) { const u = new URL("/net/tls/soft-denchi", location.href); u.protocol = u.protocol === "https:" ? "wss:" : "ws:"; vnvmTlsRelay = u.href; }
   vnvmKernel = Module.vnvmKernel || (typeof SharedArrayBuffer == 'function' ? new SharedArrayBuffer(IPPAI_KERNEL_BYTES) : null);
@@ -73,26 +77,44 @@ Module.preInit = [].concat(Module.preInit || [], () => {
     vnvmSaves.set(Module.vnvmSaves);
   }
 });
+// What this instance's threads get, and the end of it (vnvmForget, at the exit): each instance
+// in the realm (the page's child processes, host/node-main.js's) adds its own, found again by
+// the memory the 'load' message names (else the first instance's values, its saved JIT regions
+// and saves, went to every later instance's threads, and its closure kept it alive).
+var vnvmForget = () => {};
 if (!ENVIRONMENT_IS_PTHREAD) {
   // the main thread adds them to each worker's 'load' message
   const W = ENVIRONMENT_IS_NODE ? require('worker_threads').Worker : globalThis.Worker;
-  if (W && !W.prototype.vnvmPost) {
-    W.prototype.vnvmPost = W.prototype.postMessage;
-    W.prototype.postMessage = function (m, ...rest) {
-      if (m && m.cmd === 'load') {
-        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmSensitive, vnvmFs, vnvmPrint: Module.vnvmPrint || null };
-        // (what the thread asks of the host: to start a process)
-        const ask = (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel, vnvmFs);
-        if (ENVIRONMENT_IS_NODE) this.on('message', ask);
-        else this.addEventListener('message', (e) => ask(e.data));
-        if (!ENVIRONMENT_IS_NODE) {
-          m.vnvmFetchPort = ippaiFetchConnect();
-          m.vnvmTlsPort = ippaiTlsConnect();
-          rest[0] = [...(rest[0] || []), m.vnvmFetchPort, m.vnvmTlsPort];
-        }
-      }
-      return this.vnvmPost(m, ...rest);
+  if (W) {
+    const host = {
+      memory: () => (typeof wasmMemory == 'undefined' ? undefined : wasmMemory),
+      load: () => ({ vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmSensitive, vnvmFs, vnvmPid, vnvmPrint: Module.vnvmPrint || null }),
+      // (what the thread asks of the host: to start a process)
+      ask: (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel, vnvmFs),
+      ports: () => [ippaiFetchConnect(), ippaiTlsConnect()],
     };
+    const hosts = (W.vnvmHosts ??= new Set());
+    hosts.add(host);
+    vnvmForget = () => hosts.delete(host);
+    if (!W.prototype.vnvmPost) {
+      W.prototype.vnvmPost = W.prototype.postMessage;
+      W.prototype.postMessage = function (m, ...rest) {
+        if (m && m.cmd === 'load') {
+          const all = [...hosts];
+          const h = all.find((x) => x.memory() === m.wasmMemory) ?? all[0];
+          if (h) {
+            m = { ...m, ...h.load() };
+            if (ENVIRONMENT_IS_NODE) this.on('message', h.ask);
+            else this.addEventListener('message', (e) => h.ask(e.data));
+            if (!ENVIRONMENT_IS_NODE) {
+              [m.vnvmFetchPort, m.vnvmTlsPort] = h.ports();
+              rest[0] = [...(rest[0] || []), m.vnvmFetchPort, m.vnvmTlsPort];
+            }
+          }
+        }
+        return this.vnvmPost(m, ...rest);
+      };
+    }
   }
 } else {
   const take = (d) => {
@@ -105,6 +127,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       vnvmAccount = d.vnvmAccount || null;
       vnvmSensitive = d.vnvmSensitive || null;
       vnvmFs = d.vnvmFs || null;
+      vnvmPid = d.vnvmPid || 0x10;
       if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
       if (d.vnvmPrint && !ENVIRONMENT_IS_NODE && !vnvmPrintChannel) vnvmPrintChannel = new BroadcastChannel(d.vnvmPrint);
       if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
@@ -130,10 +153,16 @@ if (ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
 // ended processes (host/vnkern.js), which the others read.
 if (!ENVIRONMENT_IS_PTHREAD) {
   const exited = (code) => {
+    const pid = vnvmPid;
+    // (the processes' shared file system's lock, if a thread of this one had it: host/vnfs.js;
+    // else every other process would wait for it for good, the page's thread spinning)
+    if (vnvmFs) {
+      const f = new Int32Array(vnvmFs, 0, 8);
+      if (Atomics.compareExchange(f, 0, pid, 0) === pid) Atomics.notify(f, 0);
+    }
     if (!vnvmKernel) return;
     const h = new Int32Array(vnvmKernel, 0, 256);
     if (!Atomics.load(h, 2)) return;
-    const pid = Number((Module.vnvmEnv && Module.vnvmEnv.SAKE_PID) || (ENVIRONMENT_IS_NODE && process.env.SAKE_PID) || 0x10);
     // (the kernel's lock, if a thread of this one had it: host/vnkern.js)
     if (Atomics.compareExchange(h, 5, pid, 0) === pid) {
       Atomics.store(h, 0, 0);
@@ -149,11 +178,13 @@ if (!ENVIRONMENT_IS_PTHREAD) {
   const onExit = Module.onExit;
   Module.onExit = (code) => {
     exited(code);
+    vnvmForget();
     onExit?.(code);
   };
   const onAbort = Module.onAbort;
   Module.onAbort = (what) => {
     exited(3);
+    vnvmForget();
     onAbort?.(what);
   };
 }
@@ -164,6 +195,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
 // one, rarely). Records: fd, u16 length, bytes.
 if (!ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
   let buf = 0;
+  let every = 0;
   const CAP = 1 << 16;
   const drain = () => {
     if (!buf) return;
@@ -183,18 +215,27 @@ if (!ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
     if (wasmExports.vnhost_output_queue) {
       buf = _malloc(CAP);
       wasmExports.vnhost_output_queue();
-      setInterval(drain, 50);
+      every = setInterval(drain, 50);
     }
     ready?.();
   };
   const onExit = Module.onExit;
+  // (the last lines, then no more: the timer's closure would keep the ended instance, its
+  // whole memory, alive and call into it 20 times a second)
+  const last = () => {
+    try {
+      drain();
+    } catch {}
+    clearInterval(every);
+    buf = 0;
+  };
   Module.onExit = (code) => {
-    drain();
+    last();
     onExit?.(code);
   };
   const onAbort = Module.onAbort;
   Module.onAbort = (what) => {
-    drain();
+    last();
     onAbort?.(what);
   };
 }
