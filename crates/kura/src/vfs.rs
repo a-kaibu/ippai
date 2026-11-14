@@ -1585,8 +1585,11 @@ fn foresee_table(text: &str) {
     HAS_TABLE.store(!p.table.is_empty(), std::sync::atomic::Ordering::Relaxed);
 }
 static PREDICT: Mutex<Option<Predict>> = Mutex::new(None);
-/// Bytes a script's names fetch ahead at most, and each file or member at most.
-const PREDICT_BYTES: u64 = 48 << 20;
+/// Bytes a script's names fetch ahead at most, and each file or member at most. 16 MiB: replayed
+/// against worker2's read-order lists (hints_eval.rs, 2026-11-14) it missed as few as 48 MiB
+/// (KiriKiri 13.5%, Siglus 13.7% with the start's hints) with 20% less fetched for nothing; 8
+/// MiB missed more.
+const PREDICT_BYTES: u64 = 16 << 20;
 std::thread_local! {
     /// In a prediction's own reads (read_at again: no prediction of those).
     static PREDICTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

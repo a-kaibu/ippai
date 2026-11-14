@@ -211,7 +211,7 @@ Two more say what comes next whichever way the game goes, on its first run too:
   plain, UTF-16, or KiriKiri's `FE FE mode FF FE` text encryption, modes 0-2) and takes the
   names in it (`[bg storage="bg01"]`, `@voice v_0012`, `[jump storage=second.ks]`). Each name
   that is a store file or an .xp3 member (by name, or without its extension, as KiriKiri names
-  storage) goes to the page as a hint: its chunks, in the order named, 48 MiB at most per
+  storage) goes to the page as a hint: its chunks, in the order named, 16 MiB at most per
   script, 8 MiB per file. The gallery's script names the gallery's pictures, a route's its
   scenes. Scripts a game encrypts its own way (cxdec and the like) read as noise and name
   nothing; compiled, packed ones (Siglus Scene.pck, BGI) neither (per-engine decoders: later).
@@ -232,6 +232,33 @@ Each first read of a chunk is counted by where it was then (`masuReads`): `devic
 (checked, on its way into the cache), `coming` (a fetch ahead on its way), `none` (the game's
 own fetch); with the milliseconds waited. The run log has a line a minute: `game reads, first
 of each chunk: ...`. `coming` + `none` is the real miss rate the 37% above is a floor of.
+
+## What every start reads, and how much it all helps
+
+The first read that waits also hints what every start reads, whatever the game goes on to
+(hints.rs `boot`, vfs.rs `booted`): plugins, fonts and settings whole, and each archive's first
+and last chunks (KiriKiri opens every .xp3: its header, then its index at the end; Siglus' .ovk
+voices left out), 96 MiB at most. With layout hints and tables, 74% of what still waited was
+this.
+
+Tables for KiriKiri titles whose plugin encrypts their .xp3 simply (XOR a key, XOR the hash,
+hash >> 12, odd/even, rotate by bit count: foresee `Scheme`) are read decrypted: masu foresee
+tells the scheme from members whose first bytes are known (images, sounds) or that read as text,
+as vnrun's krkrz patch 0002 does. hulotte read as Xor(149), cube as Xor(18). Protected archives
+(dummy member names, cxdec) still name nothing.
+
+Replayed against worker2's read-order lists (10 games, 406 reads, 2026-11-14; `masu foresee`
+tables, hints_eval HINTS_FORESEE):
+
+| engine | none | layout | + tables | + tables + start |
+|---|---|---|---|---|
+| KiriKiri (156 reads) | 100% | 53.8% / 454 MiB wasted | 47.4% / 740 | 13.5% / 449 (16 MiB per read) |
+| Siglus (226) | 100% | 24.3% / 148 | 16.8% / 110 | 13.7% / 113 |
+| Artemis (23) | 100% | 52.2% / 67 | 52.2% | 47.8% / 78 |
+
+The KiriKiri lists end soon after the title (4-53 reads), so the tables' worth there shows on
+longer plays only (the run traces). A script's names at most 16 MiB per read: as few misses as
+48 MiB, 20% less fetched for nothing; 8 MiB missed more.
 
 ## Run traces and their replay (crates/kura/src/vfs/trace.rs, replay.rs)
 
