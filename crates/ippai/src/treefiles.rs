@@ -207,9 +207,15 @@ fn range(h: &HeaderMap, size: u64) -> Option<Option<(u64, u64)>> {
 const MAX_PAGE: u64 = 16 << 20;
 
 /// A page with the frame's script first (web/src/frame.ts, served by the game listener): after
-/// `<head>` when it has one.
+/// `<head>` when it has one. A ".htm" that is not markup (SKYNovel's encrypted frames: base64
+/// the game decrypts after an XHR, #234) goes out as it is: the script in front of it would
+/// make it undecryptable.
 fn with_hook(page: Vec<u8>) -> Vec<u8> {
     const HOOK: &[u8] = b"<script src=\"/frame.js\"></script>";
+    let body = page.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&page);
+    if body.iter().find(|c| !c.is_ascii_whitespace()) != Some(&b'<') {
+        return page;
+    }
     let low = page.to_ascii_lowercase();
     let at = low
         .windows(5)
@@ -383,6 +389,8 @@ mod tests {
         };
         let (c0, c2) = (put(b"0123"), put(b"89"));
         let page = put(b"<html><head><title>x</title></head></html>");
+        // (SKYNovel's encrypted frame: base64 text named .htm, #234)
+        let crypt = put(b"fObKeb37k/BjAR+2h6weLbn19Tm8vwK6PvL4BeSN");
         std::fs::create_dir_all(dir.join("trees")).unwrap();
         std::fs::write(
             dir.join("trees/t.tsv"),
@@ -390,7 +398,7 @@ mod tests {
         )
         .unwrap();
         // (a second tree, chunked so the page is one chunk)
-        std::fs::write(dir.join("trees/p.tsv"), format!("vnvm-tree\t2\t1024\nf\t644\t0\tWWW/Index.html\t42\t{page}:42\n")).unwrap();
+        std::fs::write(dir.join("trees/p.tsv"), format!("vnvm-tree\t2\t1024\nf\t644\t0\tWWW/Index.html\t42\t{page}:42\nf\t644\t0\tframes/yesno.htm\t40\t{crypt}:40\n")).unwrap();
         let t = Trees { store: dir.clone(), remote: Arc::new(None), cache: Default::default(), decoded: Default::default() };
         (dir, Router::new().route("/tree/{name}/{*path}", get(file)).with_state(t))
     }
@@ -681,6 +689,10 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(String::from_utf8(b.clone()).unwrap(), "<html><head><script src=\"/frame.js\"></script><title>x</title></head></html>");
         assert_eq!(h[header::CONTENT_LENGTH], b.len().to_string());
+        // (not markup: as it is, or the game cannot decrypt it)
+        let (s, _, b) = get_(&app, "/tree/p/frames/yesno.htm", None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(b, b"fObKeb37k/BjAR+2h6weLbn19Tm8vwK6PvL4BeSN");
         let (s, _, _) = get_(&app, "/tree/p/www/nothere.html", None).await;
         assert_eq!(s, StatusCode::NOT_FOUND);
         let (s, _, _) = get_(&app, "/tree/..%2Fx/a", None).await;
@@ -701,6 +713,24 @@ mod proptests {
     }
 
     proptest! {
+        /// The script goes into markup (after <head> when there is one) exactly once, and
+        /// taking it out gives the page back; anything else (base64, JSON, text) is untouched.
+        #[test]
+        fn hook_only_in_markup(pre in "[ \t\r\n]{0,3}", bom in any::<bool>(), body in "[A-Za-z0-9+/=]{0,60}", head in any::<bool>(), tail in "[ -~]{0,40}") {
+            const HOOK: &str = "<script src=\"/frame.js\"></script>";
+            let b = if bom { "\u{feff}" } else { "" };
+            let plain = format!("{b}{pre}{body}");
+            prop_assert_eq!(with_hook(plain.clone().into_bytes()), plain.into_bytes());
+            let markup = format!("{b}{pre}<html>{}{tail}", if head { "<head>" } else { "" });
+            let got = String::from_utf8(with_hook(markup.clone().into_bytes())).unwrap();
+            prop_assert_eq!(got.matches(HOOK).count(), markup.matches(HOOK).count() + 1);
+            prop_assert_eq!(got.replacen(HOOK, "", 1), markup.clone());
+            if head {
+                let want = format!("<head>{HOOK}");
+                prop_assert!(got.contains(&want), "{}", got);
+            }
+        }
+
         /// Any Range header against any size: none, unsatisfiable, or bytes inside the file.
         #[test]
         fn range_inside_the_file(v in "(bytes=)?[ 0-9]{0,6}-?[ 0-9]{0,6}(,[0-9]-[0-9])?|bytes=-[0-9]{1,25}|bytes=[0-9]{1,25}-", size in prop_oneof![Just(0u64), 1u64..5000, Just(u64::MAX)]) {

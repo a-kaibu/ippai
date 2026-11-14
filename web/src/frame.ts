@@ -6,6 +6,7 @@
 // ippai's saved games and the Node stand-ins NW.js games reach for; the saves come from the
 // app's page, and until they do the page's DOMContentLoaded and load wait.
 import { FILE, type FromFrame, type Init } from "./frame-protocol";
+import { toApp } from "./skynovel";
 import { fileUrl, readSync } from "./sync-read";
 import { folderDirs, HELLO_AGAIN, HELLO_WAIT_MS, normPath as norm } from "./webstore";
 
@@ -203,7 +204,11 @@ const node =
   !/\/resources\/app\//i.test(decodeURIComponent(location.pathname)) || location.hash === "#ippai-node";
 Object.defineProperty(window, "localStorage", { value: storage(items, changed) });
 if (node) Object.assign(window, { require: nodeRequire(folder, items, changed), process: nodeProcess() });
-else Object.assign(window, { studio_api: studioApi(items, changed) });
+else
+  Object.assign(window, {
+    studio_api: studioApi(items, changed),
+    to_app: toApp(items, changed, location.href),
+  });
 
 // DOMContentLoaded and load wait for the saves (the game reads them from its handlers)
 let ready = false;

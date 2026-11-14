@@ -6,7 +6,7 @@
 // other games or the server's other routes: its pages start with frame.ts (frame.js), which
 // asks this page for the game's saves and sends back what the game writes, and nothing else
 // (frame-protocol.ts).
-import { electronNode } from "./electron";
+import { electronNode, electronPages } from "./electron";
 import { fromFrame, type Init } from "./frame-protocol";
 import { loadSaves, storeSaves } from "./saves";
 import { SAVE_SOON_MS, SaveItems } from "./webstore";
@@ -45,7 +45,15 @@ async function startPage(base: string): Promise<string | null> {
   } catch (e) {
     console.warn("package.json:", e);
   }
-  for (const page of [main, "www/index.html", "index.html"]) {
+  // (Electron: the main script names the page it opens, SKYNovel's doc/app/index.htm, #234)
+  const named: string[] = [];
+  if (/\.[cm]?js$/i.test(main)) {
+    const code = await fetch(base + enc(main))
+      .then((r) => (r.ok ? r.text() : ""))
+      .catch(() => "");
+    named.push(...electronPages(main, code));
+  }
+  for (const page of [main, ...named, "www/index.html", "index.html"]) {
     if (!/\.html?$/i.test(page)) continue;
     const h = await fetch(base + enc(page), { method: "HEAD" }).catch(() => null);
     if (h?.ok) return base + enc(page);
