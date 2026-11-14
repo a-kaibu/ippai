@@ -9,7 +9,7 @@ import { Play, Radio, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { GameEntry } from "../launcher";
-import { offlineState, startSave, type OfflineState } from "../offline";
+import { askBeforeSave, offlineState, startSave, type Line, type OfflineState } from "../offline";
 import { SaveProgress, size, useSaves } from "./Storage";
 
 export function SaveFirst({
@@ -22,17 +22,22 @@ export function SaveFirst({
   onClose: () => void;
 }) {
   const [state, setState] = useState<OfflineState | null>(null);
-  const [phase, setPhase] = useState<"saving" | "done" | "failed" | "stopped">("saving");
+  // (on a mobile line or with data saving: asked first, the size shown)
+  const [phase, setPhase] = useState<"ask" | "saving" | "done" | "failed" | "stopped">(() =>
+    askBeforeSave((navigator as { connection?: Line }).connection) ? "ask" : "saving",
+  );
   const [error, setError] = useState("");
   const [run, setRun] = useState(0);
   const [save, setSave] = useState<ReturnType<typeof startSave> | null>(null);
   const progress = useSaves().get(game.id);
+  const asking = phase === "ask";
   useEffect(() => {
     let live = true;
     void offlineState(game).then(
       (s) => live && setState(s),
       () => {},
     );
+    if (asking) return () => void (live = false);
     const s = startSave(game);
     setSave(s);
     setPhase("saving");
@@ -46,7 +51,7 @@ export function SaveFirst({
       },
     );
     return () => void (live = false);
-  }, [game, run]);
+  }, [game, run, asking]);
   const stream = () => {
     save?.stop.abort();
     onPlay(game);
@@ -69,6 +74,12 @@ export function SaveFirst({
             ) : (
               <p className="text-xs text-muted-foreground">保存の準備中…</p>
             ))}
+          {phase === "ask" && (
+            <p data-testid="save-first-ask">
+              モバイル回線かデータセーバーが有効です。この回線で{state ? `約 ${size(state.bytes)} を` : ""}
+              保存しますか？
+            </p>
+          )}
           {phase === "stopped" && <p className="text-muted-foreground">保存を中止しました。</p>}
           {error && <p className="text-destructive">保存できませんでした: {error}</p>}
           <div className="flex flex-wrap gap-2">
@@ -78,7 +89,9 @@ export function SaveFirst({
               </Button>
             ) : (
               <>
-                {phase === "saving" ? (
+                {phase === "ask" ? (
+                  <Button onClick={() => setPhase("saving")}>この回線で保存する</Button>
+                ) : phase === "saving" ? (
                   <Button variant="outline" onClick={() => save?.stop.abort()}>
                     <X /> 中止
                   </Button>

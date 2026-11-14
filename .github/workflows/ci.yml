@@ -121,6 +121,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/audio-sink-browser.mjs
+      - name: Pictures through ImageDecoder as Windows decodes them, Exif turns or not (idec.ts)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/idec-browser.mjs
       - name: Save state slots from two devices at once (content-named files, merged index)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs

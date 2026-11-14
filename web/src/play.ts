@@ -41,6 +41,7 @@ import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
 import {
+  fetchBoot,
   fetchRetry,
   getChunk,
   chunkCache,
@@ -384,7 +385,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       .filter(Boolean)
       .map(async (tree) => {
         const name = `trees/${tree}.tsv`;
-        vnvmFiles[name] = await fetchRetry(new URL(`store/${name}`, location.href)).catch((e: unknown) => {
+        vnvmFiles[name] = await fetchBoot(new URL(`store/${name}`, location.href)).catch((e: unknown) => {
           throw new Error(`mount ${tree}: ${e instanceof Error ? e.message : String(e)}`);
         });
       }),

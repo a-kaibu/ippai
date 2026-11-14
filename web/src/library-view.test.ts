@@ -341,3 +341,26 @@ describe("visibleGames by brand", () => {
     }
   });
 });
+
+describe("visibleGames (property, seeded)", () => {
+  it("is the list's order, kept to favorites and the brand, as a plain scan would keep it", () => {
+    let x = 77;
+    const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+    const brands = ["Key", "august", "ゆずソフト", undefined];
+    for (let run = 0; run < 300; run++) {
+      const list: GameEntry[] = Array.from({ length: rnd(40) }, (_, i) => ({
+        ...a,
+        id: `g${i}`,
+        title: `game ${i}`,
+        meta: { ...a.meta!, brand: brands[rnd(4)] },
+      }));
+      const favorites = Array.from({ length: rnd(20) }, () => `g${rnd(50)}`);
+      const filter = rnd(2) ? "all" : "favorites";
+      const brand = rnd(3) ? null : (brands[rnd(3)] ?? null);
+      const want = list.filter(
+        (g) => (filter === "all" || favorites.includes(g.id)) && (brand === null || brandOf(g) === brand),
+      );
+      expect(visibleGames(list, "", filter, favorites, brand)).toEqual(want);
+    }
+  });
+});

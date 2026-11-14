@@ -1,7 +1,9 @@
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import { blake3Hex } from "./blake3";
 import type { ChunkStore } from "./chunkstore";
 import {
+  BOOT_GIVE_UP_MS,
+  fetchBoot,
   fetchRetry,
   getChunk,
   HttpError,
@@ -379,5 +381,32 @@ test("trim: the oldest written go first, counted only when gone (property, seede
         b = order[i]!;
       expect(a.time < b.time || (a.time === b.time && kept.indexOf(a) < kept.indexOf(b))).toBe(true);
     }
+  }
+});
+
+test("what the start screen waits on is given up after BOOT_GIVE_UP_MS, not 15 minutes, on a server that answers 503", async () => {
+  vi.useFakeTimers();
+  try {
+    let asked = 0;
+    const request: typeof fetch = async () => (asked++, new Response("busy", { status: 503 }));
+    const t0 = Date.now();
+    const got = fetchBoot("/trees/x.tsv", { request }).then(
+      () => "ok",
+      (e: unknown) => String(e),
+    );
+    await vi.advanceTimersByTimeAsync(BOOT_GIVE_UP_MS + 60_000);
+    expect(await got).toMatch(/HTTP 503/);
+    expect(Date.now() - t0).toBeLessThanOrEqual(BOOT_GIVE_UP_MS + 60_000);
+    expect(asked).toBeGreaterThan(1);
+    expect(BOOT_GIVE_UP_MS).toBeLessThan(15 * 60000);
+    // (still retried: one that answers within the time is read)
+    let n = 0;
+    const later: typeof fetch = async () =>
+      n++ < 3 ? new Response("", { status: 503 }) : new Response("tsv");
+    const ok = fetchBoot("/trees/y.tsv", { request: later });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(new TextDecoder().decode(await ok)).toBe("tsv");
+  } finally {
+    vi.useRealTimers();
   }
 });

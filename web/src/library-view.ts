@@ -133,8 +133,9 @@ export function visibleGames(
   favorites: readonly string[],
   brand: string | null = null,
 ): GameEntry[] {
+  const fav = filter === "all" ? null : new Set(favorites);
   const scored = sorted
-    .filter((g) => (filter === "all" || favorites.includes(g.id)) && (brand === null || brandOf(g) === brand))
+    .filter((g) => (fav === null || fav.has(g.id)) && (brand === null || brandOf(g) === brand))
     .map((g) => ({ g, score: searchScore(query, searchable(g)) }))
     .filter((x) => x.score > 0);
   // (while searching, the best fits first; ties keep the list's order: sort is stable)

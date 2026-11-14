@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, test } from "vite-plus/test";
 import {
   allowedTypos,
+  FORMS_MAX,
   normalize,
+  normalized,
   queryWords,
   searchScore,
   subsequence,
@@ -181,4 +183,15 @@ describe("wordScore / searchScore", () => {
     expect(searchScore("あねもい key", anemoi)).toBeGreaterThan(0);
     expect(searchScore("あねもい 枕", anemoi)).toBe(0);
   });
+});
+
+test("normalized: the same as normalize, kept within FORMS_MAX (differential, seeded)", () => {
+  let x = 5;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  const alphabet = ["ア", "あ", "ｱ", "Ａ", "a", "１", "1", " ", "・", "ネ", "ﾈ", "ー", "Ö", "日"];
+  for (let i = 0; i < FORMS_MAX + 5000; i++) {
+    const s = Array.from({ length: rnd(8) }, () => alphabet[rnd(alphabet.length)]).join("") + (i % 997);
+    expect(normalized(s)).toBe(normalize(s));
+    if (i % 3 === 0) expect(normalized(s)).toBe(normalize(s));
+  }
 });

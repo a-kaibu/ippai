@@ -102,15 +102,39 @@ export function Note({ state }: { state: ProfileState }) {
   );
 }
 
+/** The most a .ippai file may hold (ippai serve's limit for /api/packages). */
+export const PACKAGE_MAX = 512 << 20;
+
+/** Why `f` is not taken for a restore, or "" when it is. */
+export function restoreProblem(f: { size: number }): string {
+  if (f.size === 0) return "空のファイルです";
+  if (f.size > PACKAGE_MAX)
+    return `ファイルが大きすぎます（${Math.ceil(f.size / 2 ** 20)} MiB、最大 ${PACKAGE_MAX >> 20} MiB）`;
+  return "";
+}
+
+/** How long a restore of `bytes` may take: a minute, and a minute more for each 4 MiB (a line
+ * that stalls ends the wait instead of keeping the button busy for good). */
+export function restoreTimeout(bytes: number): number {
+  return 60_000 * (1 + Math.ceil(bytes / (4 << 20)));
+}
+
 /** The game's saves and note as one .ippai file, and back. */
 export function Backup({ game, state }: { game: string; state: ProfileState }) {
   const file = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const url = `api/packages/${encodeURIComponent(game)}`;
   const restore = (f: File) => {
+    // (a wrong file picked: said at once, not sent whole first; the server takes 512 MiB at most)
+    const wrong = restoreProblem(f);
+    if (wrong) return void toast.error(`復元できませんでした: ${wrong}`);
     if (!confirm(`${f.name} から復元します。今のセーブデータとメモは置き換わります。`)) return;
     setBusy(true);
-    void fetch(new URL(url, location.href), { method: "PUT", body: f })
+    void fetch(new URL(url, location.href), {
+      method: "PUT",
+      body: f,
+      signal: AbortSignal.timeout(restoreTimeout(f.size)),
+    })
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
         await state.reload();

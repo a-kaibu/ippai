@@ -9,6 +9,7 @@
 import { electronNode } from "./electron";
 import { fromFrame, type Init } from "./frame-protocol";
 import { loadSaves, storeSaves } from "./saves";
+import { SAVE_SOON_MS, SaveItems } from "./webstore";
 
 /** The program's tree and folder in it, from &run and the &mount that holds it. */
 function where(run: string, mounts: string[]): { tree: string; dir: string } | null {
@@ -97,7 +98,8 @@ export async function startWebGame(
   const origin = await gameOrigin();
 
   // saves: the page's localStorage (and fs writes), as one JSON blob
-  const items = new Map<string, string>();
+  const saves = new SaveItems();
+  const items = saves.map;
   // (none yet: those of before the rename, Z:\vnvm, if any; the next save goes under the new name)
   let saved = saveName ? await loadSaves(`${saveName}-web`) : null;
   if (saveName && !saved?.length && oldSaves) saved = await loadSaves(`${oldSaves}-web`);
@@ -106,7 +108,7 @@ export async function startWebGame(
       for (const [k, v] of Object.entries(
         JSON.parse(new TextDecoder().decode(saved)) as Record<string, string>,
       ))
-        items.set(k, v);
+        if (typeof v === "string") saves.set(k, v);
     } catch (e) {
       console.warn("saves:", e);
     }
@@ -134,6 +136,9 @@ export async function startWebGame(
     return pending;
   };
   setInterval(() => void save(), 3000);
+  // (soon after a change too: a phone's page put away may be frozen before the next interval)
+  let soon: ReturnType<typeof setTimeout> | undefined;
+  let refused = false;
   addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void save());
   addEventListener("pagehide", () => void save());
 
@@ -173,9 +178,16 @@ export async function startWebGame(
       const init: Init = { ippai: "init", items: [...items], base, names };
       frame.contentWindow!.postMessage(init, origin);
     } else if (m?.ippai === "set") {
-      if (m.value === null) items.delete(m.key);
-      else items.set(m.key, m.value);
+      if (!saves.set(m.key, m.value)) {
+        if (!refused) log("ゲームのセーブが大きすぎるため、これ以上は保存しません");
+        refused = true;
+        return;
+      }
       generation++;
+      soon ??= setTimeout(() => {
+        soon = undefined;
+        void save();
+      }, SAVE_SOON_MS);
     }
   });
   document.querySelector<HTMLCanvasElement>("#screen")!.hidden = true;

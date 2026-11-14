@@ -583,3 +583,40 @@ test("video: a copy that ends after the guest closed the stream tells the guest 
     restore();
   }
 });
+
+test("video: a stream whose header cannot be read fails alone, once; a decoder that throws on feeding fails its stream", async () => {
+  const m = videoModule(4);
+  const decs: FakeDec[] = [];
+  const restore = fakeVideo((d) => decs.push(d));
+  try {
+    const w = m.wasm as { _vnhost_video_list: (out: number, max: number) => number };
+    const list = w._vnhost_video_list.bind(m.wasm);
+    // a second stream (id 2) with a header past the end of memory
+    w._vnhost_video_list = (out, max) => {
+      const n = list(out, max);
+      new Uint32Array(m.mem.buffer, out + 24, 6).set([2, 0xfffff0, 64, 0, 0, 0]);
+      return n + 1;
+    };
+    const notes: string[] = [];
+    const v = new Video(m.wasm, (t) => notes.push(t), new Gate(), false);
+    for (let i = 0; i < 5; i++) {
+      v.tick();
+      await tick(2);
+    }
+    expect(m.calls.filter((c) => c === "fail")).toHaveLength(1);
+    // (stream 1 is served all the same)
+    expect(decs).toHaveLength(1);
+    expect(decs[0]!.fed.length).toBeGreaterThan(0);
+    // stream 1's decoder throws when fed: that stream fails, the tick does not throw
+    (decs[0] as unknown as { decode: () => void }).decode = () => {
+      throw new Error("InvalidStateError");
+    };
+    m.setWant(3);
+    expect(() => v.tick()).not.toThrow();
+    await tick(2);
+    expect(m.calls.filter((c) => c === "fail")).toHaveLength(2);
+    expect(decs[0]!.closed).toBe(true);
+  } finally {
+    restore();
+  }
+});

@@ -7,21 +7,48 @@
 // app's page, and until they do the page's DOMContentLoaded and load wait.
 import { FILE, type FromFrame, type Init } from "./frame-protocol";
 import { fileUrl, readSync } from "./sync-read";
+import { folderDirs, HELLO_AGAIN, HELLO_WAIT_MS, normPath as norm } from "./webstore";
 
 type Changed = (key: string) => void;
 
 /** A Storage over `items` (string keys and values); `changed(key)` after each write. */
 function storage(items: Map<string, string>, changed: Changed): Storage {
-  const keys = () => [...items.keys()].filter((k) => !k.startsWith(FILE));
+  // (the keys' list made again only when a key comes or goes: a game's loop over length and
+  // key(i) built it anew on each call, n^2 in all)
+  let list: string[] | null = null;
+  let size = -1;
+  const keys = () => {
+    // (the saves that come from the app after the game's first scripts ran: more keys)
+    if (!list || size !== items.size) {
+      list = [...items.keys()].filter((k) => !k.startsWith(FILE));
+      size = items.size;
+    }
+    return list;
+  };
   const api: Storage = {
     get length() {
       return keys().length;
     },
     key: (i: number) => keys()[i] ?? null,
     getItem: (key: string) => items.get(String(key)) ?? null,
-    setItem: (key: string, value: string) => (items.set(String(key), String(value)), changed(String(key))),
-    removeItem: (key: string) => void (items.delete(String(key)) && changed(String(key))),
-    clear: () => keys().forEach((k) => (items.delete(k), changed(k))),
+    setItem: (key: string, value: string) => {
+      const k = String(key);
+      if (!items.has(k)) list = null;
+      items.set(k, String(value));
+      changed(k);
+    },
+    removeItem: (key: string) => {
+      const k = String(key);
+      if (items.delete(k)) {
+        list = null;
+        changed(k);
+      }
+    },
+    clear: () => {
+      const all = keys();
+      list = null;
+      for (const k of all) if (items.delete(k)) changed(k);
+    },
   };
   // (pages also use storage["key"] and Object.keys(storage))
   return new Proxy(api, {
@@ -36,15 +63,6 @@ function storage(items: Map<string, string>, changed: Changed): Storage {
         : undefined,
   });
 }
-
-const norm = (p: string) => {
-  const out: string[] = [];
-  for (const s of String(p).replaceAll("\\", "/").split("/")) {
-    if (s === "..") out.pop();
-    else if (s && s !== ".") out.push(s);
-  }
-  return out.join("/");
-};
 
 const nodePath = {
   sep: "/",
@@ -76,10 +94,11 @@ function nodeRequire(folder: Folder, items: Map<string, string>, changed: Change
     if (saved !== undefined) return Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
     return folder.names.has(norm(p)) ? readSync(fileUrl(folder.base, norm(p))) : null;
   };
-  const exists = (p: string) =>
-    items.has(FILE + norm(p)) ||
-    folder.names.has(norm(p)) ||
-    [...folder.names].some((name) => name.startsWith(norm(p).replace(/\/$/, "") + "/"));
+  let dirs: Set<string> | null = null;
+  const exists = (path: string) => {
+    const p = norm(path);
+    return items.has(FILE + p) || folder.names.has(p) || (dirs ??= folderDirs(folder.names)).has(p);
+  };
   const encoding = (opt: unknown) =>
     typeof opt === "string" ? opt : (opt as { encoding?: string } | undefined)?.encoding;
   const write = (p: string, data: unknown) => {
@@ -173,7 +192,9 @@ const items = new Map<string, string>();
 const folder: Folder = { base: "", names: new Set() };
 let app: string | null = null;
 const post = (m: FromFrame) => parent.postMessage(m, app ?? "*");
-const changed: Changed = (key) => post({ ippai: "set", key, value: items.get(key) ?? null });
+/** false once the page went on without the app's saves: then what it writes is not kept */
+let keep = true;
+const changed: Changed = (key) => keep && post({ ippai: "set", key, value: items.get(key) ?? null });
 
 // Electron games' pages are under resources/app/ (they run without Node: contextIsolation,
 // and a global `process` stops a PixiJS game's title buttons), unless the game asks for Node
@@ -204,12 +225,27 @@ addEventListener("message", (e: MessageEvent) => {
     folder.base = m.base;
     for (const n of m.names) folder.names.add(n);
   }
+  go();
+});
+const go = () => {
   ready = true;
+  for (const t of again) clearTimeout(t);
   for (const ev of held)
     if (ev.type === "load") dispatchEvent(new Event("load"));
     else document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
-});
+};
 post({ ippai: "hello" });
+// (the app's page may not have heard the first: its listener came late, or the frame was put
+// back from the back-forward cache; before, the game stayed blank for good)
+const again = HELLO_AGAIN.map((ms) => setTimeout(() => ready || post({ ippai: "hello" }), ms));
+again.push(
+  setTimeout(() => {
+    if (ready) return;
+    console.error(`ippai: no saves from the app after ${HELLO_WAIT_MS} ms; the game goes on without them`);
+    keep = false;
+    go();
+  }, HELLO_WAIT_MS),
+);
 
 // a plugin that throws while it loads makes RPG Maker show the error instead of the game,
 // which the release runs past: until the page has loaded, those only go to the console

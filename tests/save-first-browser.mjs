@@ -325,7 +325,30 @@ try {
   for (let i = 0; i < 50 && (await saved()).h?.status === "saving"; i++) await page.waitForTimeout(100);
   assert.equal((await saved()).h?.status, "stopped");
   assert.ok(count.bucket + count.server - before < hChunks.size, "not all of it fetched");
-  console.log("save-first browser: saved whole before play (bucket many at once, server at most 4), saved game at once, 保存せずに遊ぶ passed");
+
+  // 4. on a mobile line (or with data saving): nothing is fetched until a yes, the size shown
+  await browser.addInitScript(() =>
+    Object.defineProperty(Navigator.prototype, "connection", {
+      get: () => ({ type: "cellular", saveData: false, addEventListener() {}, removeEventListener() {} }),
+    }),
+  );
+  await page.goBack();
+  await page.waitForURL((u) => !u.searchParams.has("game"));
+  // (the list loaded again, for the line as it is now)
+  await page.goto(page.url());
+  const asked = count.bucket + count.server;
+  await page.getByRole("button", { name: "すぐ遊ぶゲーム を起動" }).click();
+  await dialog.getByTestId("save-first-ask").waitFor({ timeout: 30000 });
+  await page.waitForTimeout(1500);
+  assert.equal(count.bucket + count.server, asked, "nothing fetched before the yes on a mobile line");
+  assert.match(await dialog.getByTestId("save-first-ask").innerText(), /約 .*B/, "the size shown");
+  assert.equal(await dialog.getByRole("progressbar", { name: "保存の進み" }).count(), 0);
+  await dialog.getByRole("button", { name: "この回線で保存する" }).click();
+  for (let i = 0; i < 100 && count.bucket + count.server === asked; i++) await page.waitForTimeout(100);
+  assert.ok(count.bucket + count.server > asked, "the save goes on after the yes");
+  await dialog.getByRole("button", { name: "保存せずに遊ぶ" }).click();
+  await page.waitForURL((u) => u.searchParams.get("game") === "h");
+  console.log("save-first browser: saved whole before play (bucket many at once, server at most 4), saved game at once, 保存せずに遊ぶ, asked first on a mobile line passed");
 } finally {
   await browser.close();
   server.kill();

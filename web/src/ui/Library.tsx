@@ -5,7 +5,16 @@
 // (audio and fullscreen need the user gesture); one not yet saved to the device whole is saved
 // there first (SaveFirst.tsx), and 遊ぶ, a click again, starts it.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Download,
   ExternalLink,
@@ -139,21 +148,24 @@ function Subtitle({
   );
 }
 
-function GameCard({
+// (memo, with callbacks that take the game: a keystroke in the search drew every card again)
+const GameCard = memo(function GameCard({
   game,
   last,
   favorite,
-  onPick,
-  onInfo,
+  onPick: pick,
+  onInfo: info,
   onBrand,
 }: {
   game: GameEntry;
   last?: number;
   favorite: boolean;
-  onPick: () => void;
-  onInfo: () => void;
+  onPick: (g: GameEntry) => void;
+  onInfo: (g: GameEntry) => void;
   onBrand: (b: string) => void;
 }) {
+  const onPick = () => pick(game);
+  const onInfo = () => info(game);
   const m = game.meta;
   return (
     <li className="group relative" data-game={game.id}>
@@ -211,7 +223,7 @@ function GameCard({
       </Button>
     </li>
   );
-}
+});
 
 /** The game last played here, large, to go on with it. */
 function Continue({
@@ -388,7 +400,11 @@ function MetaSource({ game, onUpdated }: { game: GameEntry; onUpdated: () => Pro
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game.id]);
+  // (one at a time: the effect's and a submit's ran side by side, two polls of the server)
+  const following = useRef<AbortController | null>(null);
   async function follow(ac: AbortController) {
+    if (following.current === ac) return;
+    following.current = ac;
     setBusy(true);
     try {
       const end = await untilSettled(game.id, (s) => !ac.signal.aborted && setStatus(s), ac.signal);
@@ -396,6 +412,7 @@ function MetaSource({ game, onUpdated }: { game: GameEntry; onUpdated: () => Pro
     } catch (e) {
       if (!ac.signal.aborted) setError(String(e instanceof Error ? e.message : e));
     } finally {
+      if (following.current === ac) following.current = null;
       if (!ac.signal.aborted) setBusy(false);
     }
   }
@@ -801,10 +818,22 @@ export function Library({
     setBrand(b);
     document.querySelector("main")?.scrollTo({ top: 0 });
   };
-  const shown = visibleGames(ordered, query, filter, favorites, brand);
-  const groups = groupGames(shown, view.group);
+  // (the list follows the typing a moment behind: a keystroke is not held up by the list)
+  const searched = useDeferredValue(query);
+  const shown = useMemo(
+    () => visibleGames(ordered, searched, filter, favorites, brand),
+    [ordered, searched, filter, favorites, brand],
+  );
+  const groups = useMemo(() => groupGames(shown, view.group), [shown, view.group]);
   const recent = byRecent[0] && last[byRecent[0].id] ? byRecent[0] : null;
-  const favoriteCount = games.filter((g) => favorites.includes(g.id)).length;
+  const favored = useMemo(() => new Set(favorites), [favorites]);
+  const favoriteCount = games.filter((g) => favored.has(g.id)).length;
+  // (the same functions on every render, for GameCard's memo; they call the latest)
+  const latest = useRef({ onPick, showInfo, pickBrand });
+  latest.current = { onPick, showInfo, pickBrand };
+  const pickCard = useCallback((g: GameEntry) => latest.current.onPick(g), []);
+  const infoCard = useCallback((g: GameEntry) => latest.current.showInfo(g), []);
+  const brandCard = useCallback((b: string) => latest.current.pickBrand(b), []);
   const setFavorite = (id: string, on: boolean) =>
     setFavorites((f) => (on ? [...new Set([...f, id])] : f.filter((x) => x !== id)));
   return (
@@ -981,10 +1010,10 @@ export function Library({
                           key={g.id}
                           game={g}
                           last={last[g.id]}
-                          favorite={favorites.includes(g.id)}
-                          onPick={() => onPick(g)}
-                          onInfo={() => showInfo(g)}
-                          onBrand={pickBrand}
+                          favorite={favored.has(g.id)}
+                          onPick={pickCard}
+                          onInfo={infoCard}
+                          onBrand={brandCard}
                         />
                       ))}
                     </ul>

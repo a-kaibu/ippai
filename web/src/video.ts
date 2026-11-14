@@ -55,6 +55,8 @@ interface Stream {
 
 export class Video {
   private streams = new Map<number, Stream>();
+  /** Streams whose header could not be read: failed once, not opened again each frame */
+  private bad = new Set<number>();
   private io: number;
   private layoutBuf: number;
   private doorbell: number;
@@ -103,13 +105,27 @@ export class Video {
     for (let k = 0; k < n; k++) {
       const [id, ptr, len, want] = [u32[k * 6]!, u32[k * 6 + 1]!, u32[k * 6 + 2]!, u32[k * 6 + 3]! | 0];
       live.add(id);
+      if (this.bad.has(id)) continue;
       let s = this.streams.get(id);
-      if (!s) {
-        s = this.open(id, ptr, len);
-        this.streams.set(id, s);
+      try {
+        if (!s) {
+          s = this.open(id, ptr, len);
+          this.streams.set(id, s);
+        }
+        if (!s.broken && want >= 0) this.serve(s, want);
+      } catch (e) {
+        // (one stream that throws (a bad header, a decoder closed under it) fails alone: before,
+        // it threw again on every frame and the streams after it were never served)
+        this.note(`video ${id}: ${String(e)}`);
+        if (s) {
+          if (!s.broken) this.fail(s);
+        } else {
+          this.wasm._vnhost_video_fail(id);
+          this.bad.add(id);
+        }
       }
-      if (!s.broken && want >= 0) this.serve(s, want);
     }
+    for (const id of this.bad) if (!live.has(id)) this.bad.delete(id);
     for (const [id, s] of this.streams) {
       if (!live.has(id)) {
         this.close(s);

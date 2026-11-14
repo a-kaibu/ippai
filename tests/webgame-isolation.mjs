@@ -36,7 +36,7 @@ writeFileSync(
     out.fs = require("fs").readFileSync("www/data.txt", "utf8");
     const b = require("fs").readFileSync("www/bytes.bin");
     out.bytes = b.length + ":" + Array.from(b).every((x, i) => x === ((i * 7) & 255));
-    out.exists = [require("fs").existsSync("www/img/big.png"), require("fs").existsSync("www/img"), require("fs").existsSync("www/none.txt")].join();
+    out.exists = ["www/img/big.png", "www/img", "www/none.txt", "www", "www/img/", "ww", ".", "www\\\\img"].map((p) => require("fs").existsSync(p)).join();
     try { require("fs").readFileSync("www/none.txt"); out.missing = "read"; } catch (e) { out.missing = e.code; }
     localStorage.setItem("progress", String(Number(out.saved ?? 0) + 1));
     for (const path of ["/saves/x", "/api/favorites", "/store/trees/sample.tsv", "/game-origin"]) {
@@ -137,7 +137,11 @@ try {
   assert.equal(first.saved, null);
   assert.equal(first.fs, "from the game's folder");
   assert.equal(first.bytes, "512:true", "binary files read through the synchronous fs");
-  assert.equal(first.exists, "true,true,false", "existsSync of a file, a folder, nothing");
+  assert.equal(
+    first.exists,
+    "true,true,false,true,true,false,true,true",
+    "existsSync of a file, a folder, nothing, the top folder, a slash, a name's prefix, the top, a backslash",
+  );
   assert.equal(first.missing, "ENOENT");
   assert.deepEqual(big, [], "a file the game does not read is not fetched");
   for (const path of ["/saves/x", "/api/favorites", "/store/trees/sample.tsv", "/game-origin"]) {
@@ -145,10 +149,44 @@ try {
     assert.equal(first[`app ${path}`], "blocked", `${path} on the app read from the game`);
   }
   assert.equal(first.put, "blocked", "a write to the app from the game");
-  // the save made it to the app's page and survives a reload
-  await page.waitForTimeout(3500);
+  // the save made it to the app's page and survives a reload, stored soon after the change
+  // (well before the 3 s interval: a phone's page put away is frozen before that)
+  await page.waitForTimeout(1200);
   const second = await result();
   assert.equal(second.saved, "1", "the game's save after a reload");
+
+  // the app's page that missed the frame's first hello (its listener late): the frame asks
+  // again and the game gets its saves (before: blank for good)
+  await page.waitForTimeout(1200);
+  const deaf = await browser.newPage();
+  deaf.on("console", (m) => console.log("deaf page:", m.text()));
+  await deaf.addInitScript(() => {
+    if (window !== top) return;
+    let dropped = 0;
+    addEventListener(
+      "message",
+      (e) => {
+        if (e.data?.ippai === "hello" && dropped++ === 0) e.stopImmediatePropagation();
+      },
+      true,
+    );
+  });
+  {
+    const t0 = Date.now();
+    await deaf.goto(playOf("sample", "Game.exe"));
+    await deaf.waitForSelector("#frame", { state: "attached", timeout: 20000 });
+    let f;
+    for (let i = 0; i < 100 && !f; i++) {
+      f = deaf.frames().find((x) => x.url().includes("/tree/sample/"));
+      if (!f) await deaf.waitForTimeout(100);
+    }
+    await f.waitForFunction(() => document.title.startsWith("done "), null, { timeout: 20000 });
+    const got = JSON.parse((await f.title()).slice(5));
+    assert.equal(got.saved, "2", "the saves reached a frame whose first hello was lost");
+    console.log(`lost hello: game ran after ${Date.now() - t0} ms`);
+  }
+  await deaf.close();
+  await page.waitForTimeout(1200);
 
   const tyrano = () => result(playOf("tyrano", "game.exe"), "tyrano");
   const t1 = await tyrano();
@@ -158,7 +196,7 @@ try {
     ["function", "function", "undefined", null, "win32"],
     "an Electron 7 page with nodeIntegration gets require and process",
   );
-  await page.waitForTimeout(3500);
+  await page.waitForTimeout(1200);
   const t2 = await tyrano();
   assert.equal(t2.saved, JSON.stringify({ n: 1, s: "セーブ" }), "its fs save after a reload");
   const iso = await result(playOf("isolated", "game.exe"), "isolated");

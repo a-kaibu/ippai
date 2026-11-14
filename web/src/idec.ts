@@ -56,7 +56,13 @@ export const imageDecode: Decode = async (file) => {
       const f = image.format ?? "";
       const layout = LAYOUTS[f];
       if (!layout) throw new Error(`planes ${f}`);
-      const [w, h] = [image.displayWidth, image.displayHeight];
+      // (the visible rect as coded, which copyTo copies: the display sizes are swapped for a JPEG
+      // whose Exif turns it (orientation 5-8), and copyTo threw; Windows' decoders do not turn
+      // it either)
+      const [w, h] = [
+        image.visibleRect?.width ?? image.codedWidth,
+        image.visibleRect?.height ?? image.codedHeight,
+      ];
       const data = new Uint8Array(planesSize(f, w, h));
       await image.copyTo(data, { layout: planes(f, w, h) });
       return { width: w, height: h, layout, data };

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vite-plus/test";
-import { breakdown, chunkFiles, PREFIX_PART, stateOf, TOP_PART, type Saved } from "./offline";
+import { describe, expect, it, test } from "vite-plus/test";
+import { askBeforeSave, breakdown, chunkFiles, PREFIX_PART, stateOf, TOP_PART, type Saved } from "./offline";
 import { treeChunks } from "./net";
 
 const rec = (status: Saved["status"]): Saved => ({ trees: ["prefix32", "g"], status });
@@ -119,4 +119,13 @@ describe("chunkFiles", () => {
     expect(m.get(h("3"))).toBe("g00/b.g00");
     expect(m.size).toBe(3);
   });
+});
+
+test("a whole-game save waits for a yes on a mobile line or with data saving, not on others", () => {
+  expect(askBeforeSave(undefined)).toBe(false);
+  expect(askBeforeSave({})).toBe(false);
+  expect(askBeforeSave({ type: "wifi" })).toBe(false);
+  expect(askBeforeSave({ type: "ethernet", saveData: false })).toBe(false);
+  expect(askBeforeSave({ type: "cellular" })).toBe(true);
+  expect(askBeforeSave({ type: "wifi", saveData: true })).toBe(true);
 });

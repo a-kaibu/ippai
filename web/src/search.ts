@@ -69,10 +69,27 @@ export interface Searchable {
   other: string[];
 }
 
+/** Normalized strings, kept: each game's strings were normalized again for every word of the
+ * query on every keystroke (several hundred games on a phone: typing lagged). */
+const forms = new Map<string, string>();
+/** As many kept at most (then they are made again) */
+export const FORMS_MAX = 50_000;
+
+/** normalize(s), kept for the next time. */
+export function normalized(s: string): string {
+  let n = forms.get(s);
+  if (n === undefined) {
+    if (forms.size >= FORMS_MAX) forms.clear();
+    n = normalize(s);
+    forms.set(s, n);
+  }
+  return n;
+}
+
 /** How well one normalized word fits (0: not at all; 100 exact in a name, ...). */
 export function wordScore(w: string, s: Searchable): number {
-  const names = s.names.map(normalize).filter(Boolean);
-  const all = [...names, ...s.other.map(normalize).filter(Boolean)];
+  const names = s.names.map(normalized).filter(Boolean);
+  const all = [...names, ...s.other.map(normalized).filter(Boolean)];
   if (names.some((n) => n.startsWith(w))) return 100;
   if (names.some((n) => n.includes(w))) return 90;
   if (all.some((t) => t.includes(w))) return 80;

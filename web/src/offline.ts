@@ -13,6 +13,7 @@ import { shared } from "./poll";
 import {
   chunkCache,
   chunkPath,
+  fetchBoot,
   fetchRetry,
   getChunk,
   HttpError,
@@ -115,7 +116,7 @@ async function treeLists(trees: string[]): Promise<{ name: string; tsv: string }
     trees.map(async (name) => ({
       name,
       tsv: new TextDecoder().decode(
-        await fetchRetry(new URL(`trees/${encodeURIComponent(name)}.tsv`, store())),
+        await fetchBoot(new URL(`trees/${encodeURIComponent(name)}.tsv`, store())),
       ),
     })),
   );
@@ -428,6 +429,18 @@ export interface SaveOptions {
 export function roomFor(need: number, quota?: number, usage?: number): boolean {
   if (!quota) return true;
   return need * 1.05 <= quota * 0.9 - (usage ?? 0);
+}
+
+/** What the browser says of the line (Network Information API; Chromium has it). */
+export interface Line {
+  type?: string;
+  saveData?: boolean;
+}
+
+/** Whether a whole-game save should wait for a yes: on a mobile line or with data saving on
+ * (before, every first pick of a game started a download of gigabytes there). */
+export function askBeforeSave(line: Line | undefined): boolean {
+  return !!line?.saveData || line?.type === "cellular";
 }
 
 /** The free room a save needs, said as people read it. */

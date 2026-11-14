@@ -126,6 +126,14 @@ export class HttpError extends Error {
   }
 }
 
+/** How long a request the start screen waits on is retried (a tree's list): a server that
+ * answers 503 showed "loading" for the default 15 minutes before the error. */
+export const BOOT_GIVE_UP_MS = 60_000;
+
+/** fetchRetry for what the start screen waits on: given up after BOOT_GIVE_UP_MS. */
+export const fetchBoot = (url: string | URL, opt: RetryOptions = {}) =>
+  fetchRetry(url, {}, { giveUpMs: BOOT_GIVE_UP_MS, ...opt });
+
 /** `url`'s body, retried as above. Throws HttpError, or the last error after `giveUpMs`. */
 export async function fetchRetry(
   url: string | URL,
