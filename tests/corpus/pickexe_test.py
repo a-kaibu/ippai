@@ -101,6 +101,18 @@ class Cases(unittest.TestCase):
                                     r + 'game/uninst.exe': 2139}), r + 'game/ags.exe')
         self.assertEqual(self.pick({'first.exe': 10, 'firstinst.exe': 20}), 'firstinst.exe')
 
+    def test_copies_go_to_the_one_with_its_cf(self):
+        # せきさば！ (#222): the installer's Files/ has two identical KiriKiri exes and the
+        # settings file of one; the copy named for its icon beside the installer is a tool
+        r = '『せきさば！』体験版インストーラ/'
+        files = {r + 'せきさば！体験版_アイコン２.exe': 3499008, r + 'インストール.EXE': 614912,
+                 r + 'Files/せきさば体験版.exe': 3499008, r + 'Files/せきさば！体験版.exe': 3499008,
+                 r + 'Files/せきさば！体験版.cf': 100, r + 'Files/エンジン設定.exe': 10752}
+        self.assertEqual(self.pick(files), r + 'Files/せきさば！体験版.exe')
+        # (without the .cf: the shorter name, as before)
+        del files[r + 'Files/せきさば！体験版.cf']
+        self.assertEqual(self.pick(files), r + 'Files/せきさば体験版.exe')
+
     def test_installed_by_inno(self):
         self.assertEqual(self.pick({'setup.exe.inno/app/game.exe': 10, 'setup.exe.inno/app/tiny.exe': 1}), 'setup.exe.inno/app/game.exe')
 
@@ -122,6 +134,10 @@ class Properties(unittest.TestCase):
         if rng.random() < 0.3:
             files['Game.exe'] = rng.randint(1, 300)
             files['Game_Data/'] = 0
+        # (a KiriKiri X.cf beside one of them now and then: ties go to it)
+        exes = sorted(p for p in files if p.endswith('.exe'))
+        if exes and rng.random() < 0.3:
+            files[rng.choice(exes)[:-4] + '.cf'] = 1
         return files
 
     def test_random_trees(self):

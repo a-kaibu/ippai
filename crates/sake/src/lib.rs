@@ -153,6 +153,7 @@ pub mod cryptstr;
 pub mod diskspace;
 pub mod cfgmgr;
 pub mod resupdate;
+pub mod sysres;
 pub mod shelllink;
 mod webbrowser;
 pub mod icu;

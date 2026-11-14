@@ -3246,6 +3246,21 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
             0
         }
         0x84 => 1,
+        // WM_PRINT(dc, flags): PRF_NONCLIENT (2) draws the non-client edge sake has
+        // (client_edge) into the DC at the window's own coordinates; PRF_CHECKVISIBLE (1)
+        // draws nothing for a hidden window. The client area is not drawn (no WM_PRINTCLIENT).
+        0x317 => {
+            let Some((rect, style, ex, visible)) = with(|s| s.wins.get(&h).map(|w| (w.rect, w.style, w.exstyle, w.visible))) else { return 0 };
+            if lp & 1 != 0 && !visible {
+                return 0;
+            }
+            if lp & 2 != 0 {
+                for (r, color) in client_edge(style, ex, rect.w(), rect.h()) {
+                    crate::gdi::fill_rect_brush(wp, r, crate::gdi::solid_brush(sys_color(color)));
+                }
+            }
+            0
+        }
         0x20 => {
             // WM_SETCURSOR: the class cursor in the client area
             if lp & 0xffff == 1 {
@@ -4196,6 +4211,45 @@ fn GetUpdateRgn(c: &mut Ctx) -> u32 {
     let e = with(|s| s.wins.get(&c.a(0)).is_none_or(|w| w.update.empty()));
     if e { 1 } else { 2 }
 }
+/// The 3D edge of a window's non-client area that sake draws (in the window's coordinates,
+/// width x height): WS_EX_CLIENTEDGE's sunken edge, 2 pixels just outside the client area
+/// (inside any border), as DrawEdge(EDGE_SUNKEN, BF_RECT) draws it: shadow and dark shadow at
+/// the top and left, highlight and light at the bottom and right. Empty without the style.
+pub fn client_edge(style: u32, exstyle: u32, w: i32, h: i32) -> Vec<(Rect, u32)> {
+    if exstyle & 0x200 == 0 {
+        return Vec::new();
+    }
+    let (l, t, r, b) = frame(style, exstyle, false);
+    let rc = Rect { l: l - 2, t: t - 2, r: w - (r - 2), b: h - (b - 2) };
+    if rc.empty() {
+        return Vec::new();
+    }
+    edge_parts(rc, 0xa, 0xf).0
+}
+
+/// A child window's non-client edge (client_edge), drawn in its parent's client area where
+/// the window is: Windows' WM_NCPAINT of it. Top-level windows' frames are not on their
+/// surfaces. The old KiriKiri 2's and アトリエさくら's drawing child has WS_EX_CLIENTEDGE: a
+/// 2-pixel black frame round the game without this (#215).
+fn paint_client_edge(h: u32) {
+    let Some((parent, rect, style, ex)) = with(|s| s.wins.get(&h).map(|w| (w.parent, w.rect, w.style, w.exstyle))) else { return };
+    if parent == 0 || parent == DESKTOP {
+        return;
+    }
+    let parts = client_edge(style, ex, rect.w(), rect.h());
+    if parts.is_empty() {
+        return;
+    }
+    let dc = crate::gdi::get_dce(parent, dc_info(parent), 0, crate::gdi::DCX_CACHE);
+    if dc == 0 {
+        return;
+    }
+    for (r, color) in parts {
+        crate::gdi::fill_rect_brush(dc, r.off(rect.l, rect.t), crate::gdi::solid_brush(sys_color(color)));
+    }
+    crate::gdi::release_dce(dc);
+}
+
 fn BeginPaint(c: &mut Ctx) -> u32 {
     let (h, ps) = (c.a(0), c.a(1));
     let (upd, erase) = with(|s| {
@@ -4206,6 +4260,7 @@ fn BeginPaint(c: &mut Ctx) -> u32 {
         w.erase = false;
         (u, e)
     });
+    paint_client_edge(h);
     // (a CS_PARENTDC child paints with its parent's visible region)
     let info = dc_info(h);
     let dc = crate::gdi::get_dce(h, info, 0, DCX_USESTYLE);
@@ -5424,6 +5479,20 @@ fn DrawEdge(c: &mut Ctx) -> u32 {
 /// system colours, BF_SOFT / BF_FLAT / BF_MONO, BF_MIDDLE, BF_ADJUST). A diagonal (BF_DIAGONAL)
 /// draws nothing yet: the 2-pixel corners of tabs and the like.
 pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
+    let (parts, inner, ok) = edge_parts(*rc, edge, flags);
+    for (r, color) in parts {
+        crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(sys_color(color)));
+    }
+    if flags & 0x2000 != 0 && flags & 0x10 == 0 {
+        *rc = inner;
+    }
+    ok
+}
+
+/// What DrawEdge draws: the rectangles in order with their COLOR_* indices, the rectangle
+/// inside the edge (BF_ADJUST's), and its answer
+pub(crate) fn edge_parts(rc: Rect, edge: u32, flags: u32) -> (Vec<(Rect, u32)>, Rect, bool) {
+    let mut parts = Vec::new();
     // index: edge & 0xf (BDR_RAISEDOUTER 1, SUNKENOUTER 2, RAISEDINNER 4, SUNKENINNER 8) -> COLOR_*
     const N: i8 = -1;
     const LT_INNER_NORMAL: [i8; 16] = [N, N, N, N, N, 20, 20, N, N, 21, 21, N, N, N, N, N];
@@ -5442,7 +5511,7 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
     let (soft, flat, mono) = (flags & 0x1000 != 0, flags & 0x4000 != 0, flags & 0x8000 != 0);
     let ok = !((inner == 0xc || outer == 3) && !(flat || mono));
     if flags & 0x10 != 0 {
-        return ok; // BF_DIAGONAL
+        return (parts, rc, ok); // BF_DIAGONAL
     }
     let (lti, lto, rbi, rbo) = if mono {
         (INNER_MONO[e], OUTER_MONO[e], INNER_MONO[e], OUTER_MONO[e])
@@ -5454,12 +5523,12 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
     } else {
         (LT_INNER_NORMAL[e], LT_OUTER_NORMAL[e], RB_INNER_NORMAL[e], RB_OUTER_NORMAL[e])
     };
-    let fill = |r: Rect, color: i8| {
+    let mut fill = |r: Rect, color: i8| {
         if color != N {
-            crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(sys_color(color as u32)));
+            parts.push((r, color as u32));
         }
     };
-    let r = *rc;
+    let r = rc;
     let off = |a: bool, b: bool| if a && b { 1 } else { 0 };
     let (lbi, rti, rbi_o, lti_o) = (off(bottom, left), off(top, right), off(bottom, right), off(top, left));
     if top {
@@ -5487,6 +5556,7 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
         fill(Rect { l: r.r - 2, t: r.t + rti, r: r.r - 1, b: r.b - rbi_o }, rbi);
     }
     let (middle, adjust) = (flags & 0x800 != 0, flags & 0x2000 != 0);
+    let mut inner = rc;
     if (middle && ok) || adjust {
         let add = (INNER_MONO[e] != N) as i32 + (OUTER_MONO[e] != N) as i32;
         let mut ir = r;
@@ -5505,11 +5575,9 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
         if middle && ok {
             fill(ir, if mono { 5 } else { 15 });
         }
-        if adjust {
-            *rc = ir;
-        }
+        inner = ir;
     }
-    ok
+    (parts, inner, ok)
 }
 fn DrawFrameControl(_: &mut Ctx) -> u32 {
     1
@@ -7581,7 +7649,56 @@ fn MapDialogRect(c: &mut Ctx) -> u32 {
 
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// imm32's default IME window, user32's WINNLS switch of the IME
+
+/// Each thread's default IME window ("IME" class, hidden), made the first time it is asked for
+/// once the thread has a window of its own: Windows makes it with the thread's first window,
+/// and ImmGetDefaultIMEWnd(NULL) is NULL before that (Wine's imm32 tests). SDRT asks for it.
+static IME_WNDS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+
+/// ImmGetDefaultIMEWnd(hwnd): the IME window of hwnd's thread (NULL: this thread's)
+fn ImmGetDefaultIMEWnd(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    let me = crate::cur().tid;
+    let tid = if h == 0 { me } else {
+        match with(|s| s.wins.get(&h).map(|w| w.tid)) {
+            Some(t) => t,
+            None => return 0,
+        }
+    };
+    let known = IME_WNDS.lock().unwrap().get_or_insert_with(HashMap::default).get(&tid).copied();
+    if let Some(w) = known.filter(|&w| is_window(w)) {
+        return w;
+    }
+    // (only this thread can make its own; a window of the thread besides an IME one)
+    if tid != me || !with(|s| s.wins.values().any(|w| w.tid == tid && !s.classes[w.class].name.eq_ignore_ascii_case("IME"))) {
+        return 0;
+    }
+    let strs = mem::heap_alloc(16, true);
+    mem::write(strs, b"IME\0Default IME\0");
+    // WS_POPUP | WS_DISABLED, as Windows' is
+    let w = gcall(c, "user32", "CreateWindowExA", &[0, strs, strs + 4, 0x8800_0000, 0, 0, 1, 1, 0, 0, 0, 0]);
+    mem::heap_free(strs);
+    if w != 0 {
+        IME_WNDS.lock().unwrap().get_or_insert_with(HashMap::default).insert(tid, w);
+    }
+    w
+}
+
+/// Whether the IME is on (WINNLSEnableIME): it starts on, as on a Japanese Windows
+static IME_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// WINNLSEnableIME(hwnd, enable): the state before. sake has no IME window to show or hide.
+fn WINNLSEnableIME(c: &mut Ctx) -> u32 {
+    IME_ENABLED.swap(c.a(1) != 0, Ordering::SeqCst) as u32
+}
+fn WINNLSGetEnableStatus(_: &mut Ctx) -> u32 {
+    IME_ENABLED.load(Ordering::SeqCst) as u32
+}
+
 pub fn init() {
+    reg!("user32"; WINNLSEnableIME, WINNLSGetEnableStatus);
+    reg!("imm32"; ImmGetDefaultIMEWnd);
     reg!("user32";
         RegisterClassA, RegisterClassW, RegisterClassExA, RegisterClassExW, UnregisterClassA, UnregisterClassW,
         GetClassInfoA, GetClassInfoW, GetClassInfoExA, GetClassInfoExW, CreateWindowExA, CreateWindowExW,
@@ -8688,6 +8805,49 @@ mod icon_resource_tests {
                 prop_assert_eq!(hot.is_some(), !icon);
                 let d = if icon { &bits[..] } else { &bits[4..] };
                 prop_assert!(d.starts_with(b"\x89PNG\r\n\x1a\n") || d.len() >= 4 && d.len() >= u32::from_le_bytes([d[0], d[1], d[2], d[3]]) as usize);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod client_edge_tests {
+    use super::{client_edge, client_of, Rect};
+    use proptest::prelude::*;
+
+    /// a 40x30 child with WS_EX_CLIENTEDGE: the 2-pixel ring, shadow (16) and dark shadow (21)
+    /// at the top and left, highlight (20) and light (22) at the bottom and right
+    #[test]
+    fn sunken_edge_of_a_child() {
+        let p = client_edge(0x5000_0000, 0x200, 40, 30);
+        let at = |x: i32, y: i32| p.iter().rev().find(|(r, _)| x >= r.l && x < r.r && y >= r.t && y < r.b).map(|e| e.1);
+        assert_eq!((at(0, 0), at(5, 0), at(0, 5)), (Some(16), Some(16), Some(16)));
+        assert_eq!((at(39, 5), at(5, 29), at(39, 29)), (Some(20), Some(20), Some(20)));
+        assert_eq!((at(1, 1), at(5, 1), at(1, 5)), (Some(21), Some(21), Some(21)));
+        assert_eq!((at(38, 5), at(5, 28)), (Some(22), Some(22)));
+        assert_eq!(at(2, 2), None);
+        assert!(client_edge(0x5000_0000, 0, 40, 30).is_empty());
+    }
+
+    proptest! {
+        /// the edge is exactly the ring between the window and its client area: every pixel
+        /// of it is drawn, nothing inside the client area or outside the window is
+        #[test]
+        fn the_edge_fills_the_ring(w in 1i32..40, h in 1i32..40, border: bool) {
+            let style = 0x5000_0000 | if border { 0x0080_0000 } else { 0 };
+            let parts = client_edge(style, 0x200, w, h);
+            let win = Rect { l: 0, t: 0, r: w, b: h };
+            let client = client_of(&win, style, 0x200, false);
+            let off = if border { 1 } else { 0 };
+            for y in 0..h {
+                for x in 0..w {
+                    let drawn = parts.iter().any(|(r, _)| x >= r.l && x < r.r && y >= r.t && y < r.b);
+                    let in_client = x >= client.l && x < client.r && y >= client.t && y < client.b;
+                    let in_ring = x >= off && y >= off && x < w - off && y < h - off && !in_client;
+                    if in_client { prop_assert!(!drawn, "client pixel {},{} drawn", x, y); }
+                    if drawn { prop_assert!(in_ring || w - 2 * off < 4 || h - 2 * off < 4, "{},{} outside the ring", x, y); }
+                    if in_ring && w - 2 * off >= 4 && h - 2 * off >= 4 { prop_assert!(drawn, "ring pixel {},{} not drawn", x, y); }
+                }
             }
         }
     }

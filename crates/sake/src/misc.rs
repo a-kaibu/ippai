@@ -1295,6 +1295,49 @@ pub fn com_enter(c: &mut Ctx) -> u32 {
 pub fn com_leave(c: &mut Ctx) -> u32 {
     CoUninitialize(c)
 }
+/// CoInitializeSecurity's answer: CO_E_NOTINITIALIZED before the thread has COM, S_OK the
+/// first time in the process, RPC_E_TOO_LATE after (the security is set once)
+pub fn init_security_result(com_ready: bool, done_before: bool) -> u32 {
+    if !com_ready {
+        0x8004_01f0
+    } else if done_before {
+        0x8001_0119
+    } else {
+        0
+    }
+}
+static SECURITY_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// CoInitializeSecurity(sd, auth count, services, reserved, authn level, imp level, list,
+/// capabilities, reserved): sake has no calls between processes to secure (WMI is in the
+/// process), so it is only remembered
+fn CoInitializeSecurity(_: &mut Ctx) -> u32 {
+    let ready = com_initialized();
+    init_security_result(ready, ready && SECURITY_SET.swap(true, std::sync::atomic::Ordering::SeqCst))
+}
+/// CoSetProxyBlanket(proxy, authn, authz, principal, level, imp level, identity, caps): ole32
+/// asks the proxy for IClientSecurity {0000013d-0000-0000-c000-000000000046} and answers its
+/// QueryInterface's failure (E_NOINTERFACE for an object in the process, as on Windows). An
+/// object that has it is one sake stands in for a remote one with (WMI's services: SDRT and the
+/// WMI samples call this after ConnectServer): S_OK, there being no blanket to set.
+fn CoSetProxyBlanket(c: &mut Ctx) -> u32 {
+    let proxy = c.a(0);
+    if proxy == 0 {
+        return 0x8007_0057; // E_INVALIDARG
+    }
+    let iid = mem::heap_alloc(16 + 8, true);
+    mem::write(iid, &[0x3d, 0x01, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
+    let out = iid + 16;
+    let hr = c.call(mem::rp(mem::rp(proxy)), &[proxy, iid, out]);
+    let cs = mem::rp(out);
+    mem::heap_free(iid);
+    if hr & 0x8000_0000 != 0 {
+        return hr;
+    }
+    if cs != 0 {
+        c.call(mem::rp(mem::rp(cs) + 2 * mem::ps()), &[cs]);
+    }
+    0
+}
 fn CoInitialize(_: &mut Ctx) -> u32 {
     com(|n| {
         n.0 += 1;
@@ -4881,7 +4924,8 @@ pub fn init() {
     implement("ole32", "SetErrorInfo", SetErrorInfo);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance, CoGetClassObject,
         CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, CoMarshalInterface, CoUnmarshalInterface, CoReleaseMarshalData, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
-        RegisterDragDrop, RevokeDragDrop, DoDragDrop);
+        RegisterDragDrop, RevokeDragDrop, DoDragDrop, CoInitializeSecurity, CoSetProxyBlanket);
+    implement("user32", "IsImmersiveProcess", |_| 0);
     reg!("oleaut32"; VarBstrFromBool);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,
@@ -4908,7 +4952,7 @@ pub fn init() {
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathRenameExtensionA, PathRenameExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
         PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathRemoveBackslashA, PathRemoveBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
-    reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW, SHStrDupA, SHStrDupW);
+    reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW, StrRStrIA, StrRStrIW, SHStrDupA, SHStrDupW);
     reg!("shell32"; SHGetPropertyStoreForWindow, SHGetFileInfoA, SHGetFileInfoW);
     implement("shell32", "SHBrowseForFolder", SHBrowseForFolderA);
     // (shell32 exports the ANSI one under its plain name too: matsuba_trial_1_setup.exe imports it)
@@ -4956,6 +5000,60 @@ fn StrStrIA(c: &mut Ctx) -> u32 {
 }
 fn StrStrIW(c: &mut Ctx) -> u32 {
     str_str(c, true, true)
+}
+
+/// StrRStrI's search over characters (UTF-16 units, or an ANSI string's characters with a DBCS
+/// one as lead << 8 | trail): the start of the last match of `needle` (compared folded) that
+/// starts before `last` and within the string; shlwapi lets a match that starts before `last`
+/// run past it by up to the needle's length - 1 (Wine's tests of StrRStrI).
+pub(crate) fn rstr_i(hay: &[u16], last: usize, needle: &[u16], fold: impl Fn(u16) -> u16) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let len = needle.len();
+    let last = last.min(hay.len());
+    let end = last + (len - 1).min(hay.len() - last);
+    (0..hay.len()).take_while(|&i| i + len <= end).filter(|&i| hay[i..i + len].iter().zip(needle).all(|(&a, &b)| fold(a) == fold(b))).last()
+}
+/// An ANSI string's characters (a DBCS one as lead << 8 | trail) and where each starts
+fn ansi_chars(b: &[u8]) -> (Vec<u16>, Vec<usize>) {
+    let (mut chars, mut at, mut i) = (Vec::new(), Vec::new(), 0);
+    while i < b.len() {
+        at.push(i);
+        if crate::text::is_lead(b[i]) && i + 1 < b.len() {
+            chars.push((b[i] as u16) << 8 | b[i + 1] as u16);
+            i += 2;
+        } else {
+            chars.push(b[i] as u16);
+            i += 1;
+        }
+    }
+    (chars, at)
+}
+/// StrRStrIA/W(source, last, search): the last match of search before `last` (NULL: the end),
+/// ignoring case; NULL for a NULL or empty search or none found. Flash's player (悪魔の石板, #209)
+fn str_rstr_i(c: &mut Ctx, wide: bool) -> u32 {
+    let (s, last, n) = (c.a(0), c.a(1), c.a(2));
+    if s == 0 || n == 0 {
+        return 0;
+    }
+    if wide {
+        let (hs, ns) = (wstr(s), wstr(n));
+        let last = if last == 0 { hs.len() } else { (last.wrapping_sub(s) / 2) as usize };
+        return rstr_i(&hs, last, &ns, crate::text::upper16).map_or(0, |i| s + 2 * i as u32);
+    }
+    let (hb, nb) = (cstr(s), cstr(n));
+    let ((hs, at), (ns, _)) = (ansi_chars(&hb), ansi_chars(&nb));
+    // (`last` as a character index: the first character starting at or after it)
+    let last = if last == 0 { hs.len() } else { at.iter().position(|&b| b >= last.wrapping_sub(s) as usize).unwrap_or(hs.len()) };
+    let fold = |u: u16| if (0x61..=0x7a).contains(&u) { u - 32 } else { u };
+    rstr_i(&hs, last, &ns, fold).map_or(0, |i| s + at[i] as u32)
+}
+fn StrRStrIA(c: &mut Ctx) -> u32 {
+    str_rstr_i(c, false)
+}
+fn StrRStrIW(c: &mut Ctx) -> u32 {
+    str_rstr_i(c, true)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6663,5 +6761,88 @@ mod shell_folder_tests {
         }
         assert_eq!(shell_folder_unexpanded("C:\\users\\username"), None);
         assert_eq!(shell_folder_unexpanded("C:\\users\\user").as_deref(), Some("%USERPROFILE%"));
+    }
+}
+
+#[cfg(test)]
+mod rstr_tests {
+    use super::{ansi_chars, rstr_i};
+    use proptest::prelude::*;
+
+    fn up(u: u16) -> u16 {
+        crate::text::upper16(u)
+    }
+    fn w(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    /// CoInitializeSecurity: once per process, after COM
+    #[test]
+    fn init_security_once() {
+        use super::init_security_result;
+        assert_eq!(init_security_result(false, false), 0x8004_01f0);
+        assert_eq!(init_security_result(true, false), 0);
+        assert_eq!(init_security_result(true, true), 0x8001_0119);
+    }
+
+    /// the rule as Wine's shlwapi has it (its tests of StrRStrIW pass on Windows)
+    #[test]
+    fn wine_cases() {
+        let hay = w("abcabcABC");
+        assert_eq!(rstr_i(&hay, hay.len(), &w("abc"), up), Some(6));
+        assert_eq!(rstr_i(&hay, hay.len(), &w("ABC"), up), Some(6));
+        assert_eq!(rstr_i(&hay, hay.len(), &w("x"), up), None);
+        assert_eq!(rstr_i(&hay, hay.len(), &w(""), up), None);
+        // (`last` at 6: a match may start at 5 and run past it; at 6 it starts at `last`)
+        assert_eq!(rstr_i(&hay, 6, &w("abc"), up), Some(3));
+        assert_eq!(rstr_i(&hay, 4, &w("abc"), up), Some(3));
+        assert_eq!(rstr_i(&hay, 3, &w("abc"), up), Some(0));
+        assert_eq!(rstr_i(&hay, 0, &w("abc"), up), None);
+        // full-width and accented letters fold as CharUpper does
+        assert_eq!(rstr_i(&w("ＡbＣ"), 3, &w("ａBｃ"), up), Some(0));
+        assert_eq!(rstr_i(&w("Éé"), 2, &w("É"), up), Some(1));
+    }
+
+    /// A DBCS character is one character: its trail byte never starts a match
+    #[test]
+    fn dbcs_trail_bytes_do_not_match() {
+        // "ア" = 83 41: the trail byte 'A' is not the letter A
+        let (h, at) = ansi_chars(&[0x83, 0x41, b'a']);
+        assert_eq!(at, vec![0, 2]);
+        assert_eq!(rstr_i(&h, h.len(), &[b'A' as u16], |u| if (0x61..=0x7a).contains(&u) { u - 32 } else { u }), Some(1));
+        let (h, _) = ansi_chars(&[0x83, 0x61]);
+        let (n, _) = ansi_chars(&[0x83, 0x41]);
+        assert_eq!(rstr_i(&h, h.len(), &n, |u| if (0x61..=0x7a).contains(&u) { u - 32 } else { u }), None);
+    }
+
+    proptest! {
+        /// the answer is the model's: the greatest start i with i < last + len (i + len <= the
+        /// end allowed) where the folded slices are equal
+        #[test]
+        fn matches_the_model(hay in "[aAbB\u{ff21}\u{ff41}]{0,24}", needle in "[aAbB\u{ff21}]{0,4}", last in 0usize..30) {
+            let (h, n) = (w(&hay), w(&needle));
+            let got = rstr_i(&h, last, &n, up);
+            let want = if n.is_empty() { None } else {
+                let l = last.min(h.len());
+                let end = l + (n.len() - 1).min(h.len() - l);
+                (0..h.len()).filter(|&i| i + n.len() <= end && (0..n.len()).all(|k| up(h[i + k]) == up(n[k]))).max()
+            };
+            prop_assert_eq!(got, want);
+            if let Some(i) = got {
+                prop_assert!(i < last.max(1) + n.len() && i + n.len() <= h.len());
+            }
+        }
+
+        /// the characters of an ANSI string cover its bytes in order, each 1 or 2 long
+        #[test]
+        fn ansi_chars_cover_the_bytes(b in prop::collection::vec(1u8.., 0..40)) {
+            let (chars, at) = ansi_chars(&b);
+            prop_assert_eq!(chars.len(), at.len());
+            for k in 0..at.len() {
+                let next = if k + 1 < at.len() { at[k + 1] } else { b.len() };
+                prop_assert!(next - at[k] == 1 || next - at[k] == 2);
+            }
+            prop_assert!(at.first().is_none_or(|&f| f == 0));
+        }
     }
 }

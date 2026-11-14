@@ -323,8 +323,81 @@ fn hid_guid(c: &mut Ctx) -> u32 {
     0
 }
 
+// setupapi's device information sets (SetupDi*): the same machine, no device of any class,
+// so a set is always empty. Flash's player (悪魔の石板, #209) lists one at start.
+
+const DEVINFO_MAGIC: u32 = u32::from_le_bytes(*b"DvIS");
+/// DIGCF_ALLCLASSES: no class GUID needed
+const DIGCF_ALLCLASSES: u32 = 4;
+
+/// What SetupDiGetClassDevs answers for its class GUID (NULL or not) and flags: Ok (a set) or
+/// the last error (Wine's setupapi tests: a NULL class without DIGCF_ALLCLASSES is refused)
+pub fn class_devs_check(class_null: bool, flags: u32) -> Result<(), u32> {
+    if class_null && flags & DIGCF_ALLCLASSES == 0 {
+        return Err(87); // ERROR_INVALID_PARAMETER
+    }
+    Ok(())
+}
+
+/// What SetupDiEnumDeviceInfo answers, in Windows' order of checks: the set, the SP_DEVINFO_DATA
+/// pointer, its cbSize (28 bytes, 32 on x64), then the index (always past the end here)
+pub fn enum_devinfo_error(set_ok: bool, data: Option<u32>, x64: bool) -> u32 {
+    if !set_ok {
+        return 6; // ERROR_INVALID_HANDLE
+    }
+    let Some(size) = data else { return 87 };
+    if size != if x64 { 32 } else { 28 } {
+        return 0x6f8; // ERROR_INVALID_USER_BUFFER
+    }
+    259 // ERROR_NO_MORE_ITEMS
+}
+
+/// SetupDiGetClassDevs{A,W}(class, enumerator, parent, flags) and the Ex forms (.., set,
+/// machine, reserved): a new empty set
+fn class_devs(c: &mut Ctx) -> u32 {
+    if let Err(e) = class_devs_check(c.a(0) == 0, c.a(3)) {
+        last_error(e);
+        return u32::MAX;
+    }
+    let h = mem::heap_alloc(16, true);
+    if h == 0 {
+        last_error(8);
+        return u32::MAX;
+    }
+    mem::w32(h, DEVINFO_MAGIC);
+    h
+}
+
+fn is_devinfo(h: u32) -> bool {
+    h != u32::MAX && is_handle(h, DEVINFO_MAGIC)
+}
+
+/// SetupDiEnumDeviceInfo(set, index, SP_DEVINFO_DATA*)
+fn enum_devinfo(c: &mut Ctx) -> u32 {
+    let (h, data) = (c.a(0), c.a(2));
+    last_error(enum_devinfo_error(is_devinfo(h), (data != 0).then(|| mem::r32(data)), mem::x64()));
+    0
+}
+
+/// SetupDiDestroyDeviceInfoList(set)
+fn destroy_devinfo(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if !is_devinfo(h) {
+        last_error(6);
+        return 0;
+    }
+    mem::w32(h, 0);
+    mem::heap_free(h);
+    1
+}
+
 pub fn init() {
     implement("hid", "HidD_GetHidGuid", hid_guid);
+    for n in ["SetupDiGetClassDevsA", "SetupDiGetClassDevsW", "SetupDiGetClassDevsExA", "SetupDiGetClassDevsExW"] {
+        implement("setupapi", n, class_devs);
+    }
+    implement("setupapi", "SetupDiEnumDeviceInfo", enum_devinfo);
+    implement("setupapi", "SetupDiDestroyDeviceInfoList", destroy_devinfo);
     let d = "cfgmgr32";
     for n in ["CM_Get_Device_Interface_List_SizeW", "CM_Get_Device_Interface_List_Size_ExW"] {
         implement(d, n, |c| size_of(c, true));
@@ -372,6 +445,32 @@ mod tests {
 
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    /// SetupDi's argument checks as Wine's setupapi tests have Windows answer them
+    #[test]
+    fn devinfo_answers() {
+        assert_eq!(class_devs_check(true, 0), Err(87));
+        assert_eq!(class_devs_check(true, DIGCF_ALLCLASSES), Ok(()));
+        assert_eq!(class_devs_check(false, 2), Ok(()));
+        assert_eq!(enum_devinfo_error(false, Some(28), false), 6);
+        assert_eq!(enum_devinfo_error(true, None, false), 87);
+        assert_eq!(enum_devinfo_error(true, Some(0), false), 0x6f8);
+        assert_eq!(enum_devinfo_error(true, Some(32), false), 0x6f8);
+        assert_eq!(enum_devinfo_error(true, Some(28), false), 259);
+        assert_eq!(enum_devinfo_error(true, Some(32), true), 259);
+    }
+
+    proptest! {
+        /// the checks go handle, pointer, size, index: an earlier failure hides the later ones
+        #[test]
+        fn devinfo_check_order(set_ok: bool, data in proptest::option::of(0u32..64), x64: bool) {
+            let e = enum_devinfo_error(set_ok, data, x64);
+            if !set_ok { prop_assert_eq!(e, 6); }
+            else if data.is_none() { prop_assert_eq!(e, 87); }
+            else if data != Some(if x64 { 32 } else { 28 }) { prop_assert_eq!(e, 0x6f8); }
+            else { prop_assert_eq!(e, 259); }
+        }
     }
 
     #[test]

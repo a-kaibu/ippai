@@ -20,7 +20,8 @@ In order:
      game Inno Setup installs, not a setup program; inst.exe is AGS's installer beside ags.exe), nor inside a Unity *_Data folder or a
      Ren'Py lib/ folder.
   4. Nothing but tools: the biggest .exe (an installer sake runs itself), helpers last.
-Ties go to the shorter, then the smaller path, so the answer never depends on listing order.
+Ties go to the exe with its KiriKiri X.cf beside it, then the shorter, then the smaller path, so
+the answer never depends on listing order.
 """
 import os, re, shutil, subprocess, sys
 
@@ -46,8 +47,9 @@ def exes(root):
     return out
 
 
-def biggest(cands):
-    return max(cands, key=lambda c: (c[0], -len(c[1]), [-ord(ch) for ch in c[1]]))[1] if cands else None
+def biggest(cands, prefer=lambda p: False):
+    """The biggest; of the same size, the one `prefer` names, then the shorter, the smaller path."""
+    return max(cands, key=lambda c: (c[0], prefer(c[1]), -len(c[1]), [-ord(ch) for ch in c[1]]))[1] if cands else None
 
 
 def pick(root):
@@ -71,7 +73,11 @@ def choose(all_, path_of):
     if renpy: return biggest(renpy)
     own = [c for c in all_ if not HELPER_DIR.search(c[1])]
     games = [c for c in own if not TOOL.search(UNPACKED.sub('', c[1]))]
-    return biggest(games) or biggest(own) or biggest(all_)
+    # (copies of one exe under other names: the one whose KiriKiri settings X.cf is beside it,
+    # as X.exe reads X.cf: せきさば！'s Files/ has せきさば！体験版.exe with its .cf and an
+    # identical せきさば体験版.exe, #222)
+    cf = lambda p: beside(p, stem(p) + '.cf')
+    return biggest(games, cf) or biggest(own) or biggest(all_)
 
 
 MOVIE = re.compile(r'\.(mpg|mpeg|m1v|wmv|asf|mp4|m4v|avi|mov|flv|webm|mkv|m2ts|ts|ogv)$', re.I)

@@ -129,6 +129,18 @@ pub fn with<R>(base: u32, f: impl FnOnce(&Module) -> R) -> Option<R> {
     MODULES.read().unwrap().iter().find(|m| m.base == base & !3).map(f)
 }
 
+/// How many of a section's bytes come from the file (at PointerToRawData; the rest of it is
+/// zeros): SizeOfRawData, at most VirtualSize (0: SizeOfRawData is the size), at most what the
+/// file has there, and none at all when PointerToRawData is 0, whatever SizeOfRawData says:
+/// Watcom's .bss has a raw size and no file pointer (#207).
+pub fn section_file_bytes(vsize: u32, raw: u32, ptr: u32, file_len: usize) -> usize {
+    if ptr == 0 {
+        return 0;
+    }
+    let n = raw.min(if vsize != 0 { vsize } else { raw }) as usize;
+    n.min(file_len.saturating_sub(ptr as usize))
+}
+
 /// LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE / AS_IMAGE_RESOURCE): the file's headers and
 /// sections laid out as an image (any bitness; no imports, relocations or entry point) for its
 /// resources, read now (a later change to the file is seen by the next load); listed without
@@ -136,14 +148,13 @@ pub fn with<R>(base: u32, f: impl FnOnce(&Module) -> R) -> Option<R> {
 pub fn load_datafile(data: &[u8], path: &str) -> Option<u32> {
     let pe = crate::resupdate::Pe::parse(data)?;
     let secs = pe.sections(data);
-    let headers = secs.iter().filter(|s| s.raw_size != 0).map(|s| s.raw as usize).min().unwrap_or(0x1000).min(0x1000).min(data.len());
+    let headers = secs.iter().filter(|s| s.raw_size != 0 && s.raw != 0).map(|s| s.raw as usize).min().unwrap_or(0x1000).min(0x1000).min(data.len());
     let size = secs.iter().map(|s| s.va.saturating_add(s.vsize.max(s.raw_size))).max().unwrap_or(0).max(headers as u32).next_multiple_of(0x1000);
     let base = mem::reserve(0, size, 0x02, 0x100_0000, false)?;
     mem::commit(base, 0x04);
     mem::write(base, &data[..headers]);
     for s in &secs {
-        let n = s.raw_size.min(if s.vsize != 0 { s.vsize } else { s.raw_size }) as usize;
-        let n = n.min(data.len().saturating_sub(s.raw as usize));
+        let n = section_file_bytes(s.vsize, s.raw_size, s.raw, data.len());
         if n > 0 && s.va as u64 + n as u64 <= size as u64 {
             mem::write(base + s.va, &data[s.raw as usize..s.raw as usize + n]);
         }
@@ -485,7 +496,7 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         let va = rd32(s + 12);
         let raw = rd32(s + 16) as usize;
         let ptr = rd32(s + 20) as usize;
-        let n = raw.min(if vsize != 0 { vsize as usize } else { raw }).min(data.len().saturating_sub(ptr));
+        let n = section_file_bytes(vsize, raw as u32, ptr as u32, data.len());
         if n > 0 {
             mem::write(base + va, &data[ptr..ptr + n]);
         }
@@ -894,7 +905,10 @@ pub fn hle_module(dll: &str) -> u32 {
     let exp_size = 40 + 10 * n + strings as u32;
     // header page, then the export directory, then 16-byte thunks (the first: the exe's return)
     let thunks = 0x1000 + (exp_size + 15) / 16 * 16;
-    let size = if n == 0 { 0x1000 } else { (thunks + 16 * (n + 1) + 0xfff) & !0xfff };
+    let code_end = if n == 0 { 0x1000 } else { (thunks + 16 * (n + 1) + 0xfff) & !0xfff };
+    // (then the DLL's resources, if it has any: crate::sysres)
+    let res = crate::sysres::tree(&key).map(|t| crate::resupdate::build(&t, code_end));
+    let size = code_end + res.as_ref().map_or(0, |r| (r.len() as u32 + 0xfff) & !0xfff);
     let base = mem::reserve(0, size, 2, 0x100_0000, true).expect("module");
     mem::commit_range(base, size, 0x20);
     // MZ + PE headers with no sections
@@ -974,6 +988,16 @@ pub fn hle_module(dll: &str) -> u32 {
             TOP_HANDLER.store(base + thunks + 8, std::sync::atomic::Ordering::Relaxed);
         }
     }
+    if let Some(r) = &res {
+        mem::write(base + code_end, r);
+        // the resource directory entry (IMAGE_DIRECTORY_ENTRY_RESOURCE, 2)
+        let dirs = base + 0x58 + if mem::x64() { 112 } else { 96 };
+        w32(dirs + 16, code_end);
+        w32(dirs + 20, r.len() as u32);
+        if mem::r32(base + 0x58 + if mem::x64() { 108 } else { 92 }) < 3 {
+            w32(base + 0x58 + if mem::x64() { 108 } else { 92 }, 16);
+        }
+    }
     mem::protect(base, size, 0x20);
     MODULES.write().unwrap().push(Module {
         base,
@@ -985,7 +1009,7 @@ pub fn hle_module(dll: &str) -> u32 {
         ordinals: HashMap::default(),
         dll: true,
         tls: None,
-        resources: 0,
+        resources: if res.is_some() { base + code_end } else { 0 },
         refs: 1,
         hle: true,
         pdata: (0, 0),
@@ -1849,6 +1873,38 @@ mod path_tests {
             MODULES.write().unwrap().retain(|m| m.base != base);
             prop_assert_eq!(found, Some(base));
             prop_assert_eq!(elsewhere, if dir.eq_ignore_ascii_case(&other) { Some(base) } else { None });
+        }
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::section_file_bytes;
+    use proptest::prelude::*;
+
+    /// IPF33.DLL's .bss (Watcom): raw 0x1800 at file pointer 0 is all zeros, not the headers
+    #[test]
+    fn watcom_bss_has_no_file_bytes() {
+        assert_eq!(section_file_bytes(0, 0x1800, 0, 36352), 0);
+        assert_eq!(section_file_bytes(0, 0x6600, 0x400, 36352), 0x6600);
+        assert_eq!(section_file_bytes(0x10, 0x200, 0x400, 0x1000), 0x10);
+        assert_eq!(section_file_bytes(0x1000, 0x200, 0xf80, 0x1000), 0x80);
+    }
+
+    proptest! {
+        /// the bytes read always lie inside the file, inside SizeOfRawData and VirtualSize (when
+        /// set), and are none without a file pointer
+        #[test]
+        fn bytes_stay_in_bounds(vsize in 0u32..0x4000, raw in 0u32..0x4000, ptr in 0u32..0x5000, len in 0usize..0x6000) {
+            let n = section_file_bytes(vsize, raw, ptr, len);
+            prop_assert!(n <= raw as usize);
+            prop_assert!(vsize == 0 || n <= vsize as usize);
+            prop_assert!(ptr as usize + n <= len.max(ptr as usize));
+            if ptr == 0 { prop_assert_eq!(n, 0); }
+            // (everything the limits allow is read)
+            if ptr != 0 && (ptr as usize) <= len {
+                prop_assert_eq!(n, (raw.min(if vsize != 0 { vsize } else { raw }) as usize).min(len - ptr as usize));
+            }
         }
     }
 }

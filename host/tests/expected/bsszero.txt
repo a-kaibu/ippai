@@ -1,0 +1,5 @@
+load ok (0)
+data @AB, last Q
+bss zeros 512 of 512
+free 1
+delete 1
