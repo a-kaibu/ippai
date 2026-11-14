@@ -47,6 +47,56 @@ pub fn header(b: &[u8]) -> Option<Header> {
     })
 }
 
+/// The frames of `b`, a whole stream already in memory, as (header, offset): what a Splitter
+/// given all of it and finished gives, without copying each frame (audiofile's MP3 files: a
+/// second copy of the file and a search for each frame).
+pub fn frames_in(b: &[u8]) -> Vec<(Header, usize)> {
+    let (mut started, mut skip, mut out) = (false, 0, Vec::new());
+    scan(b, &mut started, &mut skip, true, |h, o| out.push((h, o)));
+    out
+}
+
+/// The splitter's walk over `buf`: each whole frame to `emit` (header, offset); how many bytes
+/// are done with.
+fn scan(buf: &[u8], started: &mut bool, skip: &mut usize, end: bool, mut emit: impl FnMut(Header, usize)) -> usize {
+    let mut at = 0;
+    loop {
+        let rest = &buf[at..];
+        if !*started {
+            // "ID3", version, flags, a 28-bit size (and a footer when flag 0x10)
+            if rest.len() < 10 && b"ID3".starts_with(&rest[..rest.len().min(3)]) {
+                break;
+            }
+            *started = true;
+            if rest.starts_with(b"ID3") && rest[6..10].iter().all(|&x| x < 0x80) {
+                let size = rest[6..10].iter().fold(0usize, |a, &x| a << 7 | x as usize) + 10 + if rest[5] & 0x10 != 0 { 10 } else { 0 };
+                let here = size.min(rest.len());
+                at += here;
+                *skip = size - here;
+                continue;
+            }
+        }
+        if rest.len() < 4 {
+            break;
+        }
+        let Some(h) = header(rest) else {
+            at += 1;
+            continue;
+        };
+        if rest.len() < h.len || rest.len() < h.len + 4 && !end && !rest[h.len..].starts_with(b"TAG") {
+            break;
+        }
+        // (a header the next 4 bytes do not follow up is junk that looked like one)
+        if rest.len() >= h.len + 4 && header(&rest[h.len..]).is_none() && !rest[h.len..].starts_with(b"TAG") {
+            at += 1;
+            continue;
+        }
+        emit(h, at);
+        at += h.len;
+    }
+    at
+}
+
 /// Frames as their bytes come.
 #[derive(Default)]
 pub struct Splitter {
@@ -76,41 +126,9 @@ impl Splitter {
     }
 
     fn run(&mut self, out: &mut Vec<(Header, Vec<u8>)>, end: bool) {
-        let mut at = 0;
-        loop {
-            let rest = &self.buf[at..];
-            if !self.started {
-                // "ID3", version, flags, a 28-bit size (and a footer when flag 0x10)
-                if rest.len() < 10 && b"ID3".starts_with(&rest[..rest.len().min(3)]) {
-                    break;
-                }
-                self.started = true;
-                if rest.starts_with(b"ID3") && rest[6..10].iter().all(|&x| x < 0x80) {
-                    let size = rest[6..10].iter().fold(0usize, |a, &x| a << 7 | x as usize) + 10 + if rest[5] & 0x10 != 0 { 10 } else { 0 };
-                    let here = size.min(rest.len());
-                    at += here;
-                    self.skip = size - here;
-                    continue;
-                }
-            }
-            if rest.len() < 4 {
-                break;
-            }
-            let Some(h) = header(rest) else {
-                at += 1;
-                continue;
-            };
-            if rest.len() < h.len || rest.len() < h.len + 4 && !end && !rest[h.len..].starts_with(b"TAG") {
-                break;
-            }
-            // (a header the next 4 bytes do not follow up is junk that looked like one)
-            if rest.len() >= h.len + 4 && header(&rest[h.len..]).is_none() && !rest[h.len..].starts_with(b"TAG") {
-                at += 1;
-                continue;
-            }
-            out.push((h, rest[..h.len].to_vec()));
-            at += h.len;
-        }
+        let buf = std::mem::take(&mut self.buf);
+        let at = scan(&buf, &mut self.started, &mut self.skip, end, |h, o| out.push((h, buf[o..o + h.len].to_vec())));
+        self.buf = buf;
         self.buf.drain(..at);
     }
 
@@ -261,6 +279,33 @@ mod tests {
             sp.finish(&mut out);
             let got: Vec<Vec<u8>> = out.into_iter().map(|f| f.1).collect();
             prop_assert_eq!(got, frames);
+        }
+
+        /// frames_in over a whole stream: the frames a Splitter gives, at their offsets (any
+        /// bytes, and streams of frames with tags and junk).
+        #[test]
+        fn frames_in_as_the_splitter(b in proptest::collection::vec(prop_oneof![Just(0xffu8), Just(0xfb), any::<u8>()], 0..3000),
+                                     spec in proptest::collection::vec((1usize..15, any::<bool>(), any::<bool>(), any::<u8>()), 0..8), id3 in 0usize..40) {
+            let mut s = Vec::new();
+            if id3 > 0 {
+                s.extend([b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, id3 as u8]);
+                s.extend(std::iter::repeat_n(0xffu8, id3));
+            }
+            for &(r, p, m, f) in &spec {
+                s.extend(frame(r, p, m, f));
+            }
+            for d in [&b[..], &s[..], &[&s[..], &b[..]].concat()[..]] {
+                let mut sp = Splitter::default();
+                let mut out = Vec::new();
+                sp.push(d, &mut out);
+                sp.finish(&mut out);
+                let at = frames_in(d);
+                prop_assert_eq!(at.len(), out.len());
+                for ((h, o), (h2, f)) in at.iter().zip(&out) {
+                    prop_assert_eq!(h, h2);
+                    prop_assert_eq!(&d[*o..*o + h.len], &f[..]);
+                }
+            }
         }
 
         /// Any bytes in any pieces: no panic, every frame out starts with a header of its length.

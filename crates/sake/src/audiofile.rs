@@ -399,24 +399,19 @@ fn wave(b: &[u8]) -> Option<Track> {
 /// count, the first frame's.
 fn mp3(b: &[u8], from: usize, to: usize) -> Option<Track> {
     let to = to.min(b.len());
-    let mut sp = crate::mp3frame::Splitter::default();
-    let mut out = Vec::new();
-    sp.push(&b[from..to], &mut out);
-    sp.finish(&mut out);
+    let from = from.min(to);
+    // (the frames where they are: copied out and searched for again, they cost a second copy
+    // of the file and an allocation per frame)
+    let out = crate::mp3frame::frames_in(&b[from..to]);
     let first = out.first()?.0;
-    // (every frame's offset: the splitter hands out bytes, found again in order)
     let (mut packets, mut frames) = (Vec::new(), Vec::new());
-    let mut at = from;
     let mut bytes = 0u64;
-    for (h, f) in &out {
-        let k = b[at..to].windows(f.len()).position(|w| w == &f[..])?;
-        at += k;
+    for &(h, o) in &out {
         if h.rate == first.rate {
-            packets.push((at as u64, f.len() as u32));
+            packets.push(((from + o) as u64, h.len as u32));
             frames.push(h.samples);
-            bytes += f.len() as u64;
+            bytes += h.len as u64;
         }
-        at += f.len();
     }
     // a file of mostly junk with a few false frames is not an MP3
     if packets.len() < 2 && to - from > 4096 {
