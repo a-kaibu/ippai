@@ -14,6 +14,7 @@
 import type { Reply, Request } from "./snapz-worker";
 import { memGate } from "./memgate";
 import { sakeBase, type SakeBuild } from "./runtime";
+import { bgraToRgba } from "./screen-stats";
 
 type SakeName = SakeBuild["name"];
 
@@ -62,14 +63,46 @@ const ST_RUNNING = 0,
 export const snapping = () => memGate.closed;
 
 let worker: Worker | undefined;
-function work(r: Request, transfer: Transferable[] = []): Promise<Reply> {
-  worker ??= new Worker(new URL("./snapz-worker.ts", import.meta.url), { type: "module" });
+let nextId = 1;
+const waiting = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void }>();
+/** How long a request to the worker may take: one that never answers (the worker died without
+ * an error event, an OOM) left the game stopped and the gate shut for good. */
+const WORK_MS = 120_000;
+
+type Body<T> = T extends unknown ? Omit<T, "id"> : never;
+
+/** A request to the zstd worker (snapz-worker.ts), its answer matched by id (two at once were
+ * each answered by the last one's handler). */
+function work(r: Body<Request>, transfer: Transferable[] = [], ms = WORK_MS): Promise<Reply> {
+  if (!worker) {
+    const w = (worker = new Worker(new URL("./snapz-worker.ts", import.meta.url), { type: "module" }));
+    w.onmessage = (e: MessageEvent<Reply>) => {
+      const p = waiting.get(e.data.id);
+      waiting.delete(e.data.id);
+      if (!p) return;
+      if (e.data.ok) p.resolve(e.data);
+      else p.reject(new Error(e.data.error));
+    };
+    w.onerror = (e) => fail(w, new Error(e.message));
+  }
+  const id = nextId++;
   const w = worker;
-  return new Promise((resolve, reject) => {
-    w.onmessage = (e: MessageEvent<Reply>) => (e.data.ok ? resolve(e.data) : reject(new Error(e.data.error)));
-    w.onerror = (e) => reject(new Error(e.message));
-    w.postMessage(r, transfer);
+  return new Promise<Reply>((resolve, reject) => {
+    const timer = setTimeout(() => fail(w, new Error("圧縮の処理が応答しません")), ms);
+    waiting.set(id, {
+      resolve: (x) => (clearTimeout(timer), resolve(x)),
+      reject: (e) => (clearTimeout(timer), reject(e)),
+    });
+    w.postMessage({ ...r, id }, transfer);
   });
+}
+/** The worker is given up: every request waiting fails, the next one starts a new worker. */
+function fail(w: Worker, e: Error): void {
+  if (worker !== w) return;
+  worker = undefined;
+  w.terminate();
+  for (const p of waiting.values()) p.reject(e);
+  waiting.clear();
 }
 const snapzUrl = () => `${sakeBase()}snapz.mjs`;
 
@@ -100,6 +133,7 @@ export const loadable = (ids: Map<string, string>, s: { build: string; wasm?: st
 async function thumbnail(m: SnapModule): Promise<string> {
   try {
     const p = m._malloc(12) >>> 0;
+    if (!p) return "";
     const first = m._vnhost_render_shot(p);
     for (let k = 0; k < 25 && m._vnhost_render_shot(p) === first; k++)
       await new Promise((r) => setTimeout(r, 20));
@@ -107,8 +141,7 @@ async function thumbnail(m: SnapModule): Promise<string> {
     m._free(p);
     if (!ptr || !w || !h) return "";
     // (BGRA rows)
-    const px = new Uint8ClampedArray(new Uint8Array(m.wasmMemory.buffer, ptr, w * h * 4));
-    for (let i = 0; i < px.length; i += 4) [px[i], px[i + 2]] = [px[i + 2]!, px[i]!];
+    const px = bgraToRgba(new Uint8Array(m.wasmMemory.buffer, ptr, w * h * 4));
     const full = new OffscreenCanvas(w, h);
     full.getContext("2d")!.putImageData(new ImageData(px, w, h), 0, 0);
     const tw = 240,
@@ -144,6 +177,9 @@ export async function takeState(
 ): Promise<{ file: Uint8Array<ArrayBuffer>; info: Omit<StateInfo, "slot"> }> {
   const thumb = await thumbnail(m);
   const id = (await builds()).get(wasm) ?? "";
+  // (the worker and its zstd ready before the program is stopped: a slow fetch of snapz.mjs used
+  // to happen with every guest thread parked)
+  await work({ op: "warm", url: snapzUrl() });
   const ctl = m._vnhost_snap_ctl() >>> 0;
   const i32 = new Int32Array(m.wasmMemory.buffer);
   const word = (off: number) => (ctl + off) >>> 2;
@@ -210,6 +246,8 @@ export async function takeState(
     v.setUint32(at + 8, p.frame.length, true);
     file.set(p.frame, at + 12);
     at += 12 + p.frame.length;
+    // (each frame let go once copied: the state is not held twice over while the file fills)
+    p.frame = EMPTY;
   }
   v.setUint32(at, 0xffffffff, true);
   console.log(
@@ -245,11 +283,15 @@ export function stateHeader(file: Uint8Array): {
   };
 }
 
+const EMPTY = new Uint8Array(0);
+
 /** A memory with the state in it, for the module to start from (its `wasmMemory`): `fixed`,
- * the 4 GB one the page reserved for sake.wasm, or a new one for sake-grow.wasm. */
+ * the 4 GB one the page reserved for sake.wasm, or a new one for sake-grow.wasm. `own`: the
+ * caller is done with `file`, whose buffer then goes to the worker (detached here), not a copy. */
 export async function stateMemory(
   file: Uint8Array<ArrayBuffer>,
   fixed?: WebAssembly.Memory,
+  own = false,
 ): Promise<WebAssembly.Memory> {
   const h = stateHeader(file);
   if (!loadable(await builds(), h))
@@ -258,10 +300,8 @@ export async function stateMemory(
   const mem =
     h.wasm === "sake" ? fixed : new WebAssembly.Memory({ initial: h.pages, maximum: 65535, shared: true });
   if (!mem) throw new Error("この端末ではこのステートを読み込めません（4 GB のメモリを確保できません）");
-  const copy =
-    file.byteOffset === 0 && file.byteLength === file.buffer.byteLength
-      ? file.buffer.slice(0)
-      : file.slice().buffer;
+  const whole = file.byteOffset === 0 && file.byteLength === file.buffer.byteLength;
+  const copy = whole && own ? file.buffer : whole ? file.buffer.slice(0) : file.slice().buffer;
   await work(
     {
       op: "unpack",
@@ -351,15 +391,28 @@ async function pruneLocal(game: string, index: StateInfo[]): Promise<void> {
   for (const name of gone) await d.removeEntry(name).catch(() => {});
 }
 
+/** A request's time limit: STATE_WAIT_MS, and a second per SLOW_LINK bytes of an upload (a
+ * stalled link held the states dialog and the start of a game on a state as long as the socket). */
+const STATE_WAIT_MS = 30_000;
+const SLOW_LINK = 64 * 1024;
+const limit = (bytes = 0) => AbortSignal.timeout(STATE_WAIT_MS + Math.ceil((bytes / SLOW_LINK) * 1000));
+
 async function serverGet(name: string): Promise<{ data: Uint8Array<ArrayBuffer> | null; revision: string }> {
-  const r = await fetch(serverUrl(name), { cache: "no-store" });
+  // (a download is given as long as its body takes, at least a slow link's pace: the limit is
+  // on the answer coming, then on each 64 KiB)
+  const r = await fetch(serverUrl(name), { cache: "no-store", signal: limit() });
   if (r.status === 404) return { data: null, revision: '"0"' };
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return { data: new Uint8Array(await r.arrayBuffer()), revision: r.headers.get("etag") ?? '"0"' };
 }
 /** Writes `data` as `name` if the server's revision is still `revision`: false when it moved. */
 async function serverPut(name: string, data: Uint8Array<ArrayBuffer>, revision: string): Promise<boolean> {
-  const r = await fetch(serverUrl(name), { method: "PUT", headers: { "if-match": revision }, body: data });
+  const r = await fetch(serverUrl(name), {
+    method: "PUT",
+    headers: { "if-match": revision },
+    body: data,
+    signal: limit(data.length),
+  });
   if (r.status === 412) return false;
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return true;

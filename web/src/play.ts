@@ -363,7 +363,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       );
   let stateMem: WebAssembly.Memory | undefined;
   if (stateFile) {
-    stateMem = await stateMemory(stateFile, build.memory);
+    // (the file is not needed after: its buffer goes to the worker, not a copy of it)
+    stateMem = await stateMemory(stateFile, build.memory, true);
     // (a reload starts the game as usual)
     params.delete("state");
     history.replaceState(history.state, "", `?${params}`);

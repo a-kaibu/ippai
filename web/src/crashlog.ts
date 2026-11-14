@@ -23,7 +23,7 @@
 
 import { toast as sonner } from "sonner";
 import { meter, meterLine } from "./meter";
-import { grabScreen, screenLine, screenStats, smallJpeg } from "./screen-stats";
+import { grabScreen, grabStats, screenDue, screenLine, screenStats, smallJpeg } from "./screen-stats";
 import { ReportLimit } from "./reportlimit";
 const DIR = "vnvm-logs";
 /** OPFS files kept (the oldest go). */
@@ -269,12 +269,20 @@ async function removeLocal(name: string): Promise<void> {
   await (await dir())?.removeEntry(name).catch(() => {});
 }
 
+/** Bodies sent with keepalive at most (upload). */
+const KEEPALIVE_MAX = 60_000;
+/** How often the session file is rewritten (what the next page sends if this one dies). */
+const PERSIST_MS = 30_000;
+
 /** Sends a log to ippai serve (its --logs directory); true if it took it. */
 export async function upload(name: string, text: string): Promise<boolean> {
   try {
     const r = await fetch(new URL(`log-save/${encodeURIComponent(name)}`, location.href), {
       method: "PUT",
       body: text,
+      // (a small one outlives the page: a report made as it is hidden or left; the browser
+      // takes at most 64 KiB of such bodies)
+      keepalive: text.length < KEEPALIVE_MAX,
     });
     return r.ok;
   } catch {
@@ -289,13 +297,13 @@ export async function upload(name: string, text: string): Promise<boolean> {
 export async function sendLeftovers(): Promise<void> {
   const files = await listLocal();
   // a running page holds its session's lock (Web Locks go when the tab does); without the API,
-  // a session file is left over once it stops being rewritten (every 10 s)
+  // a session file is left over once it stops being rewritten (every PERSIST_MS)
   const held = navigator.locks
     ? new Set(((await navigator.locks.query()).held ?? []).map((l) => l.name ?? ""))
     : null;
   for (const f of files) {
     const m = /^session-(.+)\.txt$/.exec(f.name);
-    if (!m || (held ? held.has(`vnvm-session-${m[1]}`) : Date.now() - f.time < 30_000)) continue;
+    if (!m || (held ? held.has(`vnvm-session-${m[1]}`) : Date.now() - f.time < 3 * PERSIST_MS)) continue;
     const text = await readLocal(f.name).catch(() => "");
     if (!text) continue;
     const name = `${m[1]}-unclean`;
@@ -388,7 +396,8 @@ export class FlightRecorder {
         );
     });
     setInterval(() => this.tick(), 500);
-    setInterval(() => void this.persist(), 10_000);
+    // (every 30 s: each write rebuilds the whole report and rewrites the file)
+    setInterval(() => void this.persist(), PERSIST_MS);
     setInterval(() => this.memory(), 30_000);
     setInterval(() => {
       if (this.wasm && !this.ended) {
@@ -457,13 +466,19 @@ export class FlightRecorder {
     );
   }
 
-  /** A line of what the page shows (screen-stats.ts): black or a picture. */
+  /** A line of what the page shows (screen-stats.ts): black or a picture; the first
+   * SCREEN_FIRST looks every 10 s (where a black start shows), then one a minute, none while the
+   * page is hidden: each is a readback of the whole frame from the GPU. */
   private async screen(): Promise<void> {
     const w = this.wasm;
-    if (!w) return;
-    const shot = await grabScreen(w).catch(() => null);
-    this.note(screenLine(shot && screenStats(shot.px, shot.w, shot.h)));
+    if (!w || !screenDue(this.screens, this.lastScreen, Date.now(), document.visibilityState === "hidden"))
+      return;
+    this.screens++;
+    this.lastScreen = Date.now();
+    this.note(screenLine(await grabStats(w).catch(() => null)));
   }
+  private screens = 0;
+  private lastScreen = 0;
 
   /** The game ended (`why`: the program exited, or the player left it). */
   async end(why = "the game ended"): Promise<void> {
@@ -622,7 +637,9 @@ export class FlightRecorder {
     this.reports++;
     this.note(`report ${name}: ${reason.split("\n")[0]}`);
     // (what the page showed, small: one look tells a black screen from a picture)
-    const shot = this.wasm && !this.aborted ? await grabScreen(this.wasm).catch(() => null) : null;
+    // (not while the page is hidden: the browser freezes it soon, the report must go first)
+    const look = this.wasm && !this.aborted && document.visibilityState !== "hidden";
+    const shot = look ? await grabScreen(this.wasm!).catch(() => null) : null;
     if (shot) {
       this.note(screenLine(screenStats(shot.px, shot.w, shot.h)));
       const jpeg = await smallJpeg(shot.px, shot.w, shot.h);
