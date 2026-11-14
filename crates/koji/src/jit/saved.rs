@@ -106,6 +106,11 @@ fn decode_one(b: &[u8]) -> Option<(Vec<Entry>, usize)> {
     let e = (0..r.u()?)
         .map(|_| {
             let roots = (0..r.u()?).map(|_| r.u()).collect::<Option<Vec<_>>>()?;
+            // (what reads an index takes roots[0]: an entry without one, from a damaged file or
+            // a server that merged a bad upload, aborted every thread at its start)
+            if roots.is_empty() {
+                return None;
+            }
             let (starts, code) = (r.pairs()?, r.pairs()?);
             let n = r.u()? as usize;
             let text = b.get(r.1..r.1 + n)?.to_vec();
@@ -144,4 +149,51 @@ pub fn offsets(entries: &[Entry]) -> Vec<u32> {
             o
         })
         .collect()
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    type Parts = (Vec<u32>, Vec<(u32, u32)>, Vec<u8>, u32, Vec<u32>);
+    fn entry() -> impl Strategy<Value = Parts> {
+        (prop::collection::vec(any::<u32>(), 1..4), prop::collection::vec(any::<(u32, u32)>(), 0..3), prop::collection::vec(any::<u8>(), 0..12), 0u32..3, prop::collection::vec(any::<u32>(), 0..3))
+    }
+
+    #[test]
+    fn an_entry_without_roots_is_no_index() {
+        // one entry, 0 roots, no starts, no code, no text, build 0, no sites
+        let mut b = Vec::from(&b"VNJ2"[..]);
+        for v in [1u32, 0, 0, 0, 0, 0, 0] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        assert!(decode(&b).is_none() && decode_all(&b).is_none());
+    }
+
+    proptest! {
+        /// What is written is read back; and whatever bytes are changed, cut or added, what is
+        /// read (if anything) has a root in every entry and can be named.
+        #[test]
+        fn damaged_indexes_have_roots_or_are_refused(es in prop::collection::vec(entry(), 0..5), flips in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..6), cut in proptest::option::of(any::<prop::sample::Index>())) {
+            let es: Vec<Entry> = es.into_iter().map(|(roots, starts, text, build, sites)| Entry { roots, code: starts.clone(), starts, text, build, sites }).collect();
+            let mut b = encode(&es);
+            let back = decode(&b).unwrap();
+            prop_assert_eq!(back.len(), es.len());
+            for (a, e) in back.iter().zip(&es) {
+                prop_assert!(a.roots == e.roots && a.starts == e.starts && a.text == e.text && a.build == e.build && a.sites == e.sites);
+            }
+            for (at, v) in flips {
+                let i = at.index(b.len());
+                b[i] = v;
+            }
+            if let Some(c) = cut {
+                b.truncate(c.index(b.len() + 1));
+            }
+            for e in decode_all(&b).into_iter().flatten() {
+                prop_assert!(!e.roots.is_empty());
+                let _ = (e.name(), e.width());
+            }
+        }
+    }
 }
