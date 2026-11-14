@@ -6487,7 +6487,12 @@ fn DisableThreadLibraryCalls(_: &mut Ctx) -> u32 {
 }
 fn GetProcAddress(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
-    let imp = if p < 0x10000 { crate::pe::Import::Ordinal(p) } else { crate::pe::Import::Name(Box::leak(a2s(&cstr(p)).into_boxed_str())) };
+    // (the name borrowed for the lookup: it was leaked, a string per call for good)
+    let by_name = (p >= 0x10000).then(|| a2s(&cstr(p)));
+    let imp = match &by_name {
+        Some(n) => crate::pe::Import::Name(n),
+        None => crate::pe::Import::Ordinal(p),
+    };
     let mut r = crate::pe::proc_address(h, imp).unwrap_or(0);
     // SAKE_PROC_STUBS (tests/winetest): a system DLL's function we know but don't implement
     // is found, as on Windows, and its trap returns 0; programs (games) otherwise see NULL
@@ -7231,8 +7236,13 @@ fn GetFileSizeEx(c: &mut Ctx) -> u32 {
 fn SetEndOfFile(c: &mut Ctx) -> u32 {
     let Some(f) = obj::file(c.a(0)) else { return 0 };
     let p = f.seek(SeekFrom::Current(0)).unwrap_or(0);
-    let r = f.f.lock().unwrap().set_len(p).is_ok();
-    ok(r)
+    let r = f.f.lock().unwrap().set_len(p);
+    // (no room for it: ERROR_DISK_FULL, as Windows says of a file past the free space)
+    if r.as_ref().is_err_and(|e| matches!(e.raw_os_error(), Some(libc::ENOSPC | libc::EFBIG))) {
+        last_error(112);
+        return 0;
+    }
+    ok(r.is_ok())
 }
 fn FlushFileBuffers(_: &mut Ctx) -> u32 {
     1
