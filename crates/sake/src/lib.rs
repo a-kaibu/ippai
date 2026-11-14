@@ -87,6 +87,7 @@ pub mod dinput;
 pub mod dmime;
 pub mod dmusic;
 pub mod mousetrack;
+pub mod activation;
 pub mod fast;
 pub mod files;
 pub mod fmtmsg;

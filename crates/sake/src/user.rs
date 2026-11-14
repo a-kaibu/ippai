@@ -338,6 +338,8 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 pub const DESKTOP: u32 = 0x10010;
+/// HWND_MESSAGE: the parent of message-only windows (kept as their owner)
+const HWND_MESSAGE: u32 = 0xffff_fffd;
 const WS_MAXIMIZE: u32 = 0x0100_0000;
 
 pub fn screen() -> (i32, i32) {
@@ -2000,13 +2002,36 @@ fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
 fn activate(c: &mut Ctx, h: u32) {
     let old = with(|s| std::mem::replace(&mut s.active, h));
     if old != h {
+        // (WM_NCACTIVATE first, then WM_ACTIVATE, as Wine's set_active_window and its message
+        // sequence tests have it)
         if old != 0 {
-            send(c, old, 0x6, 0, h);
             send(c, old, 0x86, 0, h);
+            send(c, old, 0x6, 0, h);
         }
-        // the app becomes active with its first active window (games run only while it is)
-        if old == 0 || !is_window(old) {
-            send(c, h, 0x1c, 1, 0);
+        // WM_ACTIVATEAPP when the activation moves to another thread (or comes from no window):
+        // to every top-level window of both threads, as on Windows (games run only while the
+        // app is active; Delphi's Application.OnActivate needs it at TApplication's own hidden
+        // window: crate::activation)
+        let (old_tid, new_tid, tops) = with(|s| {
+            let tid = |h: u32| s.wins.get(&h).map(|w| w.tid);
+            let mut tops: Vec<crate::activation::Top> =
+                s.wins.iter().filter(|(&k, w)| k != DESKTOP && w.parent == 0).map(|(&k, w)| (k, w.tid, w.owner == HWND_MESSAGE)).collect();
+            // (Z order approximated as newest first, as FindWindow lists them)
+            tops.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            (if old != 0 { tid(old) } else { None }, tid(h), tops)
+        });
+        if let Some(new_tid) = new_tid {
+            let me = crate::cur().tid;
+            for (w, wp, lp) in crate::activation::app_messages(old_tid, new_tid, &tops) {
+                match with(|s| s.wins.get(&w).map(|x| x.tid)) {
+                    Some(t) if t == me => {
+                        send(c, w, 0x1c, wp, lp);
+                    }
+                    // (another thread's windows: queued like SendNotifyMessage, not waited for)
+                    Some(t) => notify_thread(t, Msg { hwnd: w, msg: 0x1c, w: wp, l: lp, time: now_ms(), ..Default::default() }),
+                    None => {}
+                }
+            }
         }
         send(c, h, 0x86, 1, old);
         send(c, h, 0x6, 1, old);
@@ -2634,7 +2659,7 @@ fn EnumChildWindows(c: &mut Ctx) -> u32 {
 fn find_window(parent: u32, after: u32, cls: u32, title: u32, wide: bool) -> u32 {
     let cls_name = (cls != 0).then(|| if cls < 0x10000 { crate::k32::atom_name(cls).unwrap_or_default() } else { arg_str(cls, wide) }.to_lowercase());
     let t = (title != 0).then(|| arg_str(title, wide));
-    const MESSAGE: u32 = 0xffff_fffd;
+    const MESSAGE: u32 = HWND_MESSAGE;
     let top = parent == 0 || parent == DESKTOP || parent == MESSAGE;
     let found = with(|s| {
         let list: Vec<u32> = if top {
@@ -3475,15 +3500,7 @@ fn send_notify(c: &mut Ctx, wide: bool) -> u32 {
             Some(tid) if tid == me => {
                 as_wide(wide, || send(c, t, m, wp, lp));
             }
-            Some(tid) => {
-                let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
-                with(|s| {
-                    let q = s.queues.entry(tid).or_default();
-                    q.sent.push_back(Sent { msg: Msg { hwnd: t, msg: m, w: wp, l: lp, time: now_ms(), ..Default::default() }, result, from: 0, remote: None });
-                    q.fresh |= 0x40;
-                });
-                crate::obj::signal();
-            }
+            Some(tid) => notify_thread(tid, Msg { hwnd: t, msg: m, w: wp, l: lp, time: now_ms(), ..Default::default() }),
             None => {
                 if !post(t, m, wp, lp) {
                     crate::k32::last_error(1400);
@@ -3493,6 +3510,16 @@ fn send_notify(c: &mut Ctx, wide: bool) -> u32 {
         }
     }
     1
+}
+/// A message sent to thread `tid`'s window without waiting for it (SendNotifyMessage).
+fn notify_thread(tid: u32, msg: Msg) {
+    let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+    with(|s| {
+        let q = s.queues.entry(tid).or_default();
+        q.sent.push_back(Sent { msg, result, from: 0, remote: None });
+        q.fresh |= 0x40;
+    });
+    crate::obj::signal();
 }
 fn SendNotifyMessageA(c: &mut Ctx) -> u32 {
     send_notify(c, false)
