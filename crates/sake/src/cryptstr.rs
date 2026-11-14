@@ -125,7 +125,17 @@ fn is_space(c: u16) -> bool {
 }
 
 fn b64_value(c: u16) -> Option<u32> {
-    B64.iter().position(|&b| b as u16 == c).map(|i| i as u32)
+    // (a table, not a search of the alphabet per character)
+    const T: [u8; 128] = {
+        let mut t = [0xff; 128];
+        let mut i = 0;
+        while i < 64 {
+            t[B64[i] as usize] = i as u8;
+            i += 1;
+        }
+        t
+    };
+    T.get(c as usize).filter(|&&v| v != 0xff).map(|&v| v as u32)
 }
 
 /// The URL alphabet: '-' and '_' for '+' and '/', no padding
@@ -296,6 +306,11 @@ fn binary_to_string(c: &mut Ctx, wide: bool) -> u32 {
         last_error(ERROR_INVALID_PARAMETER);
         return 0;
     }
+    // (the length is the guest's: memory it cannot have is refused, not copied)
+    if mem::accessible(p, n, false, false) < n {
+        last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
     let data = mem::slice(p, n).to_vec();
     let cap = mem::r32(plen);
     // (no data: nothing to write, for every format)
@@ -363,23 +378,32 @@ pub fn too_small(data: &[u8], fmt: u32, s: &str, cap: u32) -> (Option<Vec<u8>>, 
         let w = s.as_bytes()[..cap.min(len) as usize].to_vec();
         return (Some(w), if cap == len { len + 1 } else { cap });
     }
-    let nl = eol(fmt).len();
-    let mut best = None;
-    for k in 1..=data.len() {
-        let mut t = encode(&data[..k], fmt).unwrap_or_default();
-        t.truncate(t.len() - nl);
-        if t.len() as u32 + 1 > cap {
-            break;
+    // The text of the first k bytes is `s` up to the end of byte k's two digits (the layout
+    // before it does not depend on what follows), so the longest that fits with its NUL is
+    // found in one pass over `s` (it was re-encoded for every k: quadratic in the buffer)
+    let _ = data;
+    let (mut digits, mut best) = (0usize, None);
+    for (i, b) in s.bytes().enumerate() {
+        if b.is_ascii_hexdigit() {
+            digits += 1;
+            if digits % 2 == 0 {
+                if i as u32 + 2 > cap {
+                    break;
+                }
+                best = Some(i + 1);
+            }
         }
-        t.push('\0');
-        best = Some(t.into_bytes());
     }
-    (best, cap)
+    (best.map(|e| [&s.as_bytes()[..e], &[0]].concat()), cap)
 }
 
 fn string_to_binary(c: &mut Ctx, wide: bool) -> u32 {
     let (p, n, fmt, out, plen, pskip, pflags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     if p == 0 || plen == 0 {
+        last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if n != 0 && mem::accessible(p, if wide { n.saturating_mul(2) } else { n }, false, false) < if wide { n.saturating_mul(2) } else { n } {
         last_error(ERROR_INVALID_PARAMETER);
         return 0;
     }
@@ -630,5 +654,61 @@ mod tests {
             let _ = decode_header(&w(&s));
             let _ = decode_hex(&w(&s));
         }
+    }
+}
+
+/// too_small and the decoder tables against the definitions they replaced (review b05)
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The old too_small for hex: re-encode the first k bytes for every k
+    fn too_small_by_prefixes(data: &[u8], fmt: u32, cap: u32) -> Option<Vec<u8>> {
+        let nl = eol(fmt).len();
+        let mut best = None;
+        for k in 1..=data.len() {
+            let mut t = encode(&data[..k], fmt).unwrap_or_default();
+            t.truncate(t.len() - nl);
+            if t.len() as u32 + 1 > cap {
+                break;
+            }
+            t.push('\0');
+            best = Some(t.into_bytes());
+        }
+        best
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(3000))]
+        #[test]
+        fn too_small_is_the_longest_prefix_that_fits(data in proptest::collection::vec(any::<u8>(), 1..80), hex in any::<bool>(), flags in prop::sample::select(vec![0, NOCR, NOCRLF]), cap in 0u32..300) {
+            let fmt = if hex { HEX } else { HEXRAW } | flags;
+            let s = encode(&data, fmt).unwrap();
+            let cap = cap % (s.len() as u32 + 1);
+            let (w, need) = too_small(&data, fmt, &s, cap);
+            prop_assert_eq!(need, cap);
+            if cap == 0 {
+                prop_assert_eq!(w, None);
+            } else {
+                prop_assert_eq!(w, too_small_by_prefixes(&data, fmt, cap));
+            }
+        }
+        #[test]
+        fn b64_table_is_the_alphabet(c in any::<u16>()) {
+            prop_assert_eq!(b64_value(c), B64.iter().position(|&b| b as u16 == c).map(|i| i as u32));
+        }
+    }
+
+    /// A 64 KB buffer for 1 MB of hex: linear (it was ~0.7 GB of formatting)
+    #[test]
+    fn too_small_is_linear() {
+        let data: Vec<u8> = (0..1 << 20).map(|i| i as u8).collect();
+        let s = encode(&data, HEX).unwrap();
+        let t = std::time::Instant::now();
+        let (w, _) = too_small(&data, HEX, &s, 65536);
+        assert!(t.elapsed().as_secs() < 2, "{:?}", t.elapsed());
+        let w = w.unwrap();
+        assert!(w.len() <= 65536 && w.len() > 65000 && *w.last().unwrap() == 0);
     }
 }

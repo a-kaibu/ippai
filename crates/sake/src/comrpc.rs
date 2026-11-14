@@ -3,7 +3,7 @@
 //! code executes in its original server process; no method results are invented.
 #![allow(non_snake_case)]
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}};
 use std::time::{Duration, Instant};
 use crate::api::{self, Ctx};
@@ -96,6 +96,7 @@ fn read_interfaces(list: u32) -> Vec<Arc<Interface>> {
 fn interface(cpu: &mut koji::Cpu, iid: &[u8]) -> Result<Arc<Interface>, u32> {
     if let Some(i) = INTERFACES.lock().unwrap().iter().find(|i| i.iid == iid).cloned() { return Ok(i); }
     if iid == UNKNOWN { return Ok(Arc::new(Interface { iid: iid.to_vec(), count: 3, methods: BTreeMap::new(), abi: BTreeMap::new() })); }
+    if MISSES.lock().unwrap().contains(iid) { return Err(NOINTERFACE); }
     let proxy_class = crate::misc::registry_string(&format!("hkcr\\interface\\{}\\proxystubclsid32", text(iid)), "").ok_or(NOINTERFACE)?;
     let dll = crate::misc::registry_string(&format!("hkcr\\clsid\\{proxy_class}\\inprocserver32"), "").ok_or(NOINTERFACE)?;
     let base = crate::pe::load_library(cpu, &dll);
@@ -106,8 +107,26 @@ fn interface(cpu: &mut koji::Cpu, iid: &[u8]) -> Result<Arc<Interface>, u32> {
     if list == 0 { return Err(NOINTERFACE); }
     let all = read_interfaces(list);
     let found = all.iter().find(|i| i.iid == iid).cloned();
-    INTERFACES.lock().unwrap().extend(all);
+    add_interfaces(all);
+    if found.is_none() {
+        MISSES.lock().unwrap().insert(iid.to_vec());
+    }
     found.ok_or(NOINTERFACE)
+}
+/// IIDs whose proxy DLL was loaded and did not have them (asked again, the DLL is not loaded
+/// and parsed again)
+static MISSES: Mutex<BTreeSet<Vec<u8>>> = Mutex::new(BTreeSet::new());
+/// Adds interfaces not known yet (the first registration of an IID stays, as lookups find it
+/// first; the list does not grow by the DLL's whole list per load)
+fn add_interfaces(new: Vec<Arc<Interface>>) {
+    let mut l = INTERFACES.lock().unwrap();
+    let mut misses = MISSES.lock().unwrap();
+    for i in new {
+        misses.remove(&i.iid);
+        if !l.iter().any(|o| o.iid == i.iid) {
+            l.push(i);
+        }
+    }
 }
 type Values = Vec<(bool, Vec<u8>)>;
 fn values(bytes: &[u8]) -> Result<Values, u32> {
@@ -163,7 +182,7 @@ fn call_remote(cpu: &mut koji::Cpu, call: Call) -> Reply {
         if let Some(reply) = reply { return reply; }
         pump(cpu, true);
         if !kern::wait_change(generation, Some(until)) {
-            kern::with(|k| { k.com.calls.retain(|c| c.id != id); k.com.replies.remove(&id); k.changed(); });
+            kern::with(|k| { k.com.abandon(id); k.changed(); });
             return Reply { hr: 0x8001_011f, data: vec![] };
         }
     }
@@ -310,7 +329,7 @@ pub(crate) fn pump(cpu: &mut koji::Cpu, reentrant: bool) {
         let reply = serve(cpu, &call);
         *cpu = saved;
         DEPTH.with(|d| d.set(d.get() - 1));
-        kern::with(|k| { k.com.replies.insert(call.id, reply); k.changed(); });
+        kern::with(|k| { k.com.reply(call.id, reply); k.changed(); });
     }
 }
 pub(crate) fn wake() {
@@ -522,7 +541,7 @@ fn NdrDllRegisterProxy(c: &mut Ctx) -> u32 {
         if !crate::misc::registry_values(&format!("hkcr\\interface\\{}\\proxystubclsid32", text(&i.iid)),
             vec![("".into(), 1, bytes(&class))]) { return 0x8007_0005; }
     }
-    INTERFACES.lock().unwrap().extend(interfaces); 0
+    add_interfaces(interfaces); 0
 }
 pub fn init() {
     api::implement("ole32", "CoRegisterClassObject", CoRegisterClassObject);
@@ -530,4 +549,30 @@ pub fn init() {
     api::implement("ole32", "CoSuspendClassObjects", CoSuspendClassObjects);
     api::implement("ole32", "CoResumeClassObjects", CoResumeClassObjects);
     api::implement("rpcrt4", "NdrDllRegisterProxy", NdrDllRegisterProxy);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn iface(id: u8, count: u32) -> Arc<Interface> {
+        Arc::new(Interface { iid: vec![id; 16], count, methods: BTreeMap::new(), abi: BTreeMap::new() })
+    }
+    /// Loading the same proxy DLL again (an IID it does not have, NdrDllRegisterProxy per
+    /// call) does not grow the list; the first registration of an IID stays; a miss is
+    /// forgotten once some DLL registers that IID
+    #[test]
+    fn interfaces_are_added_once() {
+        let base = INTERFACES.lock().unwrap().len();
+        for _ in 0..5 {
+            add_interfaces(vec![iface(0xa1, 4), iface(0xa2, 5)]);
+        }
+        add_interfaces(vec![iface(0xa1, 9)]);
+        let l = INTERFACES.lock().unwrap();
+        assert_eq!(l.len(), base + 2);
+        assert_eq!(l.iter().find(|i| i.iid == [0xa1; 16]).unwrap().count, 4);
+        drop(l);
+        MISSES.lock().unwrap().insert(vec![0xa3; 16]);
+        add_interfaces(vec![iface(0xa3, 3)]);
+        assert!(!MISSES.lock().unwrap().contains(&[0xa3; 16][..]));
+    }
 }

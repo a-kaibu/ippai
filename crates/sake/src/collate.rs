@@ -18,6 +18,18 @@ pub const NORM_IGNOREWIDTH: u32 = 0x20000;
 /// ASCII symbols in Windows' order (string sort puts ' and - first)
 const SYMBOLS: &[u8] = b"'-\t\n\x0b\x0c\r !\"#$%&()*,./:;?@[\\]^_`{|}~+<=>";
 
+/// Each ASCII character's place in SYMBOLS (0xff: not a symbol), so a letter is not compared
+/// with the 34 symbols first
+const SYMBOL_AT: [u8; 128] = {
+    let mut t = [0xff; 128];
+    let mut i = 0;
+    while i < SYMBOLS.len() {
+        t[SYMBOLS[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+};
+
 const G_SYMBOL: u32 = 1;
 const G_DIGIT: u32 = 2;
 const G_LATIN: u32 = 3;
@@ -80,8 +92,8 @@ fn weight(c: u16, flags: u32) -> Weight {
     if flags & SORT_STRINGSORT == 0 && matches!(c, 0x27 | 0x2d | 0xad | 0x2010 | 0x2011) {
         return Weight::Special(if c == 0x27 { 0 } else { 1 });
     }
-    if let Some(i) = SYMBOLS.iter().position(|&s| s as u16 == c) {
-        return Weight::Char(p(G_SYMBOL, i as u32), 0, wide);
+    if c < 0x80 && SYMBOL_AT[c as usize] != 0xff {
+        return Weight::Char(p(G_SYMBOL, SYMBOL_AT[c as usize] as u32), 0, wide);
     }
     match c {
         0..=0x1f | 0x7f..=0x9f => Weight::Ignore,
@@ -113,35 +125,44 @@ fn weight(c: u16, flags: u32) -> Weight {
     }
 }
 
+/// A character's place in the key under `flags`: Ok((primary, diacritic, tertiary)), Err(kind)
+/// for a hyphen/apostrophe special, None for nothing
+fn level(c: u16, flags: u32) -> Option<Result<(u32, u8, u8), u8>> {
+    match weight(c, flags) {
+        Weight::Ignore => None,
+        Weight::Special(k) => (flags & NORM_IGNORESYMBOLS == 0).then_some(Err(k)),
+        Weight::Char(pr, di, mut te) => {
+            if flags & NORM_IGNORESYMBOLS != 0 && pr >> 24 == G_SYMBOL {
+                return None;
+            }
+            if flags & NORM_IGNORECASE != 0 {
+                te &= !UPPER;
+            }
+            if flags & NORM_IGNOREWIDTH != 0 {
+                te &= !WIDE;
+                if te & KATA == 0 && pr >> 24 == G_KANA {
+                    te |= KATA;
+                }
+            }
+            if flags & NORM_IGNOREKANATYPE != 0 {
+                te &= !HIRA;
+            }
+            Some(Ok((pr, if flags & NORM_IGNORENONSPACE != 0 { 0 } else { di }, te)))
+        }
+    }
+}
+
 /// The levels of a string's key: primaries, diacritics, tertiaries, specials (position, kind)
+#[cfg(test)]
 fn key(s: &[u16], flags: u32) -> (Vec<u32>, Vec<u8>, Vec<u8>, Vec<(usize, u8)>) {
     let (mut p, mut d, mut t, mut sp) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (i, &c) in s.iter().enumerate() {
-        match weight(c, flags) {
-            Weight::Ignore => {}
-            Weight::Special(k) => {
-                if flags & NORM_IGNORESYMBOLS == 0 {
-                    sp.push((i, k));
-                }
-            }
-            Weight::Char(pr, di, mut te) => {
-                if flags & NORM_IGNORESYMBOLS != 0 && pr >> 24 == G_SYMBOL {
-                    continue;
-                }
-                if flags & NORM_IGNORECASE != 0 {
-                    te &= !UPPER;
-                }
-                if flags & NORM_IGNOREWIDTH != 0 {
-                    te &= !WIDE;
-                    if te & KATA == 0 && pr >> 24 == G_KANA {
-                        te |= KATA;
-                    }
-                }
-                if flags & NORM_IGNOREKANATYPE != 0 {
-                    te &= !HIRA;
-                }
+        match level(c, flags) {
+            None => {}
+            Some(Err(k)) => sp.push((i, k)),
+            Some(Ok((pr, di, te))) => {
                 p.push(pr);
-                d.push(if flags & NORM_IGNORENONSPACE != 0 { 0 } else { di });
+                d.push(di);
                 t.push(te);
             }
         }
@@ -149,10 +170,22 @@ fn key(s: &[u16], flags: u32) -> (Vec<u32>, Vec<u8>, Vec<u8>, Vec<(usize, u8)>) 
     (p, d, t, sp)
 }
 
-/// CompareString's answer for UTF-16 strings `a` and `b` under `flags`
+/// CompareString's answer for UTF-16 strings `a` and `b` under `flags`: the key's levels one
+/// after the other, each read from the strings as it is compared (no key is built: most
+/// comparisons end at the first primary that differs)
 pub fn compare(a: &[u16], b: &[u16], flags: u32) -> Ordering {
-    let (ka, kb) = (key(a, flags), key(b, flags));
-    ka.0.cmp(&kb.0).then_with(|| ka.1.cmp(&kb.1)).then_with(|| ka.2.cmp(&kb.2)).then_with(|| ka.3.iter().map(|x| x.1).cmp(kb.3.iter().map(|x| x.1)))
+    fn chars(s: &[u16], flags: u32) -> impl Iterator<Item = (u32, u8, u8)> + '_ {
+        s.iter().filter_map(move |&c| level(c, flags)?.ok())
+    }
+    fn specials(s: &[u16], flags: u32) -> impl Iterator<Item = u8> + '_ {
+        s.iter().filter_map(move |&c| level(c, flags)?.err())
+    }
+    let chars = |s| chars(s, flags);
+    let specials = |s| specials(s, flags);
+    chars(a).map(|x| x.0).cmp(chars(b).map(|x| x.0))
+        .then_with(|| chars(a).map(|x| x.1).cmp(chars(b).map(|x| x.1)))
+        .then_with(|| chars(a).map(|x| x.2).cmp(chars(b).map(|x| x.2)))
+        .then_with(|| specials(a).cmp(specials(b)))
 }
 
 #[cfg(test)]

@@ -128,6 +128,23 @@ fn text_bytes(s: &[u16], wide: bool) -> Vec<u8> {
     if wide { s.iter().chain(&[0]).flat_map(|c| c.to_le_bytes()).collect() } else { w2a(s).into_iter().chain([0]).collect() }
 }
 
+/// CRED_MAX_ATTRIBUTES, CRED_MAX_CREDENTIAL_BLOB_SIZE (5 * 512), CRED_MAX_VALUE_SIZE
+pub const MAX_ATTRIBUTES: u32 = 64;
+pub const MAX_BLOB: u32 = 5 * 512;
+pub const MAX_VALUE: u32 = 256;
+/// Whether a CREDENTIAL's counts are within Windows' limits (CredWrite fails with
+/// ERROR_INVALID_PARAMETER otherwise); checked before any of it is read, as the counts are the
+/// guest's (a garbage AttributeCount made 4 G attributes)
+fn sizes_ok(p: u32) -> bool {
+    let (_, o) = layout();
+    let (ac, ap) = (r32(p + o[5]), rp(p + o[6]));
+    let ae = if ps() == 8 { 32 } else { 16 };
+    limits_ok(r32(p + o[2]), ac, (0..ac.min(MAX_ATTRIBUTES)).map(|i| r32(ap + i * ae + ps() + 4)))
+}
+pub fn limits_ok(blob: u32, attrs: u32, mut values: impl Iterator<Item = u32>) -> bool {
+    blob <= MAX_BLOB && attrs <= MAX_ATTRIBUTES && values.all(|n| n <= MAX_VALUE)
+}
+
 fn cred_in(p: u32, wide: bool) -> Cred {
     let (_, o) = layout();
     let ac = r32(p + o[5]);
@@ -243,6 +260,9 @@ fn cred_write(c: &mut Ctx, wide: bool) -> u32 {
     // CRED_PRESERVE_CREDENTIAL_BLOB
     if flags & !1 != 0 {
         return fail(ERROR_INVALID_FLAGS);
+    }
+    if !sizes_ok(p) {
+        return fail(ERROR_INVALID_PARAMETER);
     }
     let mut cr = cred_in(p, wide);
     cr.written = now();
@@ -665,6 +685,60 @@ mod tests {
             let mut t = b"@@".to_vec();
             t.extend(s);
             let _ = unmarshal(&t);
+        }
+    }
+}
+
+/// CredWrite's limits (review b05: the guest's counts were read unbounded)
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    /// A CREDENTIALW (x86 layout) with a blob of `blob` bytes and `n` attributes (pointing at
+    /// 64 KB of memory that is not attribute data: a garbage count must not be read)
+    fn cred(blob: u32, n: u32, value: u32) -> u32 {
+        let p = mem::heap_alloc(64, true);
+        let t = mem::heap_alloc(64, true);
+        mem::write(t, &"t1".encode_utf16().chain([0]).flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>());
+        let a = mem::heap_alloc(16 * 4, true);
+        for i in 0..4 {
+            w32(a + 16 * i + 8, value);
+            w32(a + 16 * i + 12, mem::heap_alloc(300, true));
+        }
+        let (_, o) = layout();
+        w32(p + 4, 1);
+        w32(p + 8, t);
+        w32(p + o[2], blob);
+        w32(p + o[3], mem::heap_alloc(3000, true));
+        w32(p + o[4], 1);
+        w32(p + o[5], n);
+        w32(p + o[6], a);
+        p
+    }
+
+    #[test]
+    fn counts_over_the_limits_fail_before_reading() {
+        let _g = enter();
+        guest_thread();
+        for (blob, n, v, ok) in [(16, 0, 0, 1), (MAX_BLOB, 0, 0, 1), (MAX_BLOB + 1, 0, 0, 0), (u32::MAX, 0, 0, 0), (4, 4, MAX_VALUE, 1), (4, 1, MAX_VALUE + 1, 0), (4, MAX_ATTRIBUTES + 1, 4, 0), (4, 0x7fff_ffff, 4, 0)] {
+            let p = cred(blob, n, v);
+            assert_eq!(call(CredWriteW, &[p, 0]), ok, "blob {blob} attrs {n} value {v}");
+            if ok == 0 {
+                assert_eq!(crate::k32::get_last_error(), ERROR_INVALID_PARAMETER);
+            }
+        }
+    }
+
+    proptest! {
+        /// limits_ok is exactly Windows' three limits
+        #[test]
+        fn limits_are_windows(blob in any::<u32>(), attrs in any::<u32>(), values in proptest::collection::vec(any::<u32>(), 0..8)) {
+            let small = |x: u32| x % 3000;
+            let (blob, attrs) = if blob & 1 == 0 { (small(blob), attrs % 80) } else { (blob, attrs) };
+            let values: Vec<u32> = values.iter().map(|&v| if v & 1 == 0 { v % 300 } else { v }).collect();
+            prop_assert_eq!(limits_ok(blob, attrs, values.iter().copied()), blob <= 2560 && attrs <= 64 && values.iter().all(|&v| v <= 256));
         }
     }
 }

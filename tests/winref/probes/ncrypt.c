@@ -84,6 +84,15 @@ static void rsa(NCRYPT_PROV_HANDLE prov) {
     printf("rsa pss verify: %#lx\n", NCryptVerifySignature(pub, &pss, sha256_abc, 32, sig, sn, NCRYPT_PAD_PSS_FLAG));
     pss.cbSalt = 20;
     printf("rsa pss verify other salt: %#lx\n", NCryptVerifySignature(pub, &pss, sha256_abc, 32, sig, sn, NCRYPT_PAD_PSS_FLAG));
+    /* salts that cannot fit a 1024-bit key: the largest that fits is 128 - 32 - 2 */
+    static const DWORD salts[] = {94, 95, 128, 129, 0x80000000, 0xffffffff};
+    for (int i = 0; i < 6; i++) {
+        pss.cbSalt = salts[i];
+        sn = 0;
+        r = NCryptSignHash(k, &pss, sha256_abc, 32, sig, sizeof sig, &sn, NCRYPT_PAD_PSS_FLAG);
+        printf("rsa pss salt %#lx sign: %#lx %lu", salts[i], r, sn);
+        printf(" verify: %#lx\n", NCryptVerifySignature(pub, &pss, sha256_abc, 32, sig, r ? 128 : sn, NCRYPT_PAD_PSS_FLAG));
+    }
 
     /* OAEP with a label, PKCS#1 encryption, no padding */
     BCRYPT_OAEP_PADDING_INFO oaep = {BCRYPT_SHA256_ALGORITHM, (BYTE *)"label", 5};
@@ -238,6 +247,23 @@ int main(void) {
         dword_prop(k, NCRYPT_LENGTH_PROPERTY, "generic ecdsa length");
         str_prop(k, BCRYPT_ECC_CURVE_NAME, "generic ecdsa curve name");
         NCryptFreeObject(k);
+    }
+
+    /* RSA blobs whose header sizes add up past 2^32 to the blob's length (32-bit sums wrap) */
+    static const DWORD heads[][6] = {
+        {0x33415352, 1024, 3, 0x80000000, 1, 1},
+        {0x32415352, 1024, 3, 0xffffff00, 0x100, 0x20},
+    };
+    static const DWORD lens[] = {32, 59};
+    for (int i = 0; i < 2; i++) {
+        BYTE *b = calloc(1, lens[i] + 16);
+        memcpy(b, heads[i], 24);
+        memset(b + 24, 1, lens[i] - 24);
+        const WCHAR *t = i == 0 ? BCRYPT_RSAFULLPRIVATE_BLOB : BCRYPT_RSAPRIVATE_BLOB;
+        k = 0;
+        printf("rsa import wrapping header %d: %#lx\n", i, NCryptImportKey(prov, 0, t, NULL, &k, b, lens[i], 0));
+        if (k) NCryptFreeObject(k);
+        free(b);
     }
     NCryptFreeObject(prov);
     return 0;

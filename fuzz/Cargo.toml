@@ -294,3 +294,10 @@ path = "fuzz_targets/undname.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "cng_blobs"
+path = "fuzz_targets/cng_blobs.rs"
+test = false
+doc = false
+bench = false

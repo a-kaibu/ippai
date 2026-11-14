@@ -15,7 +15,7 @@
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use rsa::{BigUint, Oaep, Pkcs1v15Encrypt, Pkcs1v15Sign, Pss, RsaPrivateKey, RsaPublicKey};
@@ -197,11 +197,24 @@ fn be(b: &BigUint, len: usize) -> Vec<u8> {
     out
 }
 
+/// The length a BCRYPT_RSAKEY_BLOB of `kind` with these header sizes has, counted in u64: the
+/// four sizes are the guest's, and their sum in a 32-bit usize (wasm32) can wrap around to the
+/// blob's real length
+pub fn blob_need(kind: Blob, ne: u32, nm: u32, p1: u32, p2: u32) -> u64 {
+    let (ne, nm, p1, p2) = (ne as u64, nm as u64, p1 as u64, p2 as u64);
+    24 + ne + nm + match kind {
+        Blob::Public => 0,
+        Blob::Private => p1 + p2,
+        Blob::FullPrivate => 2 * (p1 + p2) + p1 + nm,
+    }
+}
+
 impl Rsa {
-    pub fn public(&self) -> RsaPublicKey {
+    /// The public half (borrowed: a private key holds it)
+    pub fn public(&self) -> &RsaPublicKey {
         match self {
-            Rsa::Public(k) => k.clone(),
-            Rsa::Private(k) => k.to_public_key(),
+            Rsa::Public(k) => k,
+            Rsa::Private(k) => k.as_ref(),
         }
     }
     /// The modulus' size in bytes
@@ -230,12 +243,7 @@ impl Rsa {
             return Err(NTE_INVALID_PARAMETER);
         }
         let (bits, ne, nm, p1, p2) = (r(4) as u32, r(8), r(12), r(16), r(20));
-        let need = 24 + ne + nm + match kind {
-            Blob::Public => 0,
-            Blob::Private => p1 + p2,
-            Blob::FullPrivate => 2 * (p1 + p2) + p1 + nm,
-        };
-        if ne == 0 || ne > 8 || nm == 0 || b.len() != need || (kind != Blob::Public && (p1 == 0 || p2 == 0)) {
+        if ne == 0 || ne > 8 || nm == 0 || b.len() as u64 != blob_need(kind, ne as u32, nm as u32, p1 as u32, p2 as u32) || (kind != Blob::Public && (p1 == 0 || p2 == 0)) {
             return Err(NTE_BAD_DATA);
         }
         let mut at = 24;
@@ -311,6 +319,11 @@ impl Rsa {
             Pad::Pkcs1(h) => k.sign(pkcs1_sign(h, digest)?, digest),
             Pad::Pss(h, salt) => {
                 check_len(h, digest)?;
+                // (a salt longer than the key can never fit; the rsa crate would first allocate
+                // the guest's cbSalt bytes, up to 4 GB)
+                if salt > k.size() {
+                    return Err(NTE_INVALID_PARAMETER);
+                }
                 k.sign_with_rng(&mut Rng, h.pss(salt), digest)
             }
             _ => return Err(NTE_INVALID_PARAMETER),
@@ -326,6 +339,9 @@ impl Rsa {
             Pad::Pkcs1(h) => k.verify(pkcs1_sign(h, digest)?, digest, sig),
             Pad::Pss(h, salt) => {
                 check_len(h, digest)?;
+                if salt > k.size() {
+                    return Err(NTE_BAD_SIGNATURE);
+                }
                 k.verify(h.pss(salt), digest, sig)
             }
             _ => return Err(NTE_INVALID_PARAMETER),
@@ -343,7 +359,7 @@ impl Rsa {
                 if &m >= k.n() {
                     return Err(NTE_INVALID_PARAMETER);
                 }
-                return rsa::hazmat::rsa_encrypt(&k, &m).map(|c| be(&c, k.size())).map_err(|_| NTE_INVALID_PARAMETER);
+                return rsa::hazmat::rsa_encrypt(k, &m).map(|c| be(&c, k.size())).map_err(|_| NTE_INVALID_PARAMETER);
             }
             Pad::Pkcs1(_) => k.encrypt(&mut Rng, Pkcs1v15Encrypt, data),
             Pad::Oaep(h) => k.encrypt(&mut Rng, h.oaep(label), data),
@@ -728,8 +744,9 @@ struct Key {
     alg: &'static str,
     bits: u32,
     finalized: bool,
-    rsa: Option<Rsa>,
-    ecc: Option<Ecc>,
+    /// (shared: every lookup clones the Key, and a private key is several KB of big integers)
+    rsa: Option<Arc<Rsa>>,
+    ecc: Option<Arc<Ecc>>,
     /// an ECC key's curve (the generic ECDSA / ECDH: set by ECCCurveName)
     curve: Option<Curve>,
     export: u32,
@@ -934,7 +951,7 @@ fn NCryptFinalizeKey(c: &mut Ctx) -> u32 {
     }
     if k.alg == "RSA" && k.rsa.is_none() {
         match Rsa::generate(k.bits) {
-            Ok(r) => k.rsa = Some(r),
+            Ok(r) => k.rsa = Some(Arc::new(r)),
             Err(e) => return e,
         }
     }
@@ -942,7 +959,7 @@ fn NCryptFinalizeKey(c: &mut Ctx) -> u32 {
         if k.ecc.is_none() {
             // (the generic ECDSA / ECDH need ECCCurveName first)
             let Some(curve) = k.curve else { return NTE_INVALID_PARAMETER };
-            k.ecc = Some(Ecc::generate(curve, ecdsa));
+            k.ecc = Some(Arc::new(Ecc::generate(curve, ecdsa)));
         }
     }
     k.finalized = true;
@@ -1067,7 +1084,7 @@ fn NCryptImportKey(c: &mut Ctx) -> u32 {
         }
     }
     let finalize = fl & DO_NOT_FINALIZE == 0;
-    let k = Key { prov: p, alg: alg_name, bits, finalized: finalize, rsa, ecc, curve, export: 0, usage: 0x00ff_ffff, name };
+    let k = Key { prov: p, alg: alg_name, bits, finalized: finalize, rsa: rsa.map(Arc::new), ecc: ecc.map(Arc::new), curve, export: 0, usage: 0x00ff_ffff, name };
     if finalize {
         if let Some(n) = &k.name {
             if fl & OVERWRITE == 0 && with(|s| s.store.contains_key(&n.to_lowercase())) {
@@ -1269,7 +1286,7 @@ fn padding(fl: u32, info: u32, sign: bool) -> Result<(Pad, Vec<u8>), u32> {
     })
 }
 /// The finalized RSA key of a handle
-fn rsa_key(h: u32) -> Result<Rsa, u32> {
+fn rsa_key(h: u32) -> Result<Arc<Rsa>, u32> {
     let k = key(h).ok_or(NTE_INVALID_HANDLE)?;
     if !k.finalized {
         return Err(NTE_BAD_KEY_STATE);
@@ -1278,7 +1295,7 @@ fn rsa_key(h: u32) -> Result<Rsa, u32> {
 }
 
 /// The finalized ECC key of a handle; None: not an ECC key
-fn ecc_key(h: u32) -> Option<Result<Ecc, u32>> {
+fn ecc_key(h: u32) -> Option<Result<Arc<Ecc>, u32>> {
     let k = key(h)?;
     Curve::of_alg(k.alg)?;
     if !k.finalized {
@@ -1562,7 +1579,9 @@ fn BCryptCloseAlgorithmProvider(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     let mut l = ALG_HANDLES.lock().unwrap();
     let Some(i) = l.iter().position(|a| a.0 == h) else { return STATUS_INVALID_HANDLE };
-    l.remove(i);
+    l.swap_remove(i);
+    drop(l);
+    mem::heap_free(h);
     0
 }
 
@@ -1604,12 +1623,12 @@ fn BCryptFinalizeKeyPair(c: &mut Ctx) -> u32 {
     }
     if k.alg == "RSA" {
         match Rsa::generate(k.bits) {
-            Ok(r) => k.rsa = Some(r),
+            Ok(r) => k.rsa = Some(Arc::new(r)),
             Err(e) => return nt(e),
         }
     } else if let Some((_, ecdsa)) = Curve::of_alg(k.alg) {
         let Some(curve) = k.curve else { return STATUS_INVALID_PARAMETER };
-        k.ecc = Some(Ecc::generate(curve, ecdsa));
+        k.ecc = Some(Arc::new(Ecc::generate(curve, ecdsa)));
     }
     k.finalized = true;
     with(|s| s.keys.insert(h, k));
@@ -1654,7 +1673,7 @@ fn BCryptImportKeyPair(c: &mut Ctx) -> u32 {
         }
     };
     let curve = ecc.as_ref().map(|e| e.curve);
-    let k = Key { prov: c.a(0), alg: a.0, bits, finalized: true, rsa, ecc, curve, export: ALLOW_PLAINTEXT_EXPORT, usage: 0x00ff_ffff, name: None };
+    let k = Key { prov: c.a(0), alg: a.0, bits, finalized: true, rsa: rsa.map(Arc::new), ecc: ecc.map(Arc::new), curve, export: ALLOW_PLAINTEXT_EXPORT, usage: 0x00ff_ffff, name: None };
     putp(out, add_key(k));
     0
 }
@@ -1693,7 +1712,11 @@ fn BCryptExportKey(c: &mut Ctx) -> u32 {
 
 fn BCryptDestroyKey(c: &mut Ctx) -> u32 {
     match with(|s| s.keys.remove(&c.a(0))) {
-        Some(_) => 0,
+        // (the handle is the 16-byte block new_handle made, as NCryptFreeObject frees it)
+        Some(_) => {
+            mem::heap_free(c.a(0));
+            0
+        }
         None => STATUS_INVALID_HANDLE,
     }
 }
@@ -1889,7 +1912,7 @@ mod tests {
         info.extend_from_slice(&d);
         assert_eq!(k.sign(Pad::Pkcs1(None), &info).unwrap(), k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap());
         // a public key cannot sign
-        assert_eq!(Rsa::Public(k.public()).sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap_err(), NTE_NO_KEY);
+        assert_eq!(Rsa::Public(k.public().clone()).sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap_err(), NTE_NO_KEY);
     }
 
     #[test]
@@ -2232,5 +2255,100 @@ mod tests {
             assert_eq!(ea.agree(&Ecc { d: None, ..eb.clone() }).unwrap(), theirs, "{name}");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// The review's findings (b05): guest-sized blob headers, PSS salts and handle blocks
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    fn hdr(magic: u32, f: [u32; 5]) -> Vec<u8> {
+        [magic, f[0], f[1], f[2], f[3], f[4]].iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+    /// The sum the old code made in a 32-bit usize (wasm32)
+    fn need32(kind: Blob, ne: u32, nm: u32, p1: u32, p2: u32) -> u32 {
+        let x = 24u32.wrapping_add(ne).wrapping_add(nm);
+        x.wrapping_add(match kind {
+            Blob::Public => 0,
+            Blob::Private => p1.wrapping_add(p2),
+            Blob::FullPrivate => 2u32.wrapping_mul(p1.wrapping_add(p2)).wrapping_add(p1).wrapping_add(nm),
+        })
+    }
+
+    /// RSA3 with cbModulus = 0x8000_0000: the 32-bit sum wraps to the blob's 32 bytes, after
+    /// which the old code sliced 2 GB past its end (a panic, under panic=abort the VM)
+    #[test]
+    fn wrapping_header_is_bad_data() {
+        let b = [hdr(RSA3, [1024, 3, 0x8000_0000, 1, 1]), vec![1; 8]].concat();
+        assert_eq!(need32(Blob::FullPrivate, 3, 0x8000_0000, 1, 1) as usize, b.len());
+        assert_eq!(Rsa::from_blob(Blob::FullPrivate, true, &b).err(), Some(NTE_BAD_DATA));
+        let b = [hdr(RSA2, [1024, 3, 0xFFFF_FF00, 0x100, 0x20]), vec![1; 35]].concat();
+        assert_eq!(need32(Blob::Private, 3, 0xFFFF_FF00, 0x100, 0x20) as usize, b.len());
+        assert_eq!(Rsa::from_blob(Blob::Private, false, &b).err(), Some(NTE_BAD_DATA));
+    }
+
+    /// A cbSalt of 0xFFFF_FFFF fails as a salt that does not fit, without allocating it
+    #[test]
+    fn huge_pss_salt_fails() {
+        let k = Rsa::generate(512).unwrap();
+        let d = digest(Hash::Sha256, &[b"x"]);
+        for salt in [k.size() + 1, 1 << 31, u32::MAX as usize] {
+            assert_eq!(k.sign(Pad::Pss(Hash::Sha256, salt), &d).unwrap_err(), NTE_INVALID_PARAMETER);
+            assert_eq!(k.verify(Pad::Pss(Hash::Sha256, salt), &d, &vec![0; k.size()]).unwrap_err(), NTE_BAD_SIGNATURE);
+        }
+        // (the largest salt that fits still signs and verifies)
+        let salt = k.size() - 32 - 2;
+        let s = k.sign(Pad::Pss(Hash::Sha256, salt), &d).unwrap();
+        k.verify(Pad::Pss(Hash::Sha256, salt), &d, &s).unwrap();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4000))]
+        /// Any header: the parser answers (no panic), and when it accepts, the blob's length is the
+        /// exact (unwrapped) sum of the header's sizes. Headers whose 32-bit sum wraps around to
+        /// the length are generated on purpose (`wrap`).
+        #[test]
+        fn header_sizes_are_summed_exactly(kind in 0usize..3, ne in 0u32..12, nm in any::<u32>(), p1 in any::<u32>(), p2 in any::<u32>(), wrap in any::<bool>(), small in 0u32..300) {
+            let kind = [Blob::Public, Blob::Private, Blob::FullPrivate][kind];
+            let (nm, p1, p2) = if wrap { (nm | 0x8000_0000, p1, p2) } else { (nm % 300, p1 % 200, p2 % 200) };
+            let n32 = need32(kind, ne, nm, p1, p2);
+            let len = if n32 >= 24 && n32 < 4096 { n32 as usize } else { 24 + small as usize };
+            let mut b = vec![0x5a; len];
+            b[..24].copy_from_slice(&hdr(kind.magic(), [1024, ne, nm, p1, p2]));
+            match Rsa::from_blob(kind, true, &b) {
+                Ok(_) => prop_assert_eq!(blob_need(kind, ne, nm, p1, p2), len as u64),
+                Err(e) => prop_assert!(e == NTE_BAD_DATA || e == NTE_INVALID_PARAMETER),
+            }
+            prop_assert_eq!(blob_need(kind, ne, nm, p1, p2) as u32, n32);
+        }
+    }
+
+    /// BCryptCloseAlgorithmProvider and BCryptDestroyKey give the handle's block back (an
+    /// open/close per hash leaked 32 bytes of guest heap each)
+    #[test]
+    fn bcrypt_handles_are_freed() {
+        let _g = enter();
+        let out = mem::heap_alloc(8, true);
+        let name = mem::heap_alloc(16, true);
+        mem::write(name, &w("RSA"));
+        for _ in 0..3 {
+            assert_eq!(call(BCryptOpenAlgorithmProvider, &[out, name, 0, 0]), 0);
+            let a = r32(out);
+            assert!(mem::heap_owns(a));
+            assert_eq!(call(BCryptGenerateKeyPair, &[a, out, 512, 0]), 0);
+            let k = r32(out);
+            assert!(mem::heap_owns(k));
+            assert_eq!(call(BCryptDestroyKey, &[k]), 0);
+            assert!(!mem::heap_owns(k));
+            assert_eq!(call(BCryptDestroyKey, &[k]), STATUS_INVALID_HANDLE);
+            assert_eq!(call(BCryptCloseAlgorithmProvider, &[a, 0]), 0);
+            assert!(!mem::heap_owns(a));
+            assert_eq!(call(BCryptCloseAlgorithmProvider, &[a, 0]), STATUS_INVALID_HANDLE);
+        }
+        mem::heap_free(out);
+        mem::heap_free(name);
     }
 }

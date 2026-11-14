@@ -159,3 +159,25 @@ proptest! {
         }
     }
 }
+
+/// The key the comparison used to build, compared level by level
+fn compare_by_keys(a: &[u16], b: &[u16], flags: u32) -> Ordering {
+    let (ka, kb) = (key(a, flags), key(b, flags));
+    ka.0.cmp(&kb.0).then_with(|| ka.1.cmp(&kb.1)).then_with(|| ka.2.cmp(&kb.2)).then_with(|| ka.3.iter().map(|x| x.1).cmp(kb.3.iter().map(|x| x.1)))
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(20000))]
+    /// The comparison without keys (review b05: 8 allocations per CompareString) answers as
+    /// the key comparison, for strings of ASCII, kana, marked Latin, Greek and symbols, under
+    /// every flag combination
+    #[test]
+    fn streaming_compare_is_the_key_compare(a in proptest::collection::vec(proptest::sample::select(ALPHABET.to_vec()), 0..8), b in proptest::collection::vec(proptest::sample::select(ALPHABET.to_vec()), 0..8), f in 0u32..64) {
+        let flags = [NORM_IGNORECASE, NORM_IGNORENONSPACE, NORM_IGNORESYMBOLS, SORT_STRINGSORT, NORM_IGNOREKANATYPE, NORM_IGNOREWIDTH].iter().enumerate().filter(|(i, _)| f >> i & 1 != 0).fold(0, |x, (_, &v)| x | v);
+        proptest::prop_assert_eq!(compare(&a, &b, flags), compare_by_keys(&a, &b, flags));
+        // (one string a prefix of the other)
+        let ab = [&a[..], &b[..]].concat();
+        proptest::prop_assert_eq!(compare(&a, &ab, flags), compare_by_keys(&a, &ab, flags));
+    }
+}
+const ALPHABET: &[u16] = &[0x41, 0x61, 0x5a, 0x7a, 0x30, 0x39, 0x27, 0x2d, 0x5f, 0x20, 0x09, 0x7e, 0xad, 0x2010, 0xe8, 0xc9, 0x17e, 0x3b1, 0x391, 0x431, 0x3042, 0x30a2, 0xff71, 0x3041, 0x304c, 0x30ac, 0xff76, 0xff9e, 0xff21, 0xff41, 0x3000, 0x30fb, 0xff65, 0x4e00, 0x1, 0x7f, 0x2603];
