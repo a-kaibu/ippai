@@ -1,0 +1,18 @@
+# DirectDraw clauses (wingfx/spec/README.md): <id> <status> | <source> | <what it says>
+DDRAW.DEVICE doc | DirectDrawCreateEx, IDirectDraw7::SetCooperativeLevel | an IDirectDraw7, DDSCL_NORMAL
+DDRAW.RECT measured | IDirectDrawSurface7::Blt (NULL: the whole surface) | a rectangle past the surface or empty gives DDERR_INVALIDRECT and changes nothing, without a clipper (ddraw golden)
+DDRAW.COPY doc | IDirectDrawSurface7::Blt | equal rectangles of surfaces of one format: the pixels copied
+DDRAW.OVERLAP assumed | IDirectDrawSurface7::Blt, BltFast | within one surface the source is read as it was before the blit
+DDRAW.MIRROR doc | DDBLTFX (DDBLTFX_MIRRORLEFTRIGHT, MIRRORUPDOWN) | the source read right to left, bottom to top
+DDRAW.FILL doc | DDBLTFX (dwFillColor in the surface's pixel format) | DDBLT_COLORFILL writes the value to every pixel of the rectangle
+DDRAW.FILL.HIGHBITS open | (none) | a fill value with bits past the surface's pixel
+DDRAW.KEY.SET doc | IDirectDrawSurface7::SetColorKey | DDCKEY_SRCBLT / DESTBLT keys of the surface, low = high value (NULL: none)
+DDRAW.KEY doc | Color Keying | a source key: its pixels are not copied; a destination key: only pixels of the destination that have it are written; both may apply
+DDRAW.KEY.OVERRIDE doc | DDBLTFX (ddckSrcColorkey, ddckDestColorkey) | DDBLT_KEYSRCOVERRIDE / KEYDESTOVERRIDE take the key from the DDBLTFX
+DDRAW.KEY.UNSET open | (none) | DDBLT_KEYSRC / KEYDEST or BltFast's key flags with no key set on the surface
+DDRAW.FAST doc | IDirectDrawSurface7::BltFast | the source rectangle to (x, y), the same size
+DDRAW.FAST.BOTHKEYS open | IDirectDrawSurface7::BltFast | DDBLTFAST_SRCCOLORKEY and DESTCOLORKEY together
+DDRAW.STRETCH open | IDirectDrawSurface7::Blt | rectangles of different sizes: which source pixels (not documented)
+DDRAW.FORMATS open | (none) | a blit between surfaces of different pixel formats
+DDRAW.NOSOURCE open | (none) | Blt without a source and without DDBLT_COLORFILL
+DDRAW.KEY.BITS assumed | (none) | on 32 bpp surfaces (masks 0xffffff) a key compares all 32 bits of the pixel (Wine compares otherwise)

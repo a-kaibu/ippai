@@ -1,0 +1,4311 @@
+# wingfx suite ddraw: DirectDraw 7 blits between system-memory surfaces (SPEC.md). Made by `wingfx gen ddraw`.
+case basic-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+ddblt 0 all 1 all
+ddblt 0 0 0 7 5 1 all
+ddblt 0 5 4 12 9 1 all
+ddblt 0 2 1 5 3 1 3 2 6 4
+ddblt 0 6 4 13 9 1 all
+ddblt 0 -1 0 6 5 1 all
+ddblt 0 3 3 3 5 1 all
+ddblt 0 0 0 2 2 1 6 4 8 6
+ddblt 0 0 0 7 5 1 0 0 7 5 mirrorlr
+ddblt 0 1 2 8 7 1 all mirrorud
+ddblt 0 2 2 9 7 1 all mirrorlr mirrorud
+ddcolor 0 1 1 4 3 0x78
+ddcolor 0 all 0xf0
+ddcolor 0 10 0 13 2 5
+ddblt 0 4 4 11 9 1 all
+dddump 0
+end
+case keysrc-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xa0
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case keydest-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0x38
+ddblt 0 0 0 7 5 1 all keydest
+dddump 0
+end
+case keysrcov-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 3 1 10 6 1 all keysrcov 0xa0
+dddump 0
+end
+case keydestov-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 0 2 7 7 1 all keydestov 0x38
+dddump 0
+end
+case keyboth-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xa0
+ddkey 0 dest 0x38
+ddblt 0 0 0 7 5 1 all keysrc keydest
+dddump 0
+end
+case fast-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+
+ddfast 0 3 2 1 all
+ddfast 0 8 6 1 all
+ddfast 0 0 0 1 1 1 5 4
+dddump 0
+end
+case fastsrckey-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xa0
+ddfast 0 1 1 1 all srckey
+ddfast 0 5 4 1 0 0 7 5 srckey
+dddump 0
+end
+case fastdestkey-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0x38
+ddfast 0 1 1 1 all destkey
+dddump 0
+end
+case keynone-8
+dd
+ddsurf 0 12 9 8
+ddsurf 1 7 5 8
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xa0
+ddkey 1 src none
+ddkey 1 src 0xa0
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case overlap-8
+dd
+ddsurf 0 16 12 8
+ddfill 0 21
+ddblt 0 5 4 13 8 0 4 4 12 8
+ddfast 0 4 5 0 5 5 11 9
+ddblt 0 3 4 11 8 0 4 4 12 8
+ddfast 0 6 5 0 5 5 11 9
+ddblt 0 4 5 12 9 0 4 4 12 8
+ddfast 0 5 4 0 5 5 11 9
+ddblt 0 4 3 12 7 0 4 4 12 8
+ddfast 0 5 6 0 5 5 11 9
+ddblt 0 6 7 14 11 0 4 4 12 8
+ddfast 0 3 2 0 5 5 11 9
+ddblt 0 1 2 9 6 0 4 4 12 8
+ddfast 0 8 7 0 5 5 11 9
+ddblt 0 7 3 15 7 0 4 4 12 8
+ddfast 0 2 6 0 5 5 11 9
+ddblt 0 2 6 10 10 0 4 4 12 8
+ddfast 0 7 3 0 5 5 11 9
+dddump 0
+end
+case basic-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+ddblt 0 all 1 all
+ddblt 0 0 0 7 5 1 all
+ddblt 0 5 4 12 9 1 all
+ddblt 0 2 1 5 3 1 3 2 6 4
+ddblt 0 6 4 13 9 1 all
+ddblt 0 -1 0 6 5 1 all
+ddblt 0 3 3 3 5 1 all
+ddblt 0 0 0 2 2 1 6 4 8 6
+ddblt 0 0 0 7 5 1 0 0 7 5 mirrorlr
+ddblt 0 1 2 8 7 1 all mirrorud
+ddblt 0 2 2 9 7 1 all mirrorlr mirrorud
+ddcolor 0 1 1 4 3 0x5678
+ddcolor 0 all 0xdef0
+ddcolor 0 10 0 13 2 5
+ddblt 0 4 4 11 9 1 all
+dddump 0
+end
+case keysrc-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case keydest-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0x6f8f
+ddblt 0 0 0 7 5 1 all keydest
+dddump 0
+end
+case keysrcov-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 3 1 10 6 1 all keysrcov 0x6291
+dddump 0
+end
+case keydestov-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 0 2 7 7 1 all keydestov 0x6f8f
+dddump 0
+end
+case keyboth-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddkey 0 dest 0x6f8f
+ddblt 0 0 0 7 5 1 all keysrc keydest
+dddump 0
+end
+case fast-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+
+ddfast 0 3 2 1 all
+ddfast 0 8 6 1 all
+ddfast 0 0 0 1 1 1 5 4
+dddump 0
+end
+case fastsrckey-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddfast 0 1 1 1 all srckey
+ddfast 0 5 4 1 0 0 7 5 srckey
+dddump 0
+end
+case fastdestkey-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0x6f8f
+ddfast 0 1 1 1 all destkey
+dddump 0
+end
+case keynone-555
+dd
+ddsurf 0 12 9 555
+ddsurf 1 7 5 555
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddkey 1 src none
+ddkey 1 src 0x6291
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case overlap-555
+dd
+ddsurf 0 16 12 555
+ddfill 0 21
+ddblt 0 5 4 13 8 0 4 4 12 8
+ddfast 0 4 5 0 5 5 11 9
+ddblt 0 3 4 11 8 0 4 4 12 8
+ddfast 0 6 5 0 5 5 11 9
+ddblt 0 4 5 12 9 0 4 4 12 8
+ddfast 0 5 4 0 5 5 11 9
+ddblt 0 4 3 12 7 0 4 4 12 8
+ddfast 0 5 6 0 5 5 11 9
+ddblt 0 6 7 14 11 0 4 4 12 8
+ddfast 0 3 2 0 5 5 11 9
+ddblt 0 1 2 9 6 0 4 4 12 8
+ddfast 0 8 7 0 5 5 11 9
+ddblt 0 7 3 15 7 0 4 4 12 8
+ddfast 0 2 6 0 5 5 11 9
+ddblt 0 2 6 10 10 0 4 4 12 8
+ddfast 0 7 3 0 5 5 11 9
+dddump 0
+end
+case basic-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+ddblt 0 all 1 all
+ddblt 0 0 0 7 5 1 all
+ddblt 0 5 4 12 9 1 all
+ddblt 0 2 1 5 3 1 3 2 6 4
+ddblt 0 6 4 13 9 1 all
+ddblt 0 -1 0 6 5 1 all
+ddblt 0 3 3 3 5 1 all
+ddblt 0 0 0 2 2 1 6 4 8 6
+ddblt 0 0 0 7 5 1 0 0 7 5 mirrorlr
+ddblt 0 1 2 8 7 1 all mirrorud
+ddblt 0 2 2 9 7 1 all mirrorlr mirrorud
+ddcolor 0 1 1 4 3 0x5678
+ddcolor 0 all 0xdef0
+ddcolor 0 10 0 13 2 5
+ddblt 0 4 4 11 9 1 all
+dddump 0
+end
+case keysrc-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case keydest-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0x6f8f
+ddblt 0 0 0 7 5 1 all keydest
+dddump 0
+end
+case keysrcov-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 3 1 10 6 1 all keysrcov 0x6291
+dddump 0
+end
+case keydestov-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 0 2 7 7 1 all keydestov 0x6f8f
+dddump 0
+end
+case keyboth-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddkey 0 dest 0x6f8f
+ddblt 0 0 0 7 5 1 all keysrc keydest
+dddump 0
+end
+case fast-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+
+ddfast 0 3 2 1 all
+ddfast 0 8 6 1 all
+ddfast 0 0 0 1 1 1 5 4
+dddump 0
+end
+case fastsrckey-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddfast 0 1 1 1 all srckey
+ddfast 0 5 4 1 0 0 7 5 srckey
+dddump 0
+end
+case fastdestkey-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0x6f8f
+ddfast 0 1 1 1 all destkey
+dddump 0
+end
+case keynone-565
+dd
+ddsurf 0 12 9 565
+ddsurf 1 7 5 565
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0x6291
+ddkey 1 src none
+ddkey 1 src 0x6291
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case overlap-565
+dd
+ddsurf 0 16 12 565
+ddfill 0 21
+ddblt 0 5 4 13 8 0 4 4 12 8
+ddfast 0 4 5 0 5 5 11 9
+ddblt 0 3 4 11 8 0 4 4 12 8
+ddfast 0 6 5 0 5 5 11 9
+ddblt 0 4 5 12 9 0 4 4 12 8
+ddfast 0 5 4 0 5 5 11 9
+ddblt 0 4 3 12 7 0 4 4 12 8
+ddfast 0 5 6 0 5 5 11 9
+ddblt 0 6 7 14 11 0 4 4 12 8
+ddfast 0 3 2 0 5 5 11 9
+ddblt 0 1 2 9 6 0 4 4 12 8
+ddfast 0 8 7 0 5 5 11 9
+ddblt 0 7 3 15 7 0 4 4 12 8
+ddfast 0 2 6 0 5 5 11 9
+ddblt 0 2 6 10 10 0 4 4 12 8
+ddfast 0 7 3 0 5 5 11 9
+dddump 0
+end
+case basic-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+ddblt 0 all 1 all
+ddblt 0 0 0 7 5 1 all
+ddblt 0 5 4 12 9 1 all
+ddblt 0 2 1 5 3 1 3 2 6 4
+ddblt 0 6 4 13 9 1 all
+ddblt 0 -1 0 6 5 1 all
+ddblt 0 3 3 3 5 1 all
+ddblt 0 0 0 2 2 1 6 4 8 6
+ddblt 0 0 0 7 5 1 0 0 7 5 mirrorlr
+ddblt 0 1 2 8 7 1 all mirrorud
+ddblt 0 2 2 9 7 1 all mirrorlr mirrorud
+ddcolor 0 1 1 4 3 0x12345678
+ddcolor 0 all 0x9abcdef0
+ddcolor 0 10 0 13 2 5
+ddblt 0 4 4 11 9 1 all
+dddump 0
+end
+case keysrc-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xbffed423
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case keydest-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0xe26fceb1
+ddblt 0 0 0 7 5 1 all keydest
+dddump 0
+end
+case keysrcov-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 3 1 10 6 1 all keysrcov 0xbffed423
+dddump 0
+end
+case keydestov-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+
+ddblt 0 0 2 7 7 1 all keydestov 0xe26fceb1
+dddump 0
+end
+case keyboth-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xbffed423
+ddkey 0 dest 0xe26fceb1
+ddblt 0 0 0 7 5 1 all keysrc keydest
+dddump 0
+end
+case fast-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+
+ddfast 0 3 2 1 all
+ddfast 0 8 6 1 all
+ddfast 0 0 0 1 1 1 5 4
+dddump 0
+end
+case fastsrckey-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xbffed423
+ddfast 0 1 1 1 all srckey
+ddfast 0 5 4 1 0 0 7 5 srckey
+dddump 0
+end
+case fastdestkey-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+ddkey 0 dest 0xe26fceb1
+ddfast 0 1 1 1 all destkey
+dddump 0
+end
+case keynone-32
+dd
+ddsurf 0 12 9 32
+ddsurf 1 7 5 32
+ddfill 0 11
+ddfill 1 12
+ddkey 1 src 0xbffed423
+ddkey 1 src none
+ddkey 1 src 0xbffed423
+ddblt 0 2 2 9 7 1 all keysrc
+dddump 0
+end
+case overlap-32
+dd
+ddsurf 0 16 12 32
+ddfill 0 21
+ddblt 0 5 4 13 8 0 4 4 12 8
+ddfast 0 4 5 0 5 5 11 9
+ddblt 0 3 4 11 8 0 4 4 12 8
+ddfast 0 6 5 0 5 5 11 9
+ddblt 0 4 5 12 9 0 4 4 12 8
+ddfast 0 5 4 0 5 5 11 9
+ddblt 0 4 3 12 7 0 4 4 12 8
+ddfast 0 5 6 0 5 5 11 9
+ddblt 0 6 7 14 11 0 4 4 12 8
+ddfast 0 3 2 0 5 5 11 9
+ddblt 0 1 2 9 6 0 4 4 12 8
+ddfast 0 8 7 0 5 5 11 9
+ddblt 0 7 3 15 7 0 4 4 12 8
+ddfast 0 2 6 0 5 5 11 9
+ddblt 0 2 6 10 10 0 4 4 12 8
+ddfast 0 7 3 0 5 5 11 9
+dddump 0
+end
+case random-0
+dd
+ddsurf 0 3 9 565
+ddsurf 1 1 6 565
+ddfill 0 2331072605
+ddfill 1 2662317217
+ddkey 0 dest 0x273e
+ddblt 0 2 2 2 6 1 0 -1 0 3
+ddblt 0 -1 6 1 7 1 -1 3 1 4 keysrcov 0xc44c
+dddump 0
+end
+case random-1
+dd
+ddsurf 0 1 12 32
+ddsurf 1 4 8 32
+ddfill 0 3481466481
+ddfill 1 3101639735
+ddkey 1 src 0x80273e4c
+ddkey 0 dest 0x14d34f56
+ddblt 0 -1 3 1 8 1 0 1 2 6
+ddblt 0 0 6 1 13 1 0 2 1 9 keysrc
+ddfast 0 -1 8 1 -1 9 -1 9 destkey
+dddump 0
+end
+case random-2
+dd
+ddsurf 0 4 1 8
+ddsurf 1 2 3 8
+ddfill 0 1568949461
+ddfill 1 1993041211
+ddkey 1 src 0x55
+ddblt 0 2 0 2 2 1 2 1 2 3
+dddump 0
+end
+case random-3
+dd
+ddsurf 0 10 8 32
+ddsurf 1 3 7 32
+ddfill 0 222843813
+ddfill 1 3768776539
+ddblt 0 9 -1 10 5 1 -1 2 0 8
+ddblt 0 6 1 8 9 1 0 -1 2 7
+ddfast 0 7 1 1 1 1 3 4
+ddblt 0 0 1 2 5 1 -1 3 1 7
+ddblt 0 6 1 10 5 1 -1 3 3 7
+ddfast 0 4 5 1 1 1 3 3
+dddump 0
+end
+case random-4
+dd
+ddsurf 0 19 10 32
+ddsurf 1 5 8 32
+ddfill 0 2540880035
+ddfill 1 599663889
+ddkey 0 dest 0x4fb21d14
+ddfast 0 0 2 1 -1 2 5 7
+ddblt 0 7 3 13 10 1 0 1 6 8
+ddblt 0 9 10 13 10 1 2 7 6 7
+ddblt 0 7 7 12 11 1 -1 5 4 9 keydestov 0x4fb21d14
+ddfast 0 3 -1 1 0 0 6 9
+dddump 0
+end
+case random-5
+dd
+ddsurf 0 8 6 565
+ddsurf 1 8 4 565
+ddfill 0 560234093
+ddfill 1 2073603609
+ddfast 0 -1 0 1 2 1 9 1
+ddblt 0 2 3 9 4 1 0 -1 7 0
+ddblt 0 2 2 4 7 1 1 0 3 5
+ddblt 0 3 2 5 6 1 0 -1 2 3
+ddfast 0 2 0 1 3 -1 5 1
+ddblt 0 6 2 7 5 1 4 -1 5 2
+dddump 0
+end
+case random-6
+dd
+ddsurf 0 14 12 555
+ddsurf 1 14 6 555
+ddfill 0 202157105
+ddfill 1 2832391797
+ddblt 0 3 3 15 5 1 2 4 14 6
+ddblt 0 2 8 7 10 1 9 5 14 7
+ddblt 0 1 6 15 9 1 -1 -1 13 2 mirrorlr mirrorud
+dddump 0
+end
+case random-7
+dd
+ddsurf 0 8 12 565
+ddsurf 1 5 1 565
+ddfill 0 2812237513
+ddfill 1 3851181355
+ddblt 0 5 4 8 4 1 -1 -1 2 -1 keysrcov 0x6964
+ddblt 0 5 7 7 8 1 -1 0 1 1 keysrcov 0x6964
+ddblt 0 3 2 9 2 1 0 0 6 0 mirrorlr
+ddfast 0 3 2 1 2 1 4 1
+dddump 0
+end
+case random-8
+dd
+ddsurf 0 9 5 32
+ddsurf 1 3 3 32
+ddfill 0 425546153
+ddfill 1 3731426205
+ddblt 0 1 1 4 3 1 -1 1 2 3 keydestov 0x3af9b949
+ddblt 0 2 -1 6 3 1 -1 0 3 4
+ddblt 0 1 0 3 3 1 1 1 3 4 keydestov 0x3af9b949
+ddblt 0 -1 2 -1 6 1 2 -1 2 3 keysrcov 0xbc584502
+dddump 0
+end
+case random-9
+dd
+ddsurf 0 11 2 8
+ddsurf 1 3 1 8
+ddfill 0 553094677
+ddfill 1 4154046287
+ddkey 0 dest 0x37
+ddblt 0 1 3 1 3 1 0 -1 0 -1 keysrcov 0x9d
+ddfast 0 5 2 1 1 1 3 1
+ddblt 0 1 1 1 1 1 -1 2 -1 2 keysrcov 0x9d
+dddump 0
+end
+case random-10
+dd
+ddsurf 0 13 13 565
+ddsurf 1 5 1 565
+ddfill 0 2192505735
+ddfill 1 3860641865
+ddkey 1 src 0x7f80
+ddkey 0 dest 0x4b00
+ddblt 0 5 12 5 14 1 5 -1 5 1
+ddblt 0 -1 12 4 12 1 1 -1 6 -1 keydestov 0x4b00
+ddblt 0 1 13 7 14 1 0 0 6 1 keysrcov 0x7f80
+ddblt 0 4 -1 5 1 1 3 -1 4 1 keydest
+ddblt 0 4 10 10 11 1 0 1 6 2 keydestov 0x4b00
+ddfast 0 8 1 1 3 -1 6 1 srckey
+dddump 0
+end
+case random-11
+dd
+ddsurf 0 20 5 32
+ddsurf 1 8 4 32
+ddfill 0 3173320925
+ddfill 1 2615836291
+ddblt 0 -1 0 7 3 1 1 1 9 4
+ddblt 0 13 3 20 6 1 -1 1 6 4
+ddfast 0 6 1 1 0 1 9 3
+ddblt 0 12 1 12 5 1 3 1 3 5
+ddblt 0 3 2 12 5 1 -1 1 8 4 keysrcov 0x72875b8f
+dddump 0
+end
+case random-12
+dd
+ddsurf 0 8 9 555
+ddsurf 1 14 7 555
+ddfill 0 3494833317
+ddfill 1 3063087945
+ddkey 1 src 0xa83
+ddkey 0 dest 0x3bf9
+ddfast 0 3 7 1 10 -1 14 1
+ddblt 0 3 4 9 4 1 2 1 8 1
+ddblt 0 4 4 9 7 1 4 0 9 3
+dddump 0
+end
+case random-13
+dd
+ddsurf 0 19 13 32
+ddsurf 1 1 9 32
+ddfill 0 1435436141
+ddfill 1 358155085
+ddkey 1 src 0x1e1a1a4c
+ddfast 0 10 -1 1 0 5 2 9 srckey
+ddblt 0 18 5 19 8 1 0 7 1 10
+ddblt 0 12 5 14 8 1 0 -1 2 2 keydestov 0xcad482f
+dddump 0
+end
+case random-14
+dd
+ddsurf 0 3 13 565
+ddsurf 1 7 5 565
+ddfill 0 1167227633
+ddfill 1 1397206391
+ddkey 1 src 0xd0a
+ddblt 0 -1 10 1 10 1 0 4 2 4 keydestov 0x4b69
+ddblt 0 1 1 2 1 1 0 6 1 6
+ddblt 0 1 6 4 10 1 5 2 8 6 keydestov 0x4b69
+ddfast 0 0 2 1 0 -1 4 3
+ddblt 0 1 11 3 13 1 2 0 4 2 keydestov 0x4b69
+dddump 0
+end
+case random-15
+dd
+ddsurf 0 1 6 8
+ddsurf 1 6 2 8
+ddfill 0 2451174059
+ddfill 1 634672429
+ddkey 1 src 0x14
+ddblt 0 -1 7 0 7 1 1 -1 2 -1 mirrorlr
+ddblt 0 1 -1 2 2 1 6 -1 7 2 keysrcov 0x14
+dddump 0
+end
+case random-16
+dd
+ddsurf 0 3 11 8
+ddsurf 1 7 6 8
+ddfill 0 2991789981
+ddfill 1 3300599405
+ddkey 0 dest 0xf5
+ddfast 0 0 -1 1 6 0 6 7
+ddfast 0 1 5 1 2 2 5 6
+ddfast 0 -1 -1 1 0 0 4 7
+ddfast 0 1 4 1 -1 0 0 7
+dddump 0
+end
+case random-17
+dd
+ddsurf 0 9 13 32
+ddsurf 1 12 1 32
+ddfill 0 1366748087
+ddfill 1 201980759
+ddkey 1 src 0xdad96ea6
+ddblt 0 1 0 5 1 1 8 0 12 1
+ddfast 0 3 12 1 4 -1 4 1
+ddblt 0 1 3 7 3 1 -1 2 5 2
+ddblt 0 3 4 4 6 1 2 0 3 2
+dddump 0
+end
+case random-18
+dd
+ddsurf 0 20 8 555
+ddsurf 1 6 1 555
+ddfill 0 2411229523
+ddfill 1 3017302747
+ddkey 0 dest 0x7992
+ddfast 0 13 4 1 1 1 1 2
+ddblt 0 2 2 2 3 1 2 0 2 1 keydest
+ddblt 0 3 8 3 8 1 2 0 2 0
+ddblt 0 13 8 19 8 1 -1 -1 5 -1 keysrcov 0x52f0
+ddfast 0 11 6 1 2 -1 4 -1
+dddump 0
+end
+case random-19
+dd
+ddsurf 0 9 13 8
+ddsurf 1 12 3 8
+ddfill 0 4216796987
+ddfill 1 2881439139
+ddkey 1 src 0x9f
+ddblt 0 3 9 9 12 1 4 1 10 4
+ddblt 0 3 1 8 2 1 -1 3 4 4
+ddblt 0 -1 9 6 10 1 5 3 12 4
+ddblt 0 5 9 10 13 1 2 0 7 4
+dddump 0
+end
+case random-20
+dd
+ddsurf 0 15 8 555
+ddsurf 1 3 6 555
+ddfill 0 1371484237
+ddfill 1 1097570679
+ddblt 0 11 1 14 7 1 0 0 3 6
+ddblt 0 -1 2 -1 3 1 2 5 2 6
+ddblt 0 3 -1 5 0 1 1 2 3 3 mirrorlr
+ddfast 0 9 0 1 0 0 4 7
+ddblt 0 5 -1 7 6 1 2 -1 4 6
+ddblt 0 13 -1 14 5 1 0 -1 1 5
+dddump 0
+end
+case random-21
+dd
+ddsurf 0 5 9 565
+ddsurf 1 14 10 565
+ddfill 0 2024163893
+ddfill 1 2381769317
+ddkey 1 src 0xc429
+ddfast 0 1 2 1 4 1 4 7
+dddump 0
+end
+case random-22
+dd
+ddsurf 0 4 1 555
+ddsurf 1 1 3 555
+ddfill 0 677272681
+ddfill 1 2578881953
+ddkey 1 src 0x3809
+ddfast 0 3 -1 1 0 3 1 3
+ddfast 0 3 0 1 2 3 2 3
+ddblt 0 5 -1 5 1 1 0 0 0 2 keydestov 0x46c7
+dddump 0
+end
+case random-23
+dd
+ddsurf 0 3 13 565
+ddsurf 1 7 3 565
+ddfill 0 1340084077
+ddfill 1 2411496715
+ddkey 0 dest 0x2d5f
+ddfast 0 0 5 1 2 -1 5 3 destkey
+ddfast 0 0 14 1 5 -1 7 -1
+ddfast 0 0 10 1 1 -1 3 2
+ddblt 0 2 -1 2 1 1 3 2 3 4 mirrorlr mirrorud
+ddfast 0 -1 12 1 6 -1 8 0 destkey
+dddump 0
+end
+case random-24
+dd
+ddsurf 0 4 13 8
+ddsurf 1 12 1 8
+ddfill 0 1992923937
+ddfill 1 4028540695
+ddblt 0 3 5 4 6 1 4 -1 5 0 mirrorlr mirrorud
+ddblt 0 1 5 5 5 1 -1 2 3 2 keydestov 0x88
+ddfast 0 0 9 1 1 -1 3 0
+dddump 0
+end
+case random-25
+dd
+ddsurf 0 3 11 8
+ddsurf 1 13 5 8
+ddfill 0 862276029
+ddfill 1 3489797685
+ddkey 1 src 0x67
+ddblt 0 2 7 3 9 1 1 0 2 2
+dddump 0
+end
+case random-26
+dd
+ddsurf 0 17 4 32
+ddsurf 1 3 1 32
+ddfill 0 3257839019
+ddfill 1 3840354951
+ddblt 0 -1 0 3 0 1 -1 -1 3 -1
+dddump 0
+end
+case random-27
+dd
+ddsurf 0 20 13 8
+ddsurf 1 5 8 8
+ddfill 0 1172958579
+ddfill 1 1890687825
+ddblt 0 3 6 6 13 1 2 2 5 9
+ddblt 0 7 12 13 14 1 -1 4 5 6
+dddump 0
+end
+case random-28
+dd
+ddsurf 0 6 7 565
+ddsurf 1 14 3 565
+ddfill 0 972180187
+ddfill 1 1703895887
+ddblt 0 5 4 6 8 1 7 0 8 4 keysrcov 0xd28c
+dddump 0
+end
+case random-29
+dd
+ddsurf 0 11 12 565
+ddsurf 1 12 7 565
+ddfill 0 3622215513
+ddfill 1 2243835551
+ddkey 1 src 0xf1e5
+ddkey 0 dest 0xda21
+ddfast 0 -1 -1 1 0 0 10 8
+ddfast 0 1 11 1 6 2 7 4
+ddfast 0 10 2 1 3 0 3 3
+ddblt 0 1 0 4 8 1 2 -1 5 7 keysrc
+ddblt 0 5 4 10 10 1 5 2 10 8 keysrcov 0xf1e5
+ddblt 0 4 -1 4 4 1 3 -1 3 4 keydest
+dddump 0
+end
+case random-30
+dd
+ddsurf 0 19 6 8
+ddsurf 1 5 5 8
+ddfill 0 2871271141
+ddfill 1 938342841
+ddkey 1 src 0xb6
+ddblt 0 4 1 7 2 1 3 5 6 6
+ddblt 0 2 2 7 5 1 1 -1 6 2
+ddblt 0 7 0 10 4 1 -1 -1 2 3
+ddfast 0 18 -1 1 1 4 3 4
+dddump 0
+end
+case random-31
+dd
+ddsurf 0 3 2 8
+ddsurf 1 13 9 8
+ddfill 0 3040783761
+ddfill 1 1897867031
+ddkey 1 src 0x61
+ddblt 0 -1 2 0 2 1 11 5 12 5
+ddblt 0 -1 0 3 3 1 -1 0 3 3
+ddblt 0 -1 3 3 3 1 -1 10 3 10
+ddblt 0 -1 1 1 1 1 4 9 6 9
+ddblt 0 2 2 4 3 1 4 8 6 9 keydestov 0x47
+dddump 0
+end
+case random-32
+dd
+ddsurf 0 5 14 32
+ddsurf 1 14 6 32
+ddfill 0 2137303565
+ddfill 1 2928590047
+ddblt 0 0 4 4 7 1 0 3 4 6
+ddfast 0 3 11 1 9 3 12 4
+ddfast 0 -1 8 1 8 6 12 6
+ddfast 0 3 -1 1 7 -1 7 4
+ddfast 0 1 4 1 -1 -1 4 6
+dddump 0
+end
+case random-33
+dd
+ddsurf 0 10 7 8
+ddsurf 1 14 1 8
+ddfill 0 4145726931
+ddfill 1 1538953795
+ddkey 1 src 0xf9
+ddfast 0 7 3 1 12 0 15 2
+ddblt 0 6 6 8 7 1 13 -1 15 0
+dddump 0
+end
+case random-34
+dd
+ddsurf 0 4 12 555
+ddsurf 1 11 4 555
+ddfill 0 1182137239
+ddfill 1 3656361397
+ddkey 1 src 0x6867
+ddblt 0 0 9 2 9 1 9 2 11 2
+ddblt 0 2 10 4 10 1 10 -1 12 -1
+ddfast 0 0 4 1 10 4 10 5
+ddblt 0 0 5 5 8 1 5 2 10 5 keydestov 0x393a
+ddblt 0 3 9 5 12 1 4 2 6 5 mirrorlr mirrorud
+ddfast 0 2 0 1 6 2 9 4 srckey
+dddump 0
+end
+case random-35
+dd
+ddsurf 0 2 13 565
+ddsurf 1 3 5 565
+ddfill 0 1802195425
+ddfill 1 733566987
+ddkey 1 src 0x9408
+ddkey 0 dest 0xc385
+ddfast 0 3 6 1 0 -1 0 5
+ddblt 0 3 2 3 7 1 -1 1 -1 6 mirrorlr
+dddump 0
+end
+case random-36
+dd
+ddsurf 0 6 4 565
+ddsurf 1 2 1 565
+ddfill 0 3598403725
+ddfill 1 1379684409
+ddkey 1 src 0x8f2f
+ddfast 0 -1 1 1 -1 -1 2 1 srckey
+dddump 0
+end
+case random-37
+dd
+ddsurf 0 13 10 32
+ddsurf 1 9 10 32
+ddfill 0 4124862093
+ddfill 1 1488108395
+ddkey 1 src 0x352f7c6a
+ddblt 0 1 6 11 8 1 0 7 10 9 keysrc
+ddblt 0 8 7 10 7 1 8 10 10 10
+ddfast 0 4 1 1 1 0 6 10
+ddblt 0 -1 6 8 10 1 1 2 10 6
+dddump 0
+end
+case random-38
+dd
+ddsurf 0 2 5 32
+ddsurf 1 1 10 32
+ddfill 0 3896739689
+ddfill 1 2373430495
+ddkey 0 dest 0x65a588fe
+ddblt 0 -1 -1 -1 5 1 -1 4 -1 10 mirrorlr mirrorud
+ddblt 0 -1 3 1 3 1 -1 1 1 1
+ddblt 0 -1 0 0 5 1 -1 3 0 8 keysrcov 0x142a6089
+ddblt 0 -1 2 1 3 1 -1 -1 1 0 keydestov 0x65a588fe
+ddblt 0 1 0 3 4 1 0 2 2 6 keydest
+ddblt 0 0 2 1 5 1 1 3 2 6
+dddump 0
+end
+case random-39
+dd
+ddsurf 0 4 5 565
+ddsurf 1 10 4 565
+ddfill 0 533605383
+ddfill 1 2476377377
+ddkey 1 src 0x71ac
+ddblt 0 -1 0 4 5 1 6 0 11 5 mirrorlr mirrorud
+ddfast 0 2 1 1 0 -1 3 4
+ddfast 0 0 0 1 1 1 6 4 srckey
+ddblt 0 1 0 4 4 1 5 1 8 5
+ddblt 0 0 -1 4 -1 1 0 0 4 0 keysrcov 0x71ac
+ddfast 0 0 3 1 -1 4 3 5
+dddump 0
+end
+case random-40
+dd
+ddsurf 0 15 2 32
+ddsurf 1 12 3 32
+ddfill 0 868122005
+ddfill 1 2107437523
+ddkey 1 src 0x71f1e2e8
+ddblt 0 0 1 0 1 1 7 2 7 2
+ddfast 0 2 3 1 4 3 9 3
+ddblt 0 -1 0 -1 0 1 3 1 3 1 keysrc
+ddblt 0 8 0 13 1 1 5 3 10 4
+dddump 0
+end
+case random-41
+dd
+ddsurf 0 2 10 555
+ddsurf 1 8 7 555
+ddfill 0 3372328323
+ddfill 1 1267126331
+ddfast 0 -1 5 1 4 1 7 6
+ddfast 0 1 6 1 3 3 3 8
+ddblt 0 1 3 2 10 1 5 1 6 8 keysrcov 0x439a
+ddblt 0 0 11 3 11 1 -1 7 2 7
+ddfast 0 1 2 1 6 0 8 6
+dddump 0
+end
+case random-42
+dd
+ddsurf 0 15 7 565
+ddsurf 1 4 7 565
+ddfill 0 3054061047
+ddfill 1 1213112077
+ddblt 0 10 4 12 8 1 1 2 3 6
+ddblt 0 7 -1 12 7 1 0 -1 5 7 mirrorlr
+ddblt 0 8 -1 11 2 1 -1 4 2 7
+ddfast 0 0 4 1 0 3 0 3
+ddfast 0 3 5 1 1 7 3 8
+dddump 0
+end
+case random-43
+dd
+ddsurf 0 7 13 555
+ddsurf 1 10 5 555
+ddfill 0 2684874459
+ddfill 1 3863774901
+ddkey 1 src 0xf0cc
+ddkey 0 dest 0x6177
+ddblt 0 -1 4 5 7 1 5 1 11 4 keydestov 0x6177
+ddfast 0 0 6 1 2 1 10 5
+dddump 0
+end
+case random-44
+dd
+ddsurf 0 17 1 32
+ddsurf 1 10 10 32
+ddfill 0 2173468661
+ddfill 1 3224232301
+ddkey 1 src 0xf114acba
+ddblt 0 3 1 8 2 1 0 6 5 7 mirrorud
+ddblt 0 7 1 8 1 1 8 3 9 3
+ddblt 0 1 0 1 2 1 6 1 6 3 keydestov 0xe562d527
+dddump 0
+end
+case random-45
+dd
+ddsurf 0 12 4 555
+ddsurf 1 3 10 555
+ddfill 0 4270835699
+ddfill 1 3359980971
+ddkey 1 src 0xc1c4
+ddblt 0 0 -1 2 -1 1 -1 8 1 8 mirrorud
+ddblt 0 -1 2 3 5 1 0 7 4 10
+ddblt 0 0 -1 1 3 1 2 2 3 6
+ddfast 0 2 -1 1 0 9 2 11
+ddblt 0 7 0 7 4 1 4 6 4 10
+ddfast 0 5 1 1 0 9 4 9
+dddump 0
+end
+case random-46
+dd
+ddsurf 0 8 6 565
+ddsurf 1 7 9 565
+ddfill 0 308234499
+ddfill 1 2492842813
+ddkey 1 src 0x41b7
+ddfast 0 -1 -1 1 2 3 3 10
+dddump 0
+end
+case random-47
+dd
+ddsurf 0 2 7 555
+ddsurf 1 8 7 555
+ddfill 0 2358210985
+ddfill 1 905346677
+ddkey 1 src 0x6972
+ddfast 0 -1 1 1 0 6 3 8
+ddfast 0 -1 0 1 5 1 7 6
+ddfast 0 0 -1 1 7 2 8 7
+ddblt 0 1 0 3 8 1 1 0 3 8 keydestov 0x15a9
+ddblt 0 0 0 1 8 1 3 -1 4 7 keysrc
+ddfast 0 -1 0 1 5 1 6 6
+dddump 0
+end
+case random-48
+dd
+ddsurf 0 2 9 8
+ddsurf 1 14 10 8
+ddfill 0 4059709003
+ddfill 1 1884532499
+ddkey 1 src 0x3f
+ddblt 0 2 4 2 9 1 3 2 3 7 keysrc
+ddblt 0 0 -1 3 4 1 8 1 11 6 mirrorud
+ddblt 0 -1 5 0 10 1 2 6 3 11 keydestov 0x12
+ddblt 0 3 3 3 4 1 0 5 0 6 mirrorlr mirrorud
+ddblt 0 1 -1 1 4 1 6 4 6 9 mirrorlr mirrorud
+dddump 0
+end
+case random-49
+dd
+ddsurf 0 9 5 32
+ddsurf 1 2 1 32
+ddfill 0 2916745171
+ddfill 1 3596431011
+ddblt 0 2 1 5 3 1 0 -1 3 1
+ddblt 0 4 6 4 6 1 1 1 1 1
+ddblt 0 -1 6 -1 6 1 -1 0 -1 0 mirrorud
+ddblt 0 8 4 9 6 1 0 -1 1 1
+ddfast 0 3 1 1 -1 -1 2 0
+ddblt 0 7 -1 9 1 1 0 0 2 2
+dddump 0
+end
+case random-50
+dd
+ddsurf 0 12 6 565
+ddsurf 1 9 9 565
+ddfill 0 410768247
+ddfill 1 548752861
+ddfast 0 0 2 1 1 3 9 6
+ddblt 0 2 0 8 3 1 2 4 8 7
+ddblt 0 10 -1 12 2 1 6 3 8 6 keysrcov 0x60cb
+ddblt 0 0 0 0 6 1 10 2 10 8
+ddblt 0 -1 -1 4 6 1 1 2 6 9
+ddblt 0 2 2 5 7 1 1 5 4 10 keydestov 0x505a
+dddump 0
+end
+case random-51
+dd
+ddsurf 0 20 3 32
+ddsurf 1 11 6 32
+ddfill 0 2079940455
+ddfill 1 1386707661
+ddblt 0 0 0 10 4 1 0 2 10 6 keydestov 0xe5e71988
+dddump 0
+end
+case random-52
+dd
+ddsurf 0 8 10 565
+ddsurf 1 2 3 565
+ddfill 0 1068813999
+ddfill 1 1783295583
+ddblt 0 1 2 3 3 1 0 -1 2 0 keysrcov 0x260d
+ddblt 0 -1 3 2 3 1 0 1 3 1
+ddblt 0 3 1 3 5 1 -1 0 -1 4 keysrcov 0x260d
+ddblt 0 0 9 0 10 1 -1 1 -1 2 mirrorlr
+ddfast 0 3 0 1 0 2 0 4
+dddump 0
+end
+case random-53
+dd
+ddsurf 0 5 9 555
+ddsurf 1 5 7 555
+ddfill 0 2245315781
+ddfill 1 2512658083
+ddkey 1 src 0x76ed
+ddblt 0 4 7 4 10 1 5 2 5 5
+dddump 0
+end
+case random-54
+dd
+ddsurf 0 17 1 555
+ddsurf 1 14 7 555
+ddfill 0 2853059949
+ddfill 1 3654736957
+ddkey 1 src 0x31c
+ddfast 0 -1 -1 1 2 1 4 3 srckey
+ddblt 0 7 1 17 1 1 3 0 13 0
+ddfast 0 8 0 1 3 5 10 6
+ddblt 0 -1 0 13 2 1 -1 3 13 5 keysrc
+dddump 0
+end
+case random-55
+dd
+ddsurf 0 2 4 8
+ddsurf 1 8 6 8
+ddfill 0 4254287011
+ddfill 1 904571425
+ddkey 1 src 0xc2
+ddblt 0 0 3 3 5 1 4 0 7 2
+ddblt 0 0 0 0 1 1 4 6 4 7 keysrcov 0xc2
+ddfast 0 0 -1 1 4 -1 6 3
+ddfast 0 2 -1 1 -1 2 0 5
+ddblt 0 1 0 2 5 1 8 2 9 7 keysrcov 0xc2
+dddump 0
+end
+case random-56
+dd
+ddsurf 0 18 13 8
+ddsurf 1 14 3 8
+ddfill 0 3386209883
+ddfill 1 2228920149
+ddkey 1 src 0xf3
+ddfast 0 3 -1 1 2 2 14 3
+ddblt 0 2 1 14 4 1 0 1 12 4 keydestov 0x74
+ddblt 0 8 7 18 7 1 5 0 15 0
+dddump 0
+end
+case random-57
+dd
+ddsurf 0 13 12 8
+ddsurf 1 9 10 8
+ddfill 0 4125782701
+ddfill 1 3427688755
+ddfast 0 3 0 1 0 1 9 8
+ddblt 0 -1 -1 5 7 1 1 3 7 11 keydestov 0x39
+dddump 0
+end
+case random-58
+dd
+ddsurf 0 17 10 555
+ddsurf 1 5 6 555
+ddfill 0 1446817771
+ddfill 1 3153088331
+ddkey 0 dest 0x22ea
+ddblt 0 2 4 8 10 1 -1 -1 5 5
+dddump 0
+end
+case random-59
+dd
+ddsurf 0 3 9 32
+ddsurf 1 2 10 32
+ddfill 0 1028498169
+ddfill 1 2874026065
+ddkey 1 src 0x1f532e7d
+ddfast 0 3 -1 1 0 7 0 8
+ddblt 0 1 1 4 6 1 -1 5 2 10
+ddfast 0 3 2 1 2 3 3 10
+dddump 0
+end
+case random-60
+dd
+ddsurf 0 10 2 555
+ddsurf 1 14 8 555
+ddfill 0 1079812921
+ddfill 1 1397149093
+ddkey 0 dest 0x2306
+ddblt 0 0 0 9 2 1 2 5 11 7
+ddblt 0 1 1 10 3 1 2 2 11 4
+ddfast 0 6 0 1 4 -1 9 -1
+ddblt 0 6 2 6 2 1 8 2 8 2 mirrorud
+dddump 0
+end
+case random-61
+dd
+ddsurf 0 1 8 555
+ddsurf 1 6 10 555
+ddfill 0 2784453647
+ddfill 1 1738716725
+ddblt 0 1 8 1 9 1 3 2 3 3
+ddfast 0 -1 1 1 2 1 4 6
+ddblt 0 1 3 2 9 1 1 5 2 11 keysrcov 0x4284
+dddump 0
+end
+case random-62
+dd
+ddsurf 0 4 2 565
+ddsurf 1 12 8 565
+ddfill 0 4072756847
+ddfill 1 3650590537
+ddkey 1 src 0xb4a0
+ddblt 0 0 -1 5 -1 1 -1 6 4 6 keysrc
+ddfast 0 1 1 1 8 1 9 3
+dddump 0
+end
+case random-63
+dd
+ddsurf 0 7 9 8
+ddsurf 1 12 3 8
+ddfill 0 621328059
+ddfill 1 1210189301
+ddkey 0 dest 0xb7
+ddfast 0 1 9 1 2 3 6 4
+ddfast 0 -1 7 1 3 0 11 2
+ddfast 0 1 6 1 1 2 7 4
+ddfast 0 -1 -1 1 3 -1 11 3
+dddump 0
+end
+case random-64
+dd
+ddsurf 0 12 9 32
+ddsurf 1 8 3 32
+ddfill 0 2359861993
+ddfill 1 2253135091
+ddkey 1 src 0x5f0b6d39
+ddblt 0 3 -1 11 1 1 1 -1 9 1 keydestov 0x9addfed3
+dddump 0
+end
+case random-65
+dd
+ddsurf 0 2 1 565
+ddsurf 1 6 6 565
+ddfill 0 2054704175
+ddfill 1 206245841
+ddblt 0 1 1 2 2 1 4 2 5 3
+ddblt 0 0 2 3 2 1 2 -1 5 -1 mirrorud
+dddump 0
+end
+case random-66
+dd
+ddsurf 0 15 1 555
+ddsurf 1 3 8 555
+ddfill 0 3718013191
+ddfill 1 1714270937
+ddkey 1 src 0xbda0
+ddkey 0 dest 0xff77
+ddfast 0 11 1 1 2 7 2 8 destkey
+ddfast 0 2 1 1 1 4 4 4 destkey
+ddblt 0 0 0 4 2 1 -1 4 3 6
+ddblt 0 14 -1 14 0 1 -1 7 -1 8
+ddfast 0 6 2 1 3 4 3 4
+ddblt 0 3 0 7 0 1 -1 7 3 7
+dddump 0
+end
+case random-67
+dd
+ddsurf 0 7 13 32
+ddsurf 1 10 8 32
+ddfill 0 3352523603
+ddfill 1 2660349551
+ddblt 0 4 5 8 7 1 6 6 10 8 mirrorlr
+ddblt 0 5 -1 6 2 1 1 2 2 5
+ddfast 0 0 2 1 2 0 8 9
+ddblt 0 -1 5 5 9 1 2 5 8 9
+dddump 0
+end
+case random-68
+dd
+ddsurf 0 20 3 555
+ddsurf 1 1 10 555
+ddfill 0 490652853
+ddfill 1 1890380385
+ddblt 0 8 0 8 0 1 2 -1 2 -1 keysrcov 0x3e69
+dddump 0
+end
+case random-69
+dd
+ddsurf 0 11 7 555
+ddsurf 1 13 4 555
+ddfill 0 1151756291
+ddfill 1 3177969393
+ddkey 1 src 0x491a
+ddblt 0 0 3 12 3 1 0 0 12 0
+ddblt 0 6 -1 10 -1 1 7 4 11 4 mirrorlr
+ddblt 0 9 5 12 8 1 2 1 5 4 keysrc
+ddfast 0 2 1 1 4 1 14 4
+dddump 0
+end
+case random-70
+dd
+ddsurf 0 15 4 32
+ddsurf 1 6 3 32
+ddfill 0 1184490793
+ddfill 1 1034411767
+ddfast 0 3 1 1 4 3 6 4
+ddblt 0 -1 5 4 5 1 2 4 7 4 keydestov 0xea3a52e0
+dddump 0
+end
+case random-71
+dd
+ddsurf 0 6 5 8
+ddsurf 1 10 9 8
+ddfill 0 1753686387
+ddfill 1 428467143
+ddkey 1 src 0x43
+ddblt 0 2 0 7 5 1 1 3 6 8
+dddump 0
+end
+case random-72
+dd
+ddsurf 0 1 5 32
+ddsurf 1 13 1 32
+ddfill 0 2836960757
+ddfill 1 3479923943
+ddkey 1 src 0xf0d47526
+ddkey 0 dest 0x3ae733f7
+ddfast 0 -1 2 1 8 -1 10 0 destkey
+ddfast 0 -1 4 1 2 1 4 1
+dddump 0
+end
+case random-73
+dd
+ddsurf 0 4 13 555
+ddsurf 1 4 2 555
+ddfill 0 4074125457
+ddfill 1 2369809459
+ddkey 1 src 0xc0c1
+ddkey 0 dest 0xff75
+ddblt 0 2 4 5 4 1 2 2 5 2 mirrorlr
+ddfast 0 -1 2 1 1 1 5 1 destkey
+ddblt 0 2 4 3 5 1 1 -1 2 0 keydestov 0xff75
+ddblt 0 0 13 5 13 1 0 1 5 1
+ddblt 0 2 11 5 11 1 1 1 4 1 keydest
+ddfast 0 0 4 1 -1 -1 4 1
+dddump 0
+end
+case random-74
+dd
+ddsurf 0 6 11 32
+ddsurf 1 10 8 32
+ddfill 0 2901030655
+ddfill 1 2894192453
+ddkey 1 src 0xb0ec15e
+ddblt 0 5 2 6 6 1 10 5 11 9 keysrc
+ddblt 0 2 1 6 8 1 0 2 4 9
+ddblt 0 0 8 3 11 1 0 4 3 7
+ddblt 0 -1 3 1 11 1 9 1 11 9
+dddump 0
+end
+case random-75
+dd
+ddsurf 0 9 7 555
+ddsurf 1 9 10 555
+ddfill 0 611248795
+ddfill 1 3733141157
+ddkey 0 dest 0xd9d0
+ddblt 0 -1 -1 8 -1 1 1 5 10 5
+ddfast 0 5 -1 1 4 3 8 11
+ddblt 0 5 2 10 4 1 3 9 8 11
+dddump 0
+end
+case random-76
+dd
+ddsurf 0 11 5 32
+ddsurf 1 2 7 32
+ddfill 0 1520441055
+ddfill 1 1459652259
+ddkey 1 src 0x8938064b
+ddfast 0 -1 3 1 -1 0 -1 1
+ddblt 0 11 3 12 4 1 -1 2 0 3
+ddblt 0 4 1 4 3 1 0 4 0 6 keysrc
+ddblt 0 7 4 10 5 1 0 6 3 7
+ddfast 0 0 0 1 0 0 1 6
+dddump 0
+end
+case random-77
+dd
+ddsurf 0 5 11 8
+ddsurf 1 6 2 8
+ddfill 0 920834839
+ddfill 1 4236545943
+ddkey 1 src 0x18
+ddfast 0 -1 8 1 3 -1 5 1
+ddfast 0 0 0 1 1 2 4 3
+ddblt 0 -1 -1 3 1 1 0 -1 4 1
+dddump 0
+end
+case random-78
+dd
+ddsurf 0 14 4 555
+ddsurf 1 9 5 555
+ddfill 0 1451855181
+ddfill 1 2200159613
+ddblt 0 9 0 11 5 1 -1 1 1 6 keydestov 0x5340
+ddblt 0 10 -1 15 4 1 0 0 5 5
+ddblt 0 2 1 12 3 1 0 -1 10 1
+ddblt 0 0 -1 4 3 1 5 0 9 4
+dddump 0
+end
+case random-79
+dd
+ddsurf 0 8 8 565
+ddsurf 1 5 6 565
+ddfill 0 2016933801
+ddfill 1 1586769385
+ddkey 0 dest 0xa935
+ddblt 0 -1 4 4 9 1 0 2 5 7
+ddfast 0 4 6 1 4 -1 6 1
+ddfast 0 0 0 1 2 1 6 7
+ddfast 0 4 8 1 0 0 3 0
+dddump 0
+end
+case random-80
+dd
+ddsurf 0 3 4 8
+ddsurf 1 14 10 8
+ddfill 0 1147519105
+ddfill 1 1925343739
+ddkey 1 src 0xb8
+ddblt 0 0 3 1 3 1 8 2 9 2
+ddblt 0 0 -1 3 1 1 8 2 11 4 keydestov 0x8a
+ddblt 0 0 -1 4 2 1 6 4 10 7
+ddblt 0 2 -1 2 4 1 11 0 11 5
+dddump 0
+end
+case random-81
+dd
+ddsurf 0 14 5 32
+ddsurf 1 14 6 32
+ddfill 0 2710642737
+ddfill 1 931077563
+ddkey 1 src 0xf76cab8b
+ddblt 0 -1 -1 -1 0 1 15 6 15 7 keysrcov 0xf76cab8b
+dddump 0
+end
+case random-82
+dd
+ddsurf 0 8 8 8
+ddsurf 1 9 1 8
+ddfill 0 527907037
+ddfill 1 4126431659
+ddblt 0 -1 4 4 6 1 2 0 7 2 keysrcov 0x14
+ddfast 0 -1 1 1 2 0 8 2
+ddfast 0 -1 5 1 1 0 6 1
+ddfast 0 -1 4 1 -1 -1 7 1
+dddump 0
+end
+case random-83
+dd
+ddsurf 0 6 6 555
+ddsurf 1 13 1 555
+ddfill 0 3464801725
+ddfill 1 1028850821
+ddkey 1 src 0x5a12
+ddblt 0 3 3 6 5 1 1 0 4 2
+ddblt 0 0 2 4 2 1 -1 -1 3 -1 keysrcov 0x5a12
+ddfast 0 1 5 1 7 -1 9 1
+ddblt 0 0 -1 2 0 1 5 -1 7 0 keydestov 0x96be
+ddblt 0 1 4 6 6 1 1 0 6 2
+dddump 0
+end
+case random-84
+dd
+ddsurf 0 12 3 565
+ddsurf 1 7 5 565
+ddfill 0 3782433805
+ddfill 1 3567622133
+ddkey 0 dest 0x63a9
+ddblt 0 0 2 5 4 1 0 2 5 4 keysrcov 0x738c
+dddump 0
+end
+case random-85
+dd
+ddsurf 0 20 9 8
+ddsurf 1 13 6 8
+ddfill 0 4280085439
+ddfill 1 789343179
+ddkey 1 src 0xf6
+ddfast 0 11 -1 1 3 0 5 4
+ddblt 0 9 3 14 6 1 3 -1 8 2 keydestov 0x74
+ddfast 0 2 1 1 0 -1 14 1
+dddump 0
+end
+case random-86
+dd
+ddsurf 0 2 11 555
+ddsurf 1 11 1 555
+ddfill 0 4023088657
+ddfill 1 2687493141
+ddfast 0 2 8 1 1 1 2 2
+dddump 0
+end
+case random-87
+dd
+ddsurf 0 10 13 32
+ddsurf 1 2 9 32
+ddfill 0 1216661669
+ddfill 1 3818139117
+ddkey 1 src 0x22466d69
+ddblt 0 4 3 4 11 1 1 -1 1 7
+ddfast 0 8 12 1 0 10 3 10 srckey
+ddblt 0 9 8 10 13 1 0 3 1 8
+ddblt 0 6 4 7 14 1 -1 -1 0 9
+ddblt 0 2 -1 3 0 1 1 2 2 3 keydestov 0x593cb09f
+ddblt 0 8 0 9 10 1 -1 0 0 10 mirrorlr
+dddump 0
+end
+case random-88
+dd
+ddsurf 0 19 8 555
+ddsurf 1 1 1 555
+ddfill 0 2457984015
+ddfill 1 2299091279
+ddkey 1 src 0xdabf
+ddfast 0 15 -1 1 1 -1 2 1
+dddump 0
+end
+case random-89
+dd
+ddsurf 0 5 12 555
+ddsurf 1 14 9 555
+ddfill 0 2812204845
+ddfill 1 3524426641
+ddblt 0 4 7 5 13 1 8 4 9 10
+ddblt 0 0 2 1 11 1 4 0 5 9
+dddump 0
+end
+case random-90
+dd
+ddsurf 0 20 14 565
+ddsurf 1 13 6 565
+ddfill 0 2596989753
+ddfill 1 840733999
+ddkey 1 src 0xe557
+ddkey 0 dest 0x5283
+ddfast 0 3 6 1 -1 0 11 5
+ddblt 0 4 5 18 8 1 -1 4 13 7
+ddblt 0 9 10 14 14 1 3 3 8 7
+dddump 0
+end
+case random-91
+dd
+ddsurf 0 9 7 565
+ddsurf 1 8 4 565
+ddfill 0 3352843375
+ddfill 1 1743751781
+ddkey 1 src 0xa42f
+ddblt 0 6 1 7 4 1 1 0 2 3
+ddblt 0 2 0 8 2 1 3 1 9 3
+ddfast 0 5 4 1 0 1 5 2
+dddump 0
+end
+case random-92
+dd
+ddsurf 0 5 14 565
+ddsurf 1 7 5 565
+ddfill 0 483209539
+ddfill 1 3863251473
+ddkey 1 src 0x1378
+ddblt 0 1 6 3 7 1 6 2 8 3
+ddblt 0 0 3 6 7 1 0 -1 6 3
+ddblt 0 -1 8 5 8 1 -1 -1 5 -1
+ddblt 0 3 0 6 2 1 4 2 7 4 keysrcov 0x1378
+dddump 0
+end
+case random-93
+dd
+ddsurf 0 19 1 8
+ddsurf 1 7 9 8
+ddfill 0 919995397
+ddfill 1 1015618255
+ddkey 1 src 0xc6
+ddblt 0 8 -1 13 1 1 3 7 8 9 keysrc
+ddblt 0 14 -1 19 1 1 2 2 7 4 keysrc
+ddblt 0 8 -1 13 1 1 0 3 5 5
+dddump 0
+end
+case random-94
+dd
+ddsurf 0 7 6 32
+ddsurf 1 8 9 32
+ddfill 0 3633195807
+ddfill 1 2689685737
+ddkey 1 src 0x9c0a9d55
+ddkey 0 dest 0xdadcc526
+ddblt 0 0 0 7 4 1 -1 2 6 6
+ddfast 0 4 0 1 5 2 6 9
+ddblt 0 0 6 8 6 1 -1 4 7 4
+dddump 0
+end
+case random-95
+dd
+ddsurf 0 2 4 565
+ddsurf 1 2 8 565
+ddfill 0 3593223763
+ddfill 1 1831633537
+ddblt 0 1 1 2 5 1 1 2 2 6
+dddump 0
+end
+case random-96
+dd
+ddsurf 0 15 14 555
+ddsurf 1 7 2 555
+ddfill 0 3146423323
+ddfill 1 3912797183
+ddkey 1 src 0x7112
+ddkey 0 dest 0xf921
+ddfast 0 5 4 1 7 -1 8 0
+ddfast 0 5 1 1 5 0 8 1
+ddblt 0 5 7 12 8 1 -1 0 6 1
+dddump 0
+end
+case random-97
+dd
+ddsurf 0 17 8 8
+ddsurf 1 5 7 8
+ddfill 0 267687085
+ddfill 1 827210173
+ddfast 0 13 5 1 6 -1 6 0
+ddblt 0 -1 -1 0 7 1 5 0 6 8
+ddblt 0 12 0 12 6 1 3 -1 3 5
+ddblt 0 0 1 5 4 1 -1 3 4 6
+ddfast 0 9 -1 1 3 -1 3 6
+dddump 0
+end
+case random-98
+dd
+ddsurf 0 6 4 555
+ddsurf 1 8 2 555
+ddfill 0 3936516735
+ddfill 1 407959945
+ddkey 1 src 0xc519
+ddblt 0 7 -1 7 0 1 1 2 1 3
+dddump 0
+end
+case random-99
+dd
+ddsurf 0 11 7 32
+ddsurf 1 14 6 32
+ddfill 0 3079495221
+ddfill 1 2503340561
+ddkey 1 src 0x939d7c39
+ddblt 0 0 3 5 5 1 1 0 6 2
+ddfast 0 3 -1 1 11 0 14 7 srckey
+dddump 0
+end
+case random-100
+dd
+ddsurf 0 9 13 8
+ddsurf 1 11 3 8
+ddfill 0 1240631587
+ddfill 1 34229321
+ddkey 1 src 0x2d
+ddblt 0 8 2 8 5 1 10 1 10 4
+ddfast 0 1 3 1 5 0 11 4
+ddblt 0 5 9 8 10 1 8 2 11 3
+dddump 0
+end
+case random-101
+dd
+ddsurf 0 10 14 32
+ddsurf 1 2 2 32
+ddfill 0 2774797819
+ddfill 1 3216026999
+ddblt 0 9 -1 11 2 1 -1 -1 1 2
+ddblt 0 10 12 10 15 1 0 0 0 3
+dddump 0
+end
+case random-102
+dd
+ddsurf 0 16 7 32
+ddsurf 1 7 3 32
+ddfill 0 1322857965
+ddfill 1 1693489727
+ddblt 0 8 3 8 7 1 6 0 6 4
+ddfast 0 5 1 1 -1 -1 5 3
+ddblt 0 8 8 9 8 1 4 4 5 4
+ddblt 0 3 0 5 4 1 0 -1 2 3 mirrorud
+ddblt 0 7 4 7 5 1 7 3 7 4
+ddblt 0 11 0 17 4 1 0 0 6 4
+dddump 0
+end
+case random-103
+dd
+ddsurf 0 10 1 565
+ddsurf 1 14 7 565
+ddfill 0 2051579373
+ddfill 1 1465134071
+ddkey 1 src 0xd0e3
+ddfast 0 -1 1 1 6 7 15 8
+ddblt 0 0 2 9 2 1 3 5 12 5
+ddblt 0 -1 -1 6 1 1 1 0 8 2
+ddblt 0 5 0 7 1 1 1 6 3 7
+dddump 0
+end
+case random-104
+dd
+ddsurf 0 19 6 32
+ddsurf 1 5 6 32
+ddfill 0 182346895
+ddfill 1 263664265
+ddkey 1 src 0x6c5b8997
+ddfast 0 18 0 1 0 -1 2 6
+ddfast 0 12 0 1 0 -1 6 6
+ddblt 0 4 0 8 7 1 1 0 5 7 mirrorud
+ddfast 0 4 0 1 2 -1 2 5
+ddblt 0 15 4 20 6 1 0 0 5 2
+ddfast 0 4 7 1 3 2 6 2
+dddump 0
+end
+case random-105
+dd
+ddsurf 0 2 8 555
+ddsurf 1 5 9 555
+ddfill 0 1945884117
+ddfill 1 560693237
+ddkey 1 src 0x849e
+ddfast 0 2 1 1 4 0 5 2
+ddfast 0 -1 8 1 1 2 3 2
+ddblt 0 2 -1 2 8 1 6 0 6 9
+ddfast 0 1 -1 1 3 2 5 6
+ddblt 0 0 -1 3 8 1 0 -1 3 8 mirrorlr
+ddblt 0 0 -1 2 8 1 2 0 4 9 keysrc
+dddump 0
+end
+case random-106
+dd
+ddsurf 0 9 6 555
+ddsurf 1 11 2 555
+ddfill 0 1680841575
+ddfill 1 2132871207
+ddkey 1 src 0x8295
+ddkey 0 dest 0x7344
+ddblt 0 -1 2 7 5 1 3 -1 11 2
+ddblt 0 1 2 4 4 1 8 0 11 2 keysrcov 0x8295
+ddblt 0 2 -1 8 2 1 2 0 8 3
+ddblt 0 4 2 4 5 1 -1 -1 -1 2 keysrc
+ddblt 0 -1 1 0 4 1 6 -1 7 2 keydest
+dddump 0
+end
+case random-107
+dd
+ddsurf 0 13 8 565
+ddsurf 1 8 7 565
+ddfill 0 3904372663
+ddfill 1 4284987095
+ddblt 0 4 -1 6 0 1 6 5 8 6
+ddblt 0 4 0 8 7 1 -1 -1 3 6
+ddfast 0 5 2 1 3 1 8 8
+ddblt 0 8 1 10 8 1 7 0 9 7
+dddump 0
+end
+case random-108
+dd
+ddsurf 0 8 10 565
+ddsurf 1 2 2 565
+ddfill 0 905069833
+ddfill 1 3611037569
+ddkey 1 src 0xe3e2
+ddblt 0 3 6 6 9 1 -1 0 2 3
+ddblt 0 5 6 5 9 1 3 -1 3 2
+ddblt 0 5 2 6 5 1 -1 0 0 3
+ddblt 0 2 6 3 8 1 -1 1 0 3 mirrorlr
+ddfast 0 7 2 1 1 3 3 3
+dddump 0
+end
+case random-109
+dd
+ddsurf 0 11 11 565
+ddsurf 1 7 3 565
+ddfill 0 2808300637
+ddfill 1 855430825
+ddblt 0 6 2 10 3 1 -1 3 3 4
+ddblt 0 1 7 9 10 1 -1 0 7 3
+ddfast 0 5 2 1 5 0 6 2
+ddblt 0 4 8 7 9 1 -1 0 2 1 mirrorlr mirrorud
+dddump 0
+end
+case random-110
+dd
+ddsurf 0 17 6 565
+ddsurf 1 1 1 565
+ddfill 0 3000255057
+ddfill 1 1767226623
+ddkey 1 src 0x31da
+ddblt 0 3 4 4 5 1 0 -1 1 0
+ddblt 0 10 3 10 5 1 1 -1 1 1 keysrcov 0x31da
+ddfast 0 3 2 1 0 -1 1 0
+ddblt 0 4 2 5 2 1 0 2 1 2
+ddfast 0 -1 5 1 1 -1 2 1
+ddfast 0 1 1 1 -1 1 0 1
+dddump 0
+end
+case random-111
+dd
+ddsurf 0 12 5 32
+ddsurf 1 14 8 32
+ddfill 0 698618271
+ddfill 1 3647409909
+ddkey 0 dest 0xff09cd0f
+ddblt 0 2 5 11 5 1 4 9 13 9
+ddblt 0 5 1 6 6 1 8 2 9 7 keydestov 0xff09cd0f
+dddump 0
+end
+case random-112
+dd
+ddsurf 0 11 14 565
+ddsurf 1 3 1 565
+ddfill 0 3967194685
+ddfill 1 3902014917
+ddblt 0 -1 3 3 3 1 0 1 4 1
+ddfast 0 2 9 1 0 -1 4 0
+ddblt 0 10 9 12 10 1 -1 -1 1 0 keydestov 0x26f2
+ddfast 0 0 -1 1 1 -1 4 -1
+ddfast 0 9 6 1 -1 1 2 1
+ddfast 0 7 8 1 2 -1 4 -1
+dddump 0
+end
+case random-113
+dd
+ddsurf 0 4 14 555
+ddsurf 1 8 5 555
+ddfill 0 3056534879
+ddfill 1 2249797021
+ddkey 0 dest 0x6738
+ddblt 0 -1 -1 -1 5 1 8 -1 8 5
+ddblt 0 -1 4 0 8 1 2 -1 3 3
+ddblt 0 0 8 3 14 1 1 0 4 6 keysrcov 0x3016
+ddblt 0 -1 5 4 9 1 3 0 8 4
+ddblt 0 -1 13 2 15 1 5 2 8 4 mirrorlr mirrorud
+dddump 0
+end
+case random-114
+dd
+ddsurf 0 11 14 32
+ddsurf 1 10 7 32
+ddfill 0 788959141
+ddfill 1 548948829
+ddfast 0 -1 3 1 2 0 10 4
+ddfast 0 2 2 1 -1 -1 8 6
+ddblt 0 2 0 12 4 1 -1 1 9 5
+ddblt 0 4 6 6 13 1 5 1 7 8 keydestov 0x7db6355d
+ddblt 0 3 13 3 13 1 9 3 9 3
+ddblt 0 9 11 12 14 1 8 5 11 8
+dddump 0
+end
+case random-115
+dd
+ddsurf 0 13 1 32
+ddsurf 1 2 10 32
+ddfill 0 4284899455
+ddfill 1 1582997675
+ddkey 1 src 0x51bc8fc9
+ddkey 0 dest 0x9d99a694
+ddfast 0 9 1 1 0 3 3 4
+ddblt 0 1 0 1 2 1 2 -1 2 1 keydest
+ddblt 0 10 2 13 2 1 0 2 3 2
+ddblt 0 9 0 11 0 1 -1 -1 1 -1 mirrorud
+ddfast 0 3 -1 1 2 9 2 11
+dddump 0
+end
+case random-116
+dd
+ddsurf 0 4 11 555
+ddsurf 1 13 7 555
+ddfill 0 2503533697
+ddfill 1 3166210805
+ddkey 1 src 0xf9a6
+ddkey 0 dest 0x29ab
+ddfast 0 -1 2 1 13 -1 13 7 destkey
+dddump 0
+end
+case random-117
+dd
+ddsurf 0 20 3 32
+ddsurf 1 10 8 32
+ddfill 0 1518222929
+ddfill 1 725500395
+ddkey 1 src 0x93a14592
+ddkey 0 dest 0x749e58c9
+ddfast 0 13 -1 1 11 9 11 9 destkey
+ddfast 0 15 0 1 1 9 6 9 srckey
+ddblt 0 -1 1 9 4 1 1 2 11 5
+ddblt 0 5 0 7 3 1 5 4 7 7 keydest
+ddblt 0 -1 2 9 4 1 -1 2 9 4 keysrc
+dddump 0
+end
+case random-118
+dd
+ddsurf 0 9 14 32
+ddsurf 1 2 6 32
+ddfill 0 864690663
+ddfill 1 2171444637
+ddkey 1 src 0x9b3ccc36
+ddfast 0 1 8 1 0 3 2 5
+ddblt 0 3 3 4 9 1 0 0 1 6
+dddump 0
+end
+case random-119
+dd
+ddsurf 0 10 4 8
+ddsurf 1 5 3 8
+ddfill 0 230204787
+ddfill 1 1003214553
+ddkey 1 src 0xf4
+ddblt 0 3 5 6 5 1 -1 -1 2 -1
+ddfast 0 3 0 1 -1 1 0 3
+dddump 0
+end
+case random-120
+dd
+ddsurf 0 19 12 565
+ddsurf 1 14 3 565
+ddfill 0 2577881899
+ddfill 1 713452331
+ddkey 0 dest 0x9b0a
+ddblt 0 4 4 9 8 1 3 0 8 4
+ddfast 0 -1 7 1 6 -1 15 2
+ddblt 0 3 8 8 8 1 1 -1 6 -1 mirrorlr mirrorud
+ddblt 0 13 10 20 13 1 5 -1 12 2
+ddblt 0 6 5 18 7 1 3 1 15 3
+dddump 0
+end
+case random-121
+dd
+ddsurf 0 14 8 565
+ddsurf 1 6 6 565
+ddfill 0 2456485375
+ddfill 1 2004490677
+ddblt 0 -1 8 2 8 1 4 7 7 7 keysrcov 0x30f5
+ddfast 0 10 -1 1 1 2 3 7
+ddblt 0 4 4 6 6 1 2 -1 4 1 keydestov 0x1bc3
+ddfast 0 0 4 1 0 0 6 5
+dddump 0
+end
+case random-122
+dd
+ddsurf 0 20 2 555
+ddsurf 1 12 1 555
+ddfill 0 3848382085
+ddfill 1 3885532637
+ddkey 0 dest 0xe50
+ddblt 0 8 1 20 3 1 -1 -1 11 1
+dddump 0
+end
+case random-123
+dd
+ddsurf 0 19 3 555
+ddsurf 1 1 6 555
+ddfill 0 1971545861
+ddfill 1 890944821
+ddkey 0 dest 0xe3cb
+ddfast 0 3 -1 1 -1 3 1 4
+ddfast 0 5 4 1 1 5 2 5
+dddump 0
+end
+case random-124
+dd
+ddsurf 0 6 8 8
+ddsurf 1 7 6 8
+ddfill 0 981454911
+ddfill 1 3480645699
+ddblt 0 0 3 3 6 1 3 3 6 6 keydestov 0xbb
+ddblt 0 0 0 5 1 1 2 0 7 1 mirrorlr mirrorud
+dddump 0
+end
+case random-125
+dd
+ddsurf 0 13 8 32
+ddsurf 1 9 9 32
+ddfill 0 3530160363
+ddfill 1 1139606609
+ddkey 1 src 0x92d8e3f6
+ddblt 0 7 -1 9 1 1 2 2 4 4 mirrorlr mirrorud
+dddump 0
+end
+case random-126
+dd
+ddsurf 0 14 1 555
+ddsurf 1 1 5 555
+ddfill 0 2374771639
+ddfill 1 916852267
+ddkey 1 src 0x7443
+ddblt 0 11 -1 12 0 1 1 0 2 1 keydestov 0x75d0
+ddblt 0 4 -1 4 1 1 1 0 1 2 keysrc
+ddblt 0 13 1 13 1 1 1 6 1 6
+dddump 0
+end
+case random-127
+dd
+ddsurf 0 2 2 32
+ddsurf 1 11 8 32
+ddfill 0 3651205429
+ddfill 1 373388471
+ddblt 0 -1 -1 2 -1 1 3 4 6 4
+ddfast 0 -1 0 1 0 1 3 4
+ddblt 0 0 1 2 1 1 4 6 6 6
+ddfast 0 0 0 1 7 3 9 6
+dddump 0
+end
+case random-128
+dd
+ddsurf 0 20 5 555
+ddsurf 1 14 5 555
+ddfill 0 3416800615
+ddfill 1 1285027813
+ddfast 0 6 0 1 5 0 13 2
+ddblt 0 14 0 20 5 1 1 1 7 6 keysrcov 0x444e
+ddfast 0 11 0 1 7 1 13 5
+dddump 0
+end
+case random-129
+dd
+ddsurf 0 13 11 32
+ddsurf 1 8 1 32
+ddfill 0 4253073941
+ddfill 1 1568673397
+ddkey 1 src 0x941f5f19
+ddkey 0 dest 0xb46eb1f2
+ddblt 0 11 5 13 6 1 2 -1 4 0 keysrcov 0x941f5f19
+ddblt 0 0 11 7 11 1 1 1 8 1 keysrcov 0x941f5f19
+ddblt 0 1 2 8 3 1 1 0 8 1
+ddblt 0 -1 10 2 11 1 4 1 7 2 keysrcov 0x941f5f19
+dddump 0
+end
+case random-130
+dd
+ddsurf 0 20 7 555
+ddsurf 1 13 4 555
+ddfill 0 1847334297
+ddfill 1 2034711055
+ddkey 1 src 0x3a3b
+ddblt 0 4 1 17 4 1 -1 2 12 5 keysrcov 0x3a3b
+ddblt 0 13 0 15 3 1 3 1 5 4 keysrcov 0x3a3b
+ddblt 0 2 5 13 7 1 -1 2 10 4 keydestov 0x8992
+ddblt 0 3 2 16 2 1 0 4 13 4
+ddfast 0 2 8 1 3 0 13 0 srckey
+dddump 0
+end
+case random-131
+dd
+ddsurf 0 10 7 32
+ddsurf 1 10 5 32
+ddfill 0 3532028263
+ddfill 1 2834850291
+ddkey 1 src 0x73776804
+ddfast 0 6 2 1 3 -1 7 0
+ddblt 0 2 2 9 7 1 -1 1 6 6 keysrc
+ddfast 0 0 4 1 3 1 11 3
+ddfast 0 6 2 1 0 0 2 1
+ddfast 0 0 1 1 0 1 10 2
+dddump 0
+end
+case random-132
+dd
+ddsurf 0 6 6 565
+ddsurf 1 4 7 565
+ddfill 0 1892839043
+ddfill 1 2638491747
+ddkey 1 src 0x43d5
+ddkey 0 dest 0x4679
+ddfast 0 2 1 1 -1 2 4 8
+ddfast 0 1 5 1 -1 0 3 0
+ddfast 0 1 1 1 1 1 4 4
+dddump 0
+end
+case random-133
+dd
+ddsurf 0 9 3 32
+ddsurf 1 7 4 32
+ddfill 0 3996772217
+ddfill 1 2281925715
+ddfast 0 -1 -1 1 3 -1 7 3
+ddblt 0 -1 -1 5 3 1 2 0 8 4
+ddblt 0 -1 0 2 2 1 -1 -1 2 1
+ddblt 0 5 0 9 3 1 -1 0 3 3
+ddfast 0 -1 2 1 0 3 8 5
+dddump 0
+end
+case random-134
+dd
+ddsurf 0 10 1 8
+ddsurf 1 6 9 8
+ddfill 0 2887723135
+ddfill 1 1795772983
+ddkey 0 dest 0xae
+ddblt 0 2 -1 8 1 1 -1 0 5 2
+ddfast 0 0 0 1 -1 3 6 4
+ddblt 0 1 0 7 1 1 0 1 6 2 keydest
+ddblt 0 0 0 3 1 1 -1 2 2 3 keydestov 0xae
+ddblt 0 7 -1 9 -1 1 3 4 5 4
+dddump 0
+end
+case random-135
+dd
+ddsurf 0 4 14 555
+ddsurf 1 12 3 555
+ddfill 0 3914275745
+ddfill 1 1297934653
+ddkey 1 src 0xcc46
+ddblt 0 1 -1 2 2 1 3 1 4 4
+ddfast 0 4 3 1 7 2 7 3
+ddblt 0 3 -1 5 -1 1 3 0 5 0
+ddblt 0 0 3 1 4 1 4 2 5 3 mirrorlr
+dddump 0
+end
+case random-136
+dd
+ddsurf 0 2 2 565
+ddsurf 1 8 10 565
+ddfill 0 1886129935
+ddfill 1 3225112265
+ddkey 0 dest 0xafac
+ddfast 0 1 0 1 7 0 8 3
+ddfast 0 0 0 1 0 10 3 11
+ddblt 0 0 1 2 3 1 2 1 4 3 mirrorlr
+ddblt 0 -1 2 1 3 1 0 8 2 9 keydest
+ddfast 0 1 0 1 3 0 3 3
+ddblt 0 2 2 2 3 1 9 6 9 7
+dddump 0
+end
+case random-137
+dd
+ddsurf 0 16 11 8
+ddsurf 1 12 5 8
+ddfill 0 2617368657
+ddfill 1 2709371637
+ddkey 0 dest 0x69
+ddblt 0 5 3 11 4 1 3 -1 9 0 mirrorlr
+dddump 0
+end
+case random-138
+dd
+ddsurf 0 4 1 8
+ddsurf 1 10 2 8
+ddfill 0 3056718721
+ddfill 1 74908033
+ddkey 1 src 0x55
+ddblt 0 0 0 2 2 1 3 -1 5 1 keysrc
+ddfast 0 -1 0 1 2 -1 7 1
+ddfast 0 2 0 1 5 0 6 2
+ddblt 0 0 -1 5 0 1 0 1 5 2
+ddblt 0 2 -1 5 1 1 -1 0 2 2
+ddblt 0 -1 2 4 2 1 0 -1 5 -1
+dddump 0
+end
+case random-139
+dd
+ddsurf 0 12 1 565
+ddsurf 1 13 5 565
+ddfill 0 772257923
+ddfill 1 4225840393
+ddkey 1 src 0xff8f
+ddkey 0 dest 0x3d52
+ddblt 0 1 0 8 0 1 4 3 11 3 mirrorlr
+ddfast 0 2 0 1 7 5 13 5
+ddblt 0 2 1 13 2 1 3 -1 14 0 keysrcov 0xff8f
+ddblt 0 8 -1 10 1 1 5 -1 7 1 mirrorlr
+dddump 0
+end
+case random-140
+dd
+ddsurf 0 4 6 555
+ddsurf 1 7 3 555
+ddfill 0 3205772299
+ddfill 1 188502241
+ddkey 1 src 0xec9d
+ddfast 0 0 1 1 2 0 2 2
+ddblt 0 4 2 4 4 1 5 1 5 3 keysrcov 0xec9d
+ddblt 0 2 0 2 4 1 0 0 0 4 keysrc
+ddblt 0 -1 1 2 1 1 3 4 6 4
+ddblt 0 1 1 3 4 1 2 -1 4 2 keydestov 0x214a
+ddblt 0 -1 1 1 3 1 5 1 7 3
+dddump 0
+end
+case random-141
+dd
+ddsurf 0 19 6 565
+ddsurf 1 14 9 565
+ddfill 0 3847977309
+ddfill 1 3294826693
+ddblt 0 1 4 8 4 1 5 8 12 8
+dddump 0
+end
+case random-142
+dd
+ddsurf 0 2 11 32
+ddsurf 1 13 2 32
+ddfill 0 105636545
+ddfill 1 946603721
+ddkey 1 src 0x7d0551f3
+ddfast 0 -1 -1 1 4 0 7 1
+ddfast 0 3 2 1 13 0 13 1
+ddblt 0 -1 12 -1 12 1 1 0 1 0 keysrcov 0x7d0551f3
+dddump 0
+end
+case random-143
+dd
+ddsurf 0 19 9 565
+ddsurf 1 3 6 565
+ddfill 0 295043835
+ddfill 1 3907537407
+ddkey 0 dest 0x1077
+ddfast 0 6 1 1 0 -1 4 6
+ddblt 0 8 6 8 7 1 3 4 3 5 keydest
+dddump 0
+end
+case random-144
+dd
+ddsurf 0 10 14 565
+ddsurf 1 6 10 565
+ddfill 0 2537010925
+ddfill 1 1554965785
+ddfast 0 8 6 1 -1 1 0 6
+ddblt 0 7 8 7 14 1 6 0 6 6
+ddfast 0 3 1 1 2 9 7 10
+ddblt 0 -1 13 6 13 1 0 11 7 11 keydestov 0xb828
+dddump 0
+end
+case random-145
+dd
+ddsurf 0 14 13 32
+ddsurf 1 10 1 32
+ddfill 0 249030035
+ddfill 1 3202238625
+ddkey 1 src 0x5e962c7d
+ddkey 0 dest 0xf62cf90c
+ddblt 0 0 12 0 12 1 0 1 0 1
+ddblt 0 1 13 5 13 1 6 0 10 0
+ddblt 0 3 0 4 1 1 0 -1 1 0 keydestov 0xf62cf90c
+dddump 0
+end
+case random-146
+dd
+ddsurf 0 17 8 565
+ddsurf 1 4 6 565
+ddfill 0 3056552285
+ddfill 1 3214679359
+ddkey 1 src 0x7bb2
+ddkey 0 dest 0x266e
+ddblt 0 5 1 10 2 1 -1 -1 4 0 keysrcov 0x7bb2
+ddfast 0 16 0 1 -1 0 0 6
+ddblt 0 1 2 3 8 1 -1 1 1 7
+ddblt 0 16 5 18 9 1 3 3 5 7
+dddump 0
+end
+case random-147
+dd
+ddsurf 0 19 6 565
+ddsurf 1 9 6 565
+ddfill 0 2141253463
+ddfill 1 722063379
+ddblt 0 11 0 17 7 1 -1 0 5 7
+ddblt 0 10 1 16 1 1 1 0 7 0
+ddfast 0 19 0 1 7 0 7 7
+ddblt 0 9 3 15 7 1 -1 -1 5 3 keydestov 0x18ca
+ddblt 0 4 3 4 3 1 6 0 6 0 keysrcov 0xdafa
+dddump 0
+end
+case random-148
+dd
+ddsurf 0 11 11 8
+ddsurf 1 5 7 8
+ddfill 0 2576075905
+ddfill 1 3815517485
+ddkey 1 src 0x6a
+ddkey 0 dest 0x93
+ddblt 0 8 4 11 10 1 -1 2 2 8 keydestov 0x93
+ddblt 0 3 6 4 7 1 0 0 1 1 keysrc
+dddump 0
+end
+case random-149
+dd
+ddsurf 0 7 2 565
+ddsurf 1 9 4 565
+ddfill 0 3204590327
+ddfill 1 2983095513
+ddkey 1 src 0x9ee5
+ddblt 0 2 1 3 2 1 0 -1 1 0 mirrorlr mirrorud
+ddblt 0 3 -1 6 -1 1 0 1 3 1 keysrcov 0x9ee5
+ddblt 0 4 -1 8 1 1 3 1 7 3
+ddfast 0 0 -1 1 0 3 8 5
+dddump 0
+end
+case random-150
+dd
+ddsurf 0 13 13 8
+ddsurf 1 5 10 8
+ddfill 0 3301835651
+ddfill 1 2473744989
+ddkey 0 dest 0x83
+ddblt 0 0 12 3 14 1 2 5 5 7
+ddfast 0 9 6 1 3 -1 5 1
+ddblt 0 1 3 7 5 1 -1 1 5 3 keysrcov 0xa6
+ddblt 0 9 9 9 10 1 3 0 3 1
+ddblt 0 8 5 13 6 1 1 5 6 6 keydest
+ddfast 0 5 -1 1 6 2 6 3
+dddump 0
+end
+case random-151
+dd
+ddsurf 0 9 14 32
+ddsurf 1 1 4 32
+ddfill 0 3246419239
+ddfill 1 1220390325
+ddkey 1 src 0xc6017130
+ddblt 0 8 0 9 4 1 1 0 2 4
+ddblt 0 4 12 6 14 1 -1 3 1 5
+ddfast 0 5 11 1 1 1 1 2
+ddblt 0 8 9 10 14 1 0 0 2 5 keydestov 0x37349b8c
+ddblt 0 8 1 10 2 1 0 3 2 4 keydestov 0x37349b8c
+dddump 0
+end
+case random-152
+dd
+ddsurf 0 7 4 565
+ddsurf 1 14 5 565
+ddfill 0 130246007
+ddfill 1 115312833
+ddkey 0 dest 0x5b3a
+ddfast 0 0 -1 1 3 3 4 3
+ddfast 0 1 4 1 8 -1 15 0
+ddfast 0 2 3 1 1 4 7 5
+dddump 0
+end
+case random-153
+dd
+ddsurf 0 13 12 8
+ddsurf 1 12 1 8
+ddfill 0 1516098551
+ddfill 1 3830136615
+ddkey 1 src 0x64
+ddkey 0 dest 0xd3
+ddblt 0 -1 9 6 11 1 -1 0 6 2 keysrc
+dddump 0
+end
+case random-154
+dd
+ddsurf 0 15 4 8
+ddsurf 1 8 2 8
+ddfill 0 2619484929
+ddfill 1 4044010369
+ddkey 1 src 0xb6
+ddblt 0 10 2 16 5 1 3 0 9 3 keysrcov 0xb6
+dddump 0
+end
+case random-155
+dd
+ddsurf 0 10 9 32
+ddsurf 1 2 2 32
+ddfill 0 3388581059
+ddfill 1 1364382771
+ddblt 0 -1 2 1 2 1 1 -1 3 -1
+ddblt 0 0 4 2 6 1 -1 -1 1 1
+ddfast 0 7 8 1 -1 3 1 3
+ddfast 0 5 9 1 1 2 2 3
+ddfast 0 -1 -1 1 -1 -1 2 2
+ddblt 0 7 7 9 7 1 -1 1 1 1
+dddump 0
+end
+case random-156
+dd
+ddsurf 0 18 14 8
+ddsurf 1 12 8 8
+ddfill 0 3330436739
+ddfill 1 3776654955
+ddblt 0 11 7 17 13 1 2 0 8 6 keydestov 0x16
+ddfast 0 6 4 1 -1 5 10 9
+ddblt 0 12 3 18 11 1 3 0 9 8 mirrorlr
+ddblt 0 9 3 14 7 1 3 0 8 4
+dddump 0
+end
+case random-157
+dd
+ddsurf 0 11 13 555
+ddsurf 1 6 3 555
+ddfill 0 22177577
+ddfill 1 4217069491
+ddkey 1 src 0xe186
+ddkey 0 dest 0xdc4c
+ddblt 0 -1 9 -1 12 1 0 0 0 3 mirrorlr
+ddblt 0 1 3 2 3 1 1 0 2 0
+ddblt 0 3 11 7 13 1 0 0 4 2
+ddfast 0 0 -1 1 2 -1 7 3
+ddblt 0 1 3 1 3 1 1 4 1 4 keydestov 0xdc4c
+ddblt 0 3 7 3 11 1 0 -1 0 3
+dddump 0
+end
+case random-158
+dd
+ddsurf 0 1 13 555
+ddsurf 1 8 10 555
+ddfill 0 660186983
+ddfill 1 1696119101
+ddkey 0 dest 0xe1a5
+ddblt 0 0 9 0 14 1 1 3 1 8
+ddblt 0 -1 4 1 4 1 0 1 2 1
+dddump 0
+end
+case random-159
+dd
+ddsurf 0 14 11 555
+ddsurf 1 6 8 555
+ddfill 0 998208141
+ddfill 1 1895414619
+ddkey 1 src 0xf66d
+ddkey 0 dest 0x6d75
+ddblt 0 7 7 11 7 1 0 6 4 6
+ddfast 0 0 1 1 -1 6 2 6
+ddblt 0 4 5 8 11 1 3 0 7 6
+dddump 0
+end
+case random-160
+dd
+ddsurf 0 9 5 32
+ddsurf 1 12 7 32
+ddfill 0 431472127
+ddfill 1 789140923
+ddblt 0 2 1 9 1 1 2 0 9 0
+ddblt 0 0 0 3 5 1 8 1 11 6
+ddblt 0 5 1 7 6 1 3 3 5 8 mirrorud
+dddump 0
+end
+case random-161
+dd
+ddsurf 0 17 8 555
+ddsurf 1 13 8 555
+ddfill 0 3086305057
+ddfill 1 4248599945
+ddkey 1 src 0xaefd
+ddblt 0 11 2 14 7 1 3 3 6 8 keydestov 0xdf34
+dddump 0
+end
+case random-162
+dd
+ddsurf 0 6 2 8
+ddsurf 1 14 10 8
+ddfill 0 854507853
+ddfill 1 2988806639
+ddkey 1 src 0x60
+ddfast 0 -1 -1 1 11 11 13 11
+ddfast 0 3 -1 1 5 -1 8 1
+ddblt 0 0 -1 2 2 1 10 1 12 4
+ddblt 0 2 0 4 1 1 1 2 3 3 keysrc
+ddfast 0 7 -1 1 14 -1 14 2
+dddump 0
+end
+case random-163
+dd
+ddsurf 0 16 14 555
+ddsurf 1 2 2 555
+ddfill 0 2792281119
+ddfill 1 3779618665
+ddkey 1 src 0xd7db
+ddfast 0 10 10 1 0 0 0 1
+ddfast 0 11 11 1 0 1 3 3
+ddfast 0 10 1 1 2 0 3 2
+dddump 0
+end
+case random-164
+dd
+ddsurf 0 19 8 555
+ddsurf 1 14 5 555
+ddfill 0 2374805471
+ddfill 1 932841413
+ddkey 1 src 0xcae
+ddkey 0 dest 0x2888
+ddfast 0 11 2 1 6 1 13 5
+ddfast 0 13 0 1 9 -1 13 4
+ddblt 0 16 2 17 8 1 7 0 8 6
+ddfast 0 11 0 1 4 -1 11 5
+dddump 0
+end
+case random-165
+dd
+ddsurf 0 16 6 8
+ddsurf 1 13 4 8
+ddfill 0 2557316089
+ddfill 1 188838225
+ddblt 0 -1 7 7 7 1 5 4 13 4
+ddfast 0 8 1 1 2 1 8 5
+ddfast 0 9 1 1 1 2 7 3
+ddblt 0 6 1 12 3 1 7 2 13 4
+ddfast 0 11 -1 1 5 0 5 4
+ddblt 0 4 3 15 7 1 -1 -1 10 3
+dddump 0
+end
+case random-166
+dd
+ddsurf 0 13 4 565
+ddsurf 1 7 7 565
+ddfill 0 3782705409
+ddfill 1 1000512747
+ddkey 0 dest 0x9b93
+ddblt 0 12 1 13 5 1 5 2 6 6 keydestov 0x9b93
+ddblt 0 3 1 11 5 1 -1 -1 7 3
+ddblt 0 3 -1 6 4 1 2 0 5 5
+ddfast 0 1 3 1 0 4 0 4
+ddfast 0 0 0 1 5 0 8 5
+dddump 0
+end
+case random-167
+dd
+ddsurf 0 20 5 555
+ddsurf 1 10 10 555
+ddfill 0 463069365
+ddfill 1 3596959027
+ddkey 1 src 0x6f5
+ddkey 0 dest 0xb619
+ddfast 0 4 2 1 -1 9 10 11
+ddblt 0 11 -1 18 3 1 2 4 9 8 keydestov 0xb619
+ddfast 0 0 3 1 0 8 11 11
+dddump 0
+end
+case random-168
+dd
+ddsurf 0 8 7 8
+ddsurf 1 11 4 8
+ddfill 0 2283913179
+ddfill 1 1149929207
+ddkey 0 dest 0xa7
+ddblt 0 -1 2 1 5 1 7 0 9 3 keydestov 0xa7
+ddfast 0 1 1 1 3 1 9 4
+ddblt 0 -1 4 7 6 1 0 2 8 4
+ddfast 0 0 -1 1 -1 1 8 3 destkey
+dddump 0
+end
+case random-169
+dd
+ddsurf 0 13 8 555
+ddsurf 1 2 10 555
+ddfill 0 2335235517
+ddfill 1 2154146335
+ddkey 1 src 0xaa0c
+ddblt 0 3 0 5 7 1 -1 4 1 11 mirrorlr mirrorud
+ddblt 0 1 -1 3 7 1 1 0 3 8 mirrorlr mirrorud
+ddfast 0 12 2 1 3 3 3 10
+ddfast 0 9 2 1 0 6 3 6
+ddblt 0 10 1 12 4 1 1 2 3 5 keysrc
+ddfast 0 9 1 1 1 1 3 4
+dddump 0
+end
+case random-170
+dd
+ddsurf 0 16 5 565
+ddsurf 1 14 7 565
+ddfill 0 108625925
+ddfill 1 4183710745
+ddblt 0 4 3 7 5 1 2 5 5 7
+ddblt 0 5 3 12 4 1 3 2 10 3
+ddblt 0 2 1 16 5 1 -1 4 13 8
+ddblt 0 -1 2 10 2 1 1 4 12 4 mirrorud
+ddfast 0 2 -1 1 -1 -1 12 4
+dddump 0
+end
+case random-171
+dd
+ddsurf 0 18 11 555
+ddsurf 1 6 2 555
+ddfill 0 41261785
+ddfill 1 2498931599
+ddblt 0 2 9 3 9 1 5 0 6 0
+dddump 0
+end
+case random-172
+dd
+ddsurf 0 1 6 8
+ddsurf 1 9 4 8
+ddfill 0 846788025
+ddfill 1 3040327711
+ddfast 0 0 0 1 0 1 2 3
+dddump 0
+end
+case random-173
+dd
+ddsurf 0 15 11 8
+ddsurf 1 14 10 8
+ddfill 0 1333526781
+ddfill 1 588984013
+ddblt 0 9 1 14 8 1 10 3 15 10 keysrcov 0x32
+ddblt 0 5 0 15 10 1 4 0 14 10 keydestov 0x1a
+ddfast 0 -1 -1 1 -1 1 14 11
+ddblt 0 16 3 16 10 1 7 2 7 9 keydestov 0x1a
+ddfast 0 3 1 1 9 2 9 9
+dddump 0
+end
+case random-174
+dd
+ddsurf 0 8 13 32
+ddsurf 1 10 5 32
+ddfill 0 1039696561
+ddfill 1 2558015655
+ddkey 0 dest 0xb2562c16
+ddblt 0 1 1 7 1 1 5 6 11 6
+dddump 0
+end
+case random-175
+dd
+ddsurf 0 14 2 8
+ddsurf 1 5 9 8
+ddfill 0 1662809885
+ddfill 1 1376763267
+ddkey 0 dest 0x85
+ddfast 0 0 1 1 2 8 5 10
+ddblt 0 6 0 12 1 1 -1 2 5 3 mirrorlr mirrorud
+ddblt 0 6 -1 7 2 1 -1 1 0 4 keydestov 0x85
+ddblt 0 2 -1 7 2 1 0 6 5 9
+ddfast 0 3 0 1 0 1 6 3
+dddump 0
+end
+case random-176
+dd
+ddsurf 0 17 5 565
+ddsurf 1 5 4 565
+ddfill 0 2355794549
+ddfill 1 447467943
+ddfast 0 15 -1 1 2 -1 5 2
+ddfast 0 9 5 1 0 0 6 1
+ddfast 0 6 2 1 -1 4 4 5
+ddblt 0 4 5 9 5 1 -1 2 4 2 keysrcov 0x5c0c
+dddump 0
+end
+case random-177
+dd
+ddsurf 0 20 8 555
+ddsurf 1 9 9 555
+ddfill 0 314274561
+ddfill 1 3887259853
+ddkey 1 src 0x2c4e
+ddblt 0 12 0 16 9 1 0 0 4 9
+dddump 0
+end
+case random-178
+dd
+ddsurf 0 12 9 8
+ddsurf 1 4 8 8
+ddfill 0 4043693619
+ddfill 1 313839923
+ddkey 1 src 0x8f
+ddblt 0 11 7 11 10 1 2 0 2 3
+ddblt 0 -1 3 3 3 1 1 8 5 8
+ddblt 0 0 -1 1 7 1 4 1 5 9
+ddblt 0 0 -1 4 7 1 -1 0 3 8 mirrorlr mirrorud
+ddfast 0 9 0 1 1 4 3 7
+dddump 0
+end
+case random-179
+dd
+ddsurf 0 7 10 8
+ddsurf 1 7 1 8
+ddfill 0 3561946009
+ddfill 1 1820729063
+ddfast 0 -1 0 1 -1 1 7 2
+ddblt 0 -1 4 5 5 1 -1 1 5 2
+ddblt 0 -1 10 6 11 1 1 1 8 2
+ddblt 0 1 8 8 9 1 0 1 7 2
+dddump 0
+end
+case random-180
+dd
+ddsurf 0 5 11 32
+ddsurf 1 1 4 32
+ddfill 0 3460880341
+ddfill 1 1123388461
+ddblt 0 1 4 3 9 1 -1 0 1 5 keysrcov 0xa4123f4b
+ddblt 0 2 1 2 6 1 2 0 2 5 mirrorlr mirrorud
+ddblt 0 4 8 4 10 1 1 2 1 4 keydestov 0x298b81dc
+ddfast 0 -1 1 1 0 0 2 3
+ddblt 0 0 12 0 12 1 1 1 1 1 keydestov 0x298b81dc
+dddump 0
+end
+case random-181
+dd
+ddsurf 0 14 6 555
+ddsurf 1 11 9 555
+ddfill 0 885970597
+ddfill 1 761140361
+ddkey 0 dest 0x6800
+ddfast 0 3 -1 1 7 -1 11 0
+dddump 0
+end
+case random-182
+dd
+ddsurf 0 3 3 8
+ddsurf 1 3 2 8
+ddfill 0 3642750603
+ddfill 1 3726248141
+ddkey 1 src 0xa6
+ddblt 0 2 0 3 2 1 1 0 2 2
+dddump 0
+end
+case random-183
+dd
+ddsurf 0 19 4 32
+ddsurf 1 6 8 32
+ddfill 0 2953910117
+ddfill 1 3443670395
+ddkey 1 src 0xe52084d2
+ddkey 0 dest 0xef49f78d
+ddblt 0 13 0 18 5 1 0 0 5 5 keysrcov 0xe52084d2
+ddblt 0 14 -1 18 -1 1 2 7 6 7 keysrc
+ddblt 0 13 1 18 1 1 2 2 7 2 keysrc
+ddblt 0 6 0 11 2 1 -1 0 4 2 keydestov 0xef49f78d
+ddblt 0 7 3 13 4 1 -1 8 5 9 keysrcov 0xe52084d2
+dddump 0
+end
+case random-184
+dd
+ddsurf 0 6 4 555
+ddsurf 1 2 6 555
+ddfill 0 3643066213
+ddfill 1 2026149761
+ddblt 0 4 -1 7 0 1 0 1 3 2 mirrorud
+ddblt 0 -1 -1 0 3 1 1 2 2 6 keysrcov 0xfebb
+dddump 0
+end
+case random-185
+dd
+ddsurf 0 6 10 555
+ddsurf 1 12 8 555
+ddfill 0 2657332689
+ddfill 1 2431057821
+ddkey 0 dest 0xb910
+ddblt 0 0 -1 4 0 1 1 0 5 1 keydestov 0xb910
+ddblt 0 -1 3 1 11 1 7 -1 9 7 mirrorud
+ddfast 0 5 8 1 1 2 3 4
+dddump 0
+end
+case random-186
+dd
+ddsurf 0 3 13 32
+ddsurf 1 12 4 32
+ddfill 0 602208699
+ddfill 1 648756627
+ddkey 1 src 0x50f1a2c8
+ddblt 0 4 -1 4 1 1 9 -1 9 1 keysrc
+ddblt 0 -1 2 3 6 1 0 -1 4 3
+ddblt 0 3 5 4 9 1 -1 -1 0 3 keysrcov 0x50f1a2c8
+ddblt 0 1 14 4 14 1 8 3 11 3 mirrorlr
+ddblt 0 -1 8 -1 10 1 8 -1 8 1
+ddblt 0 0 14 4 14 1 9 4 13 4 keydestov 0x9b0ba110
+dddump 0
+end
+case random-187
+dd
+ddsurf 0 11 8 555
+ddsurf 1 8 3 555
+ddfill 0 1400365255
+ddfill 1 1116060017
+ddblt 0 12 5 12 9 1 5 -1 5 3
+ddblt 0 1 2 5 6 1 1 -1 5 3 keydestov 0x258a
+ddfast 0 -1 2 1 8 -1 9 1
+ddblt 0 2 -1 10 0 1 1 -1 9 0 keydestov 0x258a
+dddump 0
+end
+case random-188
+dd
+ddsurf 0 20 3 555
+ddsurf 1 14 6 555
+ddfill 0 1315557295
+ddfill 1 2216597569
+ddfast 0 14 -1 1 8 3 12 7
+ddblt 0 13 0 14 2 1 10 0 11 2 keydestov 0x149d
+ddfast 0 5 0 1 1 -1 6 3
+ddfast 0 6 -1 1 6 3 13 6
+ddblt 0 13 1 19 3 1 2 0 8 2
+dddump 0
+end
+case random-189
+dd
+ddsurf 0 11 10 555
+ddsurf 1 3 5 555
+ddfill 0 1510598119
+ddfill 1 2954346813
+ddblt 0 5 6 9 10 1 -1 0 3 4
+ddfast 0 4 7 1 0 5 3 6
+ddblt 0 9 3 10 3 1 0 5 1 5
+ddblt 0 0 4 1 6 1 2 -1 3 1 keydestov 0xdb2e
+ddfast 0 10 9 1 2 -1 2 1
+ddfast 0 0 2 1 1 -1 4 3
+dddump 0
+end
+case random-190
+dd
+ddsurf 0 8 14 8
+ddsurf 1 6 1 8
+ddfill 0 477053793
+ddfill 1 1952462177
+ddkey 1 src 0x11
+ddblt 0 1 1 7 1 1 0 0 6 0
+ddfast 0 1 7 1 1 -1 3 -1 srckey
+ddblt 0 4 10 9 11 1 0 -1 5 0 keysrc
+ddblt 0 1 3 8 3 1 -1 -1 6 -1
+dddump 0
+end
+case random-191
+dd
+ddsurf 0 2 12 555
+ddsurf 1 14 8 555
+ddfill 0 41799961
+ddfill 1 3012504535
+ddblt 0 1 -1 2 4 1 8 3 9 8
+dddump 0
+end
+case random-192
+dd
+ddsurf 0 9 14 32
+ddsurf 1 10 10 32
+ddfill 0 69515191
+ddfill 1 3365266751
+ddfast 0 -1 3 1 1 9 10 10
+dddump 0
+end
+case random-193
+dd
+ddsurf 0 4 9 32
+ddsurf 1 9 3 32
+ddfill 0 885238017
+ddfill 1 2107021297
+ddblt 0 -1 7 4 7 1 1 -1 6 -1
+ddblt 0 -1 4 1 6 1 -1 1 1 3
+ddfast 0 4 7 1 2 -1 3 2
+dddump 0
+end
+case random-194
+dd
+ddsurf 0 3 4 32
+ddsurf 1 10 5 32
+ddfill 0 1363217973
+ddfill 1 1618303159
+ddkey 1 src 0xf6f61792
+ddfast 0 1 1 1 2 1 2 5
+dddump 0
+end
+case random-195
+dd
+ddsurf 0 15 8 555
+ddsurf 1 7 7 555
+ddfill 0 1847833339
+ddfill 1 401016421
+ddkey 0 dest 0xee9e
+ddblt 0 -1 3 7 7 1 -1 -1 7 3 mirrorud
+ddblt 0 7 1 14 8 1 -1 -1 6 6
+ddblt 0 0 4 5 8 1 2 3 7 7
+ddfast 0 -1 1 1 8 0 8 8 destkey
+dddump 0
+end
+case random-196
+dd
+ddsurf 0 9 14 32
+ddsurf 1 10 4 32
+ddfill 0 2973278369
+ddfill 1 11711735
+ddkey 0 dest 0x4e4dee13
+ddblt 0 -1 11 2 15 1 2 0 5 4
+ddblt 0 3 5 10 8 1 4 -1 11 2
+ddblt 0 7 10 10 12 1 8 0 11 2
+ddfast 0 5 2 1 3 -1 8 0
+ddblt 0 4 5 4 9 1 8 0 8 4
+ddblt 0 2 3 3 4 1 0 2 1 3
+dddump 0
+end
+case random-197
+dd
+ddsurf 0 13 4 32
+ddsurf 1 2 1 32
+ddfill 0 3852199589
+ddfill 1 2964212291
+ddkey 1 src 0xec4ccda3
+ddfast 0 7 2 1 -1 -1 1 0
+dddump 0
+end
+case random-198
+dd
+ddsurf 0 3 4 32
+ddsurf 1 12 4 32
+ddfill 0 3565380377
+ddfill 1 2766656105
+ddkey 1 src 0x479f31df
+ddblt 0 0 3 3 4 1 1 4 4 5
+ddblt 0 3 1 4 3 1 12 3 13 5
+dddump 0
+end
+case random-199
+dd
+ddsurf 0 11 6 8
+ddsurf 1 10 9 8
+ddfill 0 2901890073
+ddfill 1 2298123107
+ddkey 0 dest 0xee
+ddblt 0 1 0 7 7 1 1 2 7 9
+ddblt 0 9 1 10 4 1 2 -1 3 2
+ddblt 0 9 -1 10 6 1 10 -1 11 6 keysrcov 0x2a
+dddump 0
+end
+case random-200
+dd
+ddsurf 0 20 9 8
+ddsurf 1 5 1 8
+ddfill 0 2135948703
+ddfill 1 2675163617
+ddkey 1 src 0x70
+ddkey 0 dest 0xf1
+ddblt 0 5 1 6 2 1 -1 1 0 2 mirrorlr mirrorud
+ddblt 0 20 0 20 0 1 0 0 0 0
+dddump 0
+end
+case random-201
+dd
+ddsurf 0 18 4 8
+ddsurf 1 12 3 8
+ddfill 0 2921609509
+ddfill 1 152377637
+ddfast 0 2 1 1 8 0 11 4
+ddblt 0 14 0 16 4 1 3 -1 5 3
+ddfast 0 6 5 1 -1 -1 12 -1
+ddblt 0 2 4 13 5 1 2 2 13 3
+dddump 0
+end
+case random-202
+dd
+ddsurf 0 3 6 8
+ddsurf 1 3 7 8
+ddfill 0 3758211103
+ddfill 1 3628847071
+ddkey 1 src 0x4f
+ddblt 0 0 0 2 2 1 2 3 4 5
+ddblt 0 -1 -1 2 6 1 0 1 3 8
+ddfast 0 -1 -1 1 0 0 4 6
+ddblt 0 1 0 1 7 1 0 0 0 7
+ddblt 0 0 2 2 7 1 0 3 2 8
+ddblt 0 -1 4 3 6 1 0 0 4 2 keysrcov 0x4f
+dddump 0
+end
+case random-203
+dd
+ddsurf 0 15 1 555
+ddsurf 1 9 1 555
+ddfill 0 3590349933
+ddfill 1 2335738955
+ddkey 0 dest 0x577d
+ddblt 0 1 -1 4 0 1 3 0 6 1
+ddblt 0 0 0 2 2 1 4 -1 6 1 keydest
+ddblt 0 2 0 8 1 1 3 -1 9 0
+ddblt 0 1 1 8 2 1 3 -1 10 0
+ddblt 0 4 -1 14 0 1 -1 -1 9 0
+dddump 0
+end
+case random-204
+dd
+ddsurf 0 10 6 8
+ddsurf 1 5 5 8
+ddfill 0 903274027
+ddfill 1 745459011
+ddkey 1 src 0xf6
+ddblt 0 -1 -1 5 5 1 -1 -1 5 5
+ddblt 0 10 1 11 7 1 4 0 5 6
+ddfast 0 -1 5 1 0 1 5 3
+ddblt 0 7 -1 8 2 1 0 -1 1 2 keydestov 0xb0
+ddfast 0 2 0 1 -1 2 4 3
+dddump 0
+end
+case random-205
+dd
+ddsurf 0 17 2 8
+ddsurf 1 14 3 8
+ddfill 0 1344452683
+ddfill 1 3797188671
+ddkey 0 dest 0x9a
+ddblt 0 1 -1 16 1 1 -1 -1 14 1 keysrcov 0x26
+dddump 0
+end
+case random-206
+dd
+ddsurf 0 15 8 8
+ddsurf 1 13 2 8
+ddfill 0 1491906493
+ddfill 1 1853247281
+ddblt 0 1 2 5 2 1 3 0 7 0
+dddump 0
+end
+case random-207
+dd
+ddsurf 0 11 13 555
+ddsurf 1 4 2 555
+ddfill 0 3291477113
+ddfill 1 1857678345
+ddkey 1 src 0x3df2
+ddkey 0 dest 0x64d3
+ddfast 0 3 2 1 -1 -1 4 2
+ddblt 0 6 5 8 7 1 -1 1 1 3
+ddblt 0 9 6 10 6 1 0 1 1 1
+dddump 0
+end
+case random-208
+dd
+ddsurf 0 7 13 555
+ddsurf 1 13 1 555
+ddfill 0 3704565983
+ddfill 1 1615420213
+ddblt 0 1 2 3 4 1 2 -1 4 1 mirrorlr
+ddblt 0 -1 8 7 10 1 3 0 11 2
+ddfast 0 1 6 1 8 -1 13 1
+ddblt 0 0 14 7 14 1 -1 0 6 0
+ddblt 0 0 13 7 14 1 6 1 13 2
+dddump 0
+end
+case random-209
+dd
+ddsurf 0 9 12 565
+ddsurf 1 9 10 565
+ddfill 0 2075722771
+ddfill 1 1012037711
+ddblt 0 1 5 10 12 1 1 1 10 8
+dddump 0
+end
+case random-210
+dd
+ddsurf 0 8 13 565
+ddsurf 1 9 7 565
+ddfill 0 2564239535
+ddfill 1 2795189807
+ddkey 1 src 0x3a4a
+ddfast 0 0 8 1 -1 -1 8 3
+dddump 0
+end
+case random-211
+dd
+ddsurf 0 2 11 555
+ddsurf 1 12 10 555
+ddfill 0 3025796599
+ddfill 1 4144527525
+ddkey 1 src 0x2df
+ddblt 0 0 7 3 11 1 3 -1 6 3 keysrc
+ddfast 0 1 3 1 3 0 5 2
+ddblt 0 -1 4 0 12 1 6 2 7 10 mirrorlr mirrorud
+ddblt 0 2 0 2 3 1 4 0 4 3
+dddump 0
+end
+case random-212
+dd
+ddsurf 0 1 2 8
+ddsurf 1 14 1 8
+ddfill 0 2886347521
+ddfill 1 3290794293
+ddblt 0 2 -1 2 -1 1 12 -1 12 -1
+ddblt 0 0 -1 2 0 1 -1 1 1 2
+dddump 0
+end
+case random-213
+dd
+ddsurf 0 9 2 565
+ddsurf 1 11 5 565
+ddfill 0 4116214255
+ddfill 1 2547542013
+ddfast 0 0 -1 1 -1 0 9 1
+ddfast 0 7 1 1 7 3 9 5
+ddfast 0 4 1 1 7 2 12 4
+ddfast 0 1 -1 1 2 1 11 4
+dddump 0
+end
+case random-214
+dd
+ddsurf 0 19 14 565
+ddsurf 1 13 1 565
+ddfill 0 154630309
+ddfill 1 575864085
+ddkey 0 dest 0xd6ec
+ddblt 0 7 4 20 5 1 0 -1 13 0
+ddfast 0 6 6 1 1 -1 6 0
+ddblt 0 3 2 7 2 1 3 0 7 0
+ddfast 0 -1 -1 1 0 2 14 2
+dddump 0
+end
+case random-215
+dd
+ddsurf 0 9 8 565
+ddsurf 1 13 9 565
+ddfill 0 3775653001
+ddfill 1 785375973
+ddkey 1 src 0xe406
+ddkey 0 dest 0x6dd0
+ddblt 0 7 -1 7 5 1 9 -1 9 5 keysrc
+ddblt 0 3 0 9 7 1 8 3 14 10 keydest
+ddblt 0 -1 5 7 8 1 3 -1 11 2
+ddblt 0 -1 -1 3 -1 1 3 5 7 5
+ddfast 0 1 2 1 1 8 7 8 srckey
+ddfast 0 5 0 1 5 -1 9 7
+dddump 0
+end
+case random-216
+dd
+ddsurf 0 17 5 8
+ddsurf 1 4 6 8
+ddfill 0 4083751693
+ddfill 1 3507663401
+ddkey 1 src 0x35
+ddkey 0 dest 0xb1
+ddblt 0 -1 2 -1 5 1 5 -1 5 2
+dddump 0
+end
+case random-217
+dd
+ddsurf 0 10 5 555
+ddsurf 1 14 6 555
+ddfill 0 2657303109
+ddfill 1 3696434417
+ddkey 1 src 0xdfef
+ddkey 0 dest 0x4a72
+ddblt 0 0 0 8 5 1 5 2 13 7
+ddfast 0 0 -1 1 10 4 15 4
+ddblt 0 1 0 6 1 1 6 1 11 2 keydest
+ddblt 0 3 0 4 5 1 14 -1 15 4 keysrcov 0xdfef
+ddblt 0 5 -1 7 1 1 5 1 7 3 keydestov 0x4a72
+ddfast 0 4 1 1 2 -1 6 4
+dddump 0
+end
+case random-218
+dd
+ddsurf 0 15 8 8
+ddsurf 1 10 2 8
+ddfill 0 3503592843
+ddfill 1 249512857
+ddkey 1 src 0x1b
+ddblt 0 -1 9 5 9 1 1 -1 7 -1 keydestov 0x71
+ddblt 0 0 4 3 7 1 6 0 9 3 keysrc
+ddfast 0 7 6 1 2 0 6 0
+ddfast 0 10 2 1 3 2 5 2
+ddblt 0 -1 6 3 8 1 -1 1 3 3
+dddump 0
+end
+case random-219
+dd
+ddsurf 0 9 6 555
+ddsurf 1 11 5 555
+ddfill 0 3646993749
+ddfill 1 914359441
+ddblt 0 3 4 4 5 1 4 2 5 3 mirrorud
+ddblt 0 2 0 8 1 1 6 5 12 6
+ddblt 0 0 -1 9 5 1 2 0 11 6
+dddump 0
+end
+case random-220
+dd
+ddsurf 0 17 1 565
+ddsurf 1 11 10 565
+ddfill 0 1463004851
+ddfill 1 2120099809
+ddkey 0 dest 0x7ad2
+ddblt 0 11 -1 18 0 1 1 3 8 4 mirrorlr
+ddblt 0 0 -1 9 1 1 2 3 11 5 keysrcov 0xe67b
+ddfast 0 1 0 1 0 0 8 2
+ddblt 0 8 -1 15 0 1 -1 6 6 7
+ddblt 0 -1 1 9 1 1 -1 10 9 10
+dddump 0
+end
+case random-221
+dd
+ddsurf 0 3 5 32
+ddsurf 1 7 8 32
+ddfill 0 4184935569
+ddfill 1 3297737921
+ddkey 1 src 0xc4bb5347
+ddkey 0 dest 0x83ca2dc9
+ddblt 0 0 0 0 6 1 1 1 1 7 keydestov 0x83ca2dc9
+ddblt 0 0 4 1 5 1 2 4 3 5
+ddblt 0 0 4 1 5 1 4 6 5 7 keydestov 0x83ca2dc9
+dddump 0
+end
+case random-222
+dd
+ddsurf 0 5 4 32
+ddsurf 1 13 4 32
+ddfill 0 2150841967
+ddfill 1 405749681
+ddkey 1 src 0x91e0c611
+ddkey 0 dest 0x11056663
+ddfast 0 -1 2 1 -1 -1 5 2
+ddblt 0 -1 1 1 5 1 7 -1 9 3 keysrc
+ddblt 0 0 2 3 3 1 11 2 14 3
+ddfast 0 0 -1 1 8 -1 14 0
+ddblt 0 3 -1 6 4 1 5 -1 8 4 keysrcov 0x91e0c611
+dddump 0
+end
+case random-223
+dd
+ddsurf 0 19 13 565
+ddsurf 1 3 7 565
+ddfill 0 2243219799
+ddfill 1 3965570489
+ddblt 0 16 1 18 2 1 2 0 4 1 keydestov 0x2a09
+ddfast 0 7 6 1 0 1 3 8
+ddfast 0 19 3 1 4 -1 4 6
+ddblt 0 16 3 17 11 1 3 0 4 8
+ddfast 0 12 6 1 -1 5 2 5
+dddump 0
+end
+case random-224
+dd
+ddsurf 0 8 1 565
+ddsurf 1 13 1 565
+ddfill 0 3844214539
+ddfill 1 1017417771
+ddkey 0 dest 0xb533
+ddblt 0 -1 0 6 1 1 5 -1 12 0
+ddblt 0 1 -1 6 1 1 6 -1 11 1
+ddblt 0 0 -1 9 0 1 0 0 9 1
+ddfast 0 4 1 1 6 -1 10 0
+ddfast 0 0 -1 1 8 1 14 2
+dddump 0
+end
+case random-225
+dd
+ddsurf 0 8 10 8
+ddsurf 1 7 8 8
+ddfill 0 3321947919
+ddfill 1 2261255615
+ddkey 1 src 0x23
+ddkey 0 dest 0x96
+ddfast 0 4 3 1 4 3 8 3
+ddfast 0 1 4 1 5 1 8 7 srckey
+dddump 0
+end
+case random-226
+dd
+ddsurf 0 15 9 8
+ddsurf 1 5 2 8
+ddfill 0 670231425
+ddfill 1 719072961
+ddkey 0 dest 0x7b
+ddblt 0 0 5 3 6 1 -1 2 2 3 keysrcov 0xd4
+ddblt 0 13 4 16 7 1 -1 -1 2 2 keysrcov 0xd4
+ddfast 0 7 6 1 -1 1 1 3
+dddump 0
+end
+case random-227
+dd
+ddsurf 0 13 12 565
+ddsurf 1 14 10 565
+ddfill 0 2160767285
+ddfill 1 191304195
+ddkey 1 src 0x768a
+ddblt 0 8 -1 14 10 1 7 -1 13 10
+dddump 0
+end
+case random-228
+dd
+ddsurf 0 11 10 8
+ddsurf 1 1 2 8
+ddfill 0 450610933
+ddfill 1 581667127
+ddblt 0 6 6 7 9 1 0 -1 1 2
+ddblt 0 2 2 4 4 1 0 -1 2 1 mirrorlr
+ddblt 0 -1 6 -1 6 1 -1 1 -1 1 keysrcov 0xee
+ddblt 0 6 8 7 8 1 1 0 2 0
+dddump 0
+end
+case random-229
+dd
+ddsurf 0 11 3 565
+ddsurf 1 5 9 565
+ddfill 0 192323269
+ddfill 1 3445629171
+ddkey 0 dest 0x452b
+ddblt 0 1 0 5 1 1 0 -1 4 0
+ddblt 0 1 2 6 4 1 0 2 5 4 mirrorlr mirrorud
+ddfast 0 0 4 1 3 8 3 8
+ddblt 0 0 0 1 4 1 1 5 2 9
+ddfast 0 5 0 1 0 7 5 10
+dddump 0
+end
+case random-230
+dd
+ddsurf 0 5 5 565
+ddsurf 1 8 2 565
+ddfill 0 1495820305
+ddfill 1 3513131653
+ddkey 1 src 0xb196
+ddfast 0 -1 -1 1 3 0 8 3 srckey
+ddblt 0 1 -1 4 -1 1 3 1 6 1
+ddfast 0 2 0 1 2 1 3 3
+dddump 0
+end
+case random-231
+dd
+ddsurf 0 9 9 555
+ddsurf 1 8 4 555
+ddfill 0 2277422683
+ddfill 1 2143953601
+ddkey 1 src 0x8
+ddkey 0 dest 0x9870
+ddfast 0 6 10 1 5 5 6 5 srckey
+ddblt 0 0 3 1 3 1 0 -1 1 -1 keydestov 0x9870
+ddblt 0 0 6 8 9 1 1 1 9 4
+dddump 0
+end
+case random-232
+dd
+ddsurf 0 1 13 8
+ddsurf 1 3 7 8
+ddfill 0 2068590459
+ddfill 1 717296971
+ddkey 0 dest 0x6a
+ddblt 0 0 0 2 0 1 0 -1 2 -1 keydestov 0x6a
+ddblt 0 -1 13 1 13 1 0 5 2 5 mirrorud
+ddblt 0 -1 4 1 5 1 1 -1 3 0
+ddblt 0 1 2 1 10 1 -1 0 -1 8 mirrorud
+ddblt 0 -1 3 -1 5 1 1 0 1 2
+ddblt 0 -1 3 0 4 1 3 1 4 2
+dddump 0
+end
+case random-233
+dd
+ddsurf 0 5 2 565
+ddsurf 1 1 5 565
+ddfill 0 3016782709
+ddfill 1 174790859
+ddkey 1 src 0xc32
+ddkey 0 dest 0xb216
+ddblt 0 0 -1 1 0 1 -1 1 0 2 keydest
+dddump 0
+end
+case random-234
+dd
+ddsurf 0 9 2 555
+ddsurf 1 8 10 555
+ddfill 0 3061010365
+ddfill 1 789622719
+ddkey 1 src 0x910e
+ddkey 0 dest 0xb8d7
+ddblt 0 1 -1 10 1 1 -1 7 8 9 keydest
+ddblt 0 1 0 9 2 1 0 9 8 11 keysrc
+dddump 0
+end
+case random-235
+dd
+ddsurf 0 1 14 8
+ddsurf 1 9 8 8
+ddfill 0 2735473197
+ddfill 1 1249632905
+ddblt 0 2 3 2 4 1 10 4 10 5
+ddblt 0 1 10 1 15 1 8 4 8 9 mirrorlr mirrorud
+ddfast 0 0 11 1 8 5 9 9
+ddfast 0 0 3 1 1 3 1 9
+ddblt 0 -1 3 1 6 1 3 2 5 5
+ddblt 0 -1 6 -1 15 1 2 -1 2 8
+dddump 0
+end
+case random-236
+dd
+ddsurf 0 12 6 565
+ddsurf 1 4 7 565
+ddfill 0 2927764161
+ddfill 1 2979045901
+ddfast 0 5 4 1 -1 1 -1 3
+ddblt 0 -1 2 2 5 1 2 4 5 7
+ddblt 0 8 0 12 4 1 0 2 4 6
+dddump 0
+end
+case random-237
+dd
+ddsurf 0 7 12 32
+ddsurf 1 5 4 32
+ddfill 0 3784988303
+ddfill 1 3258418795
+ddblt 0 -1 7 5 12 1 0 -1 6 4
+ddfast 0 0 -1 1 1 0 3 3
+ddblt 0 4 4 5 7 1 1 1 2 4 keydestov 0x48323acd
+ddblt 0 5 7 7 11 1 -1 -1 1 3
+ddblt 0 1 8 5 9 1 -1 0 3 1 keysrcov 0xe16c85d4
+dddump 0
+end
+case random-238
+dd
+ddsurf 0 1 10 32
+ddsurf 1 14 1 32
+ddfill 0 2834149571
+ddfill 1 3226077369
+ddkey 0 dest 0x654baed1
+ddblt 0 -1 10 1 10 1 13 2 15 2
+ddblt 0 -1 3 1 3 1 9 2 11 2
+ddfast 0 1 7 1 12 1 13 2 destkey
+ddblt 0 -1 -1 0 0 1 10 1 11 2
+dddump 0
+end
+case random-239
+dd
+ddsurf 0 14 3 555
+ddsurf 1 12 8 555
+ddfill 0 3570377343
+ddfill 1 814355935
+ddblt 0 8 -1 14 2 1 0 2 6 5 keydestov 0x3cf9
+ddblt 0 -1 3 3 4 1 9 7 13 8
+ddblt 0 1 -1 13 1 1 -1 7 11 9 keydestov 0x3cf9
+dddump 0
+end
+case random-240
+dd
+ddsurf 0 1 1 8
+ddsurf 1 13 6 8
+ddfill 0 1191028487
+ddfill 1 2982076169
+ddkey 0 dest 0x29
+ddblt 0 0 1 1 1 1 4 1 5 1 mirrorlr mirrorud
+ddblt 0 -1 0 -1 1 1 3 6 3 7 keysrcov 0xd4
+ddblt 0 1 0 2 1 1 9 0 10 1 keydest
+dddump 0
+end
+case random-241
+dd
+ddsurf 0 12 1 8
+ddsurf 1 2 1 8
+ddfill 0 823243865
+ddfill 1 4106773781
+ddblt 0 5 -1 6 1 1 -1 0 0 2 keysrcov 0xec
+ddblt 0 11 0 12 2 1 -1 -1 0 1 keysrcov 0xec
+dddump 0
+end
+case random-242
+dd
+ddsurf 0 18 1 32
+ddsurf 1 8 2 32
+ddfill 0 853714523
+ddfill 1 2735963279
+ddkey 1 src 0xd2a579dc
+ddblt 0 7 0 15 0 1 -1 1 7 1 keysrc
+ddblt 0 7 -1 12 0 1 0 1 5 2 keysrc
+ddfast 0 11 1 1 2 2 4 3
+dddump 0
+end
+case random-243
+dd
+ddsurf 0 7 6 32
+ddsurf 1 12 3 32
+ddfill 0 3399617227
+ddfill 1 4103793111
+ddfast 0 -1 0 1 0 1 8 3
+dddump 0
+end
+case random-244
+dd
+ddsurf 0 3 14 555
+ddsurf 1 7 4 555
+ddfill 0 2481582299
+ddfill 1 329908835
+ddblt 0 0 0 0 1 1 3 4 3 5 keysrcov 0x27c2
+ddblt 0 0 5 2 6 1 2 1 4 2
+ddblt 0 0 12 4 15 1 2 -1 6 2
+ddfast 0 0 5 1 4 1 5 2
+dddump 0
+end
+case random-245
+dd
+ddsurf 0 20 6 8
+ddsurf 1 10 10 8
+ddfill 0 3774421181
+ddfill 1 3190935595
+ddkey 0 dest 0x1f
+ddfast 0 3 2 1 2 0 8 2
+ddfast 0 3 0 1 2 1 7 7
+dddump 0
+end
+case random-246
+dd
+ddsurf 0 12 11 8
+ddsurf 1 1 4 8
+ddfill 0 2560297435
+ddfill 1 3449992299
+ddkey 1 src 0xd5
+ddblt 0 3 9 5 10 1 0 2 2 3 keysrc
+ddfast 0 12 9 1 2 1 2 2
+ddblt 0 12 -1 13 2 1 0 -1 1 2
+ddblt 0 1 10 1 11 1 1 -1 1 0 mirrorlr mirrorud
+ddblt 0 -1 -1 1 4 1 -1 0 1 5 keysrcov 0xd5
+dddump 0
+end
+case random-247
+dd
+ddsurf 0 7 9 32
+ddsurf 1 7 7 32
+ddfill 0 345301619
+ddfill 1 2475042303
+ddkey 1 src 0x30c71dc3
+ddblt 0 0 7 0 8 1 4 0 4 1 keysrc
+ddblt 0 1 5 8 8 1 1 3 8 6 keysrcov 0x30c71dc3
+dddump 0
+end
+case random-248
+dd
+ddsurf 0 19 9 565
+ddsurf 1 7 8 565
+ddfill 0 1234531741
+ddfill 1 66471919
+ddkey 1 src 0xc7c2
+ddkey 0 dest 0xda1e
+ddblt 0 0 3 1 10 1 7 -1 8 6 keydestov 0xda1e
+ddfast 0 16 3 1 3 2 3 2
+dddump 0
+end
+case random-249
+dd
+ddsurf 0 4 7 555
+ddsurf 1 5 10 555
+ddfill 0 2114361899
+ddfill 1 87440843
+ddkey 1 src 0xb848
+ddkey 0 dest 0x8fc0
+ddblt 0 1 7 1 7 1 -1 1 -1 1
+ddblt 0 -1 2 1 6 1 3 6 5 10
+ddfast 0 3 2 1 4 2 5 2
+ddblt 0 0 2 2 8 1 -1 0 1 6
+dddump 0
+end
+case random-250
+dd
+ddsurf 0 4 4 32
+ddsurf 1 10 7 32
+ddfill 0 102790281
+ddfill 1 513764049
+ddfast 0 3 1 1 6 0 6 4
+ddblt 0 2 0 3 1 1 1 0 2 1 keysrcov 0xed346a3
+ddblt 0 -1 -1 2 3 1 8 3 11 7 keydestov 0x1d792f60
+ddfast 0 0 2 1 4 4 7 7
+ddblt 0 0 -1 5 0 1 -1 6 4 7
+dddump 0
+end
+case random-251
+dd
+ddsurf 0 9 10 8
+ddsurf 1 1 4 8
+ddfill 0 3388775089
+ddfill 1 267938661
+ddblt 0 -1 -1 1 1 1 -1 0 1 2
+ddfast 0 7 6 1 1 0 1 5
+ddblt 0 1 8 1 9 1 0 4 0 5
+ddblt 0 4 10 5 10 1 1 3 2 3
+ddblt 0 3 0 5 4 1 0 0 2 4
+ddblt 0 3 6 3 11 1 0 -1 0 4 mirrorud
+dddump 0
+end
+case random-252
+dd
+ddsurf 0 17 13 32
+ddsurf 1 10 5 32
+ddfill 0 282489759
+ddfill 1 169755981
+ddkey 1 src 0xb20d2883
+ddblt 0 6 4 7 9 1 7 1 8 6 mirrorud
+dddump 0
+end
+case random-253
+dd
+ddsurf 0 8 9 8
+ddsurf 1 9 1 8
+ddfill 0 2481252335
+ddfill 1 3963431971
+ddkey 1 src 0xe0
+ddfast 0 1 10 1 2 -1 8 -1
+dddump 0
+end
+case random-254
+dd
+ddsurf 0 15 7 555
+ddsurf 1 4 8 555
+ddfill 0 690544971
+ddfill 1 2503140011
+ddkey 1 src 0xc138
+ddkey 0 dest 0x50b3
+ddblt 0 6 0 9 8 1 2 1 5 9 keysrcov 0xc138
+ddfast 0 6 1 1 -1 1 4 8 destkey
+ddfast 0 8 -1 1 0 1 5 8
+ddfast 0 8 0 1 0 6 5 7
+dddump 0
+end
+case random-255
+dd
+ddsurf 0 18 4 555
+ddsurf 1 11 4 555
+ddfill 0 3494291663
+ddfill 1 2930910785
+ddkey 0 dest 0x2b8d
+ddblt 0 8 3 17 4 1 0 1 9 2 keydest
+dddump 0
+end
+case random-256
+dd
+ddsurf 0 8 5 8
+ddsurf 1 9 8 8
+ddfill 0 905164367
+ddfill 1 611364275
+ddblt 0 0 3 9 3 1 -1 6 8 6
+ddfast 0 4 0 1 0 1 2 7
+dddump 0
+end
+case random-257
+dd
+ddsurf 0 6 6 32
+ddsurf 1 14 4 32
+ddfill 0 2769819753
+ddfill 1 1690052387
+ddkey 1 src 0x267ec829
+ddfast 0 0 5 1 1 5 8 5
+ddblt 0 3 0 6 5 1 5 -1 8 4
+ddblt 0 1 0 7 5 1 0 0 6 5
+ddblt 0 0 1 7 1 1 6 1 13 1
+dddump 0
+end
+case random-258
+dd
+ddsurf 0 4 12 8
+ddsurf 1 6 4 8
+ddfill 0 2812699003
+ddfill 1 447447935
+ddkey 1 src 0x37
+ddblt 0 2 9 5 11 1 -1 3 2 5
+dddump 0
+end
+case random-259
+dd
+ddsurf 0 15 2 32
+ddsurf 1 9 4 32
+ddfill 0 479633985
+ddfill 1 3540386767
+ddkey 1 src 0xa50e1a5f
+ddblt 0 3 0 12 0 1 0 1 9 1 keysrc
+dddump 0
+end
+case random-260
+dd
+ddsurf 0 8 10 565
+ddsurf 1 5 7 565
+ddfill 0 3739103151
+ddfill 1 2119402875
+ddkey 1 src 0x94e9
+ddblt 0 6 1 7 9 1 4 -1 5 7
+ddfast 0 4 6 1 -1 -1 4 0
+ddblt 0 -1 4 2 6 1 3 3 6 5 mirrorud
+ddblt 0 2 -1 4 4 1 -1 3 1 8 keydestov 0x91ab
+dddump 0
+end
+case random-261
+dd
+ddsurf 0 2 10 555
+ddsurf 1 14 1 555
+ddfill 0 3261495441
+ddfill 1 2751437643
+ddkey 1 src 0xa2b6
+ddfast 0 0 3 1 8 0 8 2
+dddump 0
+end
+case random-262
+dd
+ddsurf 0 9 7 8
+ddsurf 1 7 10 8
+ddfill 0 4278100663
+ddfill 1 2141621155
+ddkey 0 dest 0x7f
+ddblt 0 4 2 9 6 1 1 0 6 4
+dddump 0
+end
+case random-263
+dd
+ddsurf 0 4 6 8
+ddsurf 1 12 5 8
+ddfill 0 1658907551
+ddfill 1 2381422263
+ddkey 1 src 0x8f
+ddkey 0 dest 0x68
+ddblt 0 -1 0 1 6 1 4 -1 6 5
+ddblt 0 4 0 5 3 1 11 -1 12 2 keydestov 0x68
+ddblt 0 0 3 1 3 1 7 1 8 1 keysrcov 0x8f
+ddfast 0 1 2 1 -1 1 0 2
+ddblt 0 0 0 2 4 1 1 1 3 5 keydestov 0x68
+ddblt 0 4 -1 4 2 1 1 3 1 6
+dddump 0
+end
+case random-264
+dd
+ddsurf 0 9 10 555
+ddsurf 1 8 7 555
+ddfill 0 2710326467
+ddfill 1 714285545
+ddblt 0 1 5 10 9 1 -1 2 8 6
+ddblt 0 1 5 7 7 1 0 5 6 7
+ddblt 0 -1 -1 5 4 1 3 2 9 7
+ddblt 0 1 2 10 10 1 -1 -1 8 7 mirrorlr mirrorud
+dddump 0
+end
+case random-265
+dd
+ddsurf 0 18 14 565
+ddsurf 1 11 4 565
+ddfill 0 275952041
+ddfill 1 2394276843
+ddblt 0 13 4 15 7 1 3 2 5 5
+ddblt 0 4 7 9 7 1 5 3 10 3 mirrorud
+dddump 0
+end
+case random-266
+dd
+ddsurf 0 2 2 8
+ddsurf 1 12 3 8
+ddfill 0 2821106919
+ddfill 1 3405002107
+ddblt 0 0 -1 0 2 1 2 1 2 4
+ddfast 0 -1 -1 1 5 3 8 4
+ddblt 0 1 0 3 1 1 4 1 6 2
+ddblt 0 1 0 3 3 1 8 1 10 4
+ddfast 0 0 0 1 6 0 7 3
+ddfast 0 1 3 1 1 0 2 0
+dddump 0
+end
+case random-267
+dd
+ddsurf 0 4 13 555
+ddsurf 1 2 6 555
+ddfill 0 1600859443
+ddfill 1 1667463893
+ddblt 0 3 9 5 13 1 1 1 3 5
+ddfast 0 2 13 1 0 5 3 5
+ddblt 0 1 7 3 11 1 -1 2 1 6 keysrcov 0x7254
+ddblt 0 2 5 4 9 1 0 2 2 6
+ddfast 0 2 0 1 -1 1 1 4
+ddblt 0 3 -1 4 6 1 2 0 3 7 keydestov 0xe0a2
+dddump 0
+end
+case random-268
+dd
+ddsurf 0 4 13 32
+ddsurf 1 6 5 32
+ddfill 0 745926699
+ddfill 1 3698064243
+ddkey 1 src 0x73ea50fc
+ddblt 0 -1 0 3 0 1 3 2 7 2 keydestov 0x8acbd3fe
+dddump 0
+end
+case random-269
+dd
+ddsurf 0 9 14 565
+ddsurf 1 8 3 565
+ddfill 0 3508093421
+ddfill 1 3719500479
+ddfast 0 1 9 1 1 1 7 2
+ddblt 0 -1 10 2 10 1 4 2 7 2
+ddblt 0 1 15 2 15 1 1 0 2 0 keysrcov 0x8d61
+ddfast 0 7 0 1 7 -1 8 -1
+ddfast 0 0 2 1 0 0 5 4
+ddblt 0 1 3 2 4 1 2 0 3 1 keysrcov 0x8d61
+dddump 0
+end
+case random-270
+dd
+ddsurf 0 8 13 565
+ddsurf 1 2 6 565
+ddfill 0 2924234891
+ddfill 1 3439230885
+ddkey 0 dest 0xd40a
+ddfast 0 6 -1 1 0 0 2 5 destkey
+dddump 0
+end
+case random-271
+dd
+ddsurf 0 15 7 32
+ddsurf 1 5 8 32
+ddfill 0 3139783265
+ddfill 1 1598360053
+ddkey 1 src 0x51276819
+ddkey 0 dest 0x81aeba8a
+ddblt 0 3 1 9 7 1 0 2 6 8 keysrc
+ddblt 0 7 1 8 5 1 5 1 6 5 keydest
+ddblt 0 -1 0 3 3 1 2 5 6 8
+ddfast 0 9 1 1 -1 1 5 4
+ddfast 0 -1 2 1 -1 -1 4 3
+ddblt 0 7 6 13 7 1 0 8 6 9 mirrorud
+dddump 0
+end
+case random-272
+dd
+ddsurf 0 2 9 555
+ddsurf 1 8 1 555
+ddfill 0 2871095741
+ddfill 1 667219447
+ddblt 0 0 5 1 5 1 2 0 3 0 mirrorlr
+ddfast 0 2 7 1 2 0 2 2
+dddump 0
+end
+case random-273
+dd
+ddsurf 0 2 12 32
+ddsurf 1 11 3 32
+ddfill 0 3843073773
+ddfill 1 3362168651
+ddkey 0 dest 0xa9fe33b2
+ddfast 0 0 3 1 6 0 9 4
+ddblt 0 1 -1 3 -1 1 4 -1 6 -1
+ddfast 0 -1 -1 1 1 -1 2 3 destkey
+ddblt 0 0 7 3 11 1 3 -1 6 3
+ddblt 0 3 7 3 9 1 8 0 8 2 keydest
+ddblt 0 2 11 3 13 1 10 1 11 3
+dddump 0
+end
+case random-274
+dd
+ddsurf 0 5 2 32
+ddsurf 1 5 4 32
+ddfill 0 1082358015
+ddfill 1 3691866385
+ddkey 1 src 0x5b118b80
+ddblt 0 3 -1 3 1 1 -1 1 -1 3
+ddblt 0 3 1 4 2 1 3 1 4 2
+ddblt 0 3 1 4 3 1 1 3 2 5 mirrorud
+dddump 0
+end
+case random-275
+dd
+ddsurf 0 9 4 565
+ddsurf 1 7 2 565
+ddfill 0 3543732071
+ddfill 1 2825090957
+ddkey 1 src 0x2b31
+ddkey 0 dest 0xa9ab
+ddblt 0 0 5 4 5 1 -1 1 3 1 mirrorlr mirrorud
+dddump 0
+end
+case random-276
+dd
+ddsurf 0 11 10 555
+ddsurf 1 11 10 555
+ddfill 0 3047977069
+ddfill 1 1335392797
+ddkey 1 src 0x5dc1
+ddfast 0 3 0 1 2 0 11 9
+ddfast 0 -1 2 1 8 0 11 3
+ddblt 0 8 3 8 8 1 7 6 7 11
+dddump 0
+end
+case random-277
+dd
+ddsurf 0 10 11 555
+ddsurf 1 1 7 555
+ddfill 0 2358944245
+ddfill 1 3425294663
+ddkey 1 src 0x9b8a
+ddfast 0 3 7 1 2 1 2 4
+dddump 0
+end
+case random-278
+dd
+ddsurf 0 10 6 555
+ddsurf 1 12 9 555
+ddfill 0 1968480367
+ddfill 1 3397331107
+ddfast 0 0 3 1 -1 2 10 6
+ddfast 0 4 1 1 6 1 10 7
+ddfast 0 7 3 1 1 5 4 9
+ddblt 0 1 0 10 5 1 2 1 11 6
+ddblt 0 2 2 6 5 1 -1 0 3 3 mirrorlr mirrorud
+ddfast 0 -1 -1 1 -1 4 9 9
+dddump 0
+end
+case random-279
+dd
+ddsurf 0 8 7 32
+ddsurf 1 13 3 32
+ddfill 0 181945687
+ddfill 1 1277569455
+ddkey 1 src 0xdc4dd1ce
+ddblt 0 7 8 7 8 1 9 0 9 0 keydestov 0x9fbf3217
+ddfast 0 -1 1 1 9 1 11 2 srckey
+dddump 0
+end
+case random-280
+dd
+ddsurf 0 6 1 8
+ddsurf 1 2 3 8
+ddfill 0 54602105
+ddfill 1 3953750959
+ddkey 1 src 0x7c
+ddkey 0 dest 0xcc
+ddblt 0 -1 1 0 2 1 0 0 1 1
+dddump 0
+end
+case random-281
+dd
+ddsurf 0 5 7 8
+ddsurf 1 9 2 8
+ddfill 0 861069917
+ddfill 1 2352467953
+ddblt 0 -1 7 3 8 1 0 1 4 2
+ddfast 0 4 7 1 1 2 2 3
+ddblt 0 0 1 1 2 1 5 2 6 3
+ddfast 0 2 1 1 3 1 7 1
+dddump 0
+end
+case random-282
+dd
+ddsurf 0 7 1 8
+ddsurf 1 12 6 8
+ddfill 0 663334271
+ddfill 1 1458235853
+ddkey 0 dest 0xe1
+ddblt 0 1 0 8 2 1 6 -1 13 1 mirrorud
+ddblt 0 -1 -1 2 -1 1 0 3 3 3
+ddblt 0 0 1 1 2 1 6 6 7 7 keysrcov 0x5
+ddblt 0 0 1 3 2 1 4 1 7 2 keydest
+ddfast 0 3 0 1 3 2 6 3
+dddump 0
+end
+case random-283
+dd
+ddsurf 0 14 5 32
+ddsurf 1 1 5 32
+ddfill 0 1424013639
+ddfill 1 985877731
+ddkey 0 dest 0xc24cd9db
+ddblt 0 1 4 2 5 1 1 0 2 1
+ddfast 0 9 -1 1 0 4 1 5
+dddump 0
+end
+case random-284
+dd
+ddsurf 0 8 10 32
+ddsurf 1 4 6 32
+ddfill 0 2281014109
+ddfill 1 3294431987
+ddkey 0 dest 0x6f3bccbf
+ddfast 0 4 4 1 0 1 2 7
+ddfast 0 2 0 1 -1 3 0 7
+ddblt 0 3 5 3 11 1 4 0 4 6 keysrcov 0x41edfd
+ddblt 0 5 6 7 10 1 2 2 4 6
+dddump 0
+end
+case random-285
+dd
+ddsurf 0 4 9 555
+ddsurf 1 12 4 555
+ddfill 0 255460333
+ddfill 1 2813537711
+ddkey 1 src 0x91bc
+ddkey 0 dest 0xdbf5
+ddfast 0 2 0 1 1 0 2 4
+ddblt 0 1 0 4 5 1 -1 -1 2 4
+dddump 0
+end
+case random-286
+dd
+ddsurf 0 19 6 32
+ddsurf 1 9 6 32
+ddfill 0 1857842397
+ddfill 1 2278560911
+ddfast 0 11 -1 1 1 -1 4 6
+ddblt 0 1 -1 10 1 1 1 1 10 3
+ddblt 0 11 1 16 6 1 0 -1 5 4 keysrcov 0xb3103dc9
+ddfast 0 1 -1 1 -1 0 9 6
+ddblt 0 6 3 7 7 1 3 3 4 7 mirrorud
+dddump 0
+end
+case random-287
+dd
+ddsurf 0 8 11 555
+ddsurf 1 6 6 555
+ddfill 0 3370961027
+ddfill 1 1852354557
+ddkey 0 dest 0x6ecc
+ddblt 0 0 9 6 10 1 1 4 7 5
+ddblt 0 -1 0 5 5 1 1 2 7 7 keydestov 0x6ecc
+ddblt 0 5 3 7 9 1 3 0 5 6 mirrorlr mirrorud
+dddump 0
+end
+case random-288
+dd
+ddsurf 0 17 7 32
+ddsurf 1 9 10 32
+ddfill 0 711193229
+ddfill 1 3531434517
+ddkey 1 src 0x8be825bd
+ddblt 0 10 0 15 8 1 5 3 10 11 keydestov 0xd98317db
+ddblt 0 6 4 16 4 1 -1 7 9 7
+ddfast 0 8 6 1 2 3 9 3
+dddump 0
+end
+case random-289
+dd
+ddsurf 0 10 13 565
+ddsurf 1 3 8 565
+ddfill 0 2994044845
+ddfill 1 2912869613
+ddkey 1 src 0xe803
+ddblt 0 4 6 8 13 1 -1 0 3 7 keysrcov 0xe803
+ddblt 0 5 8 6 11 1 2 3 3 6 mirrorlr
+ddfast 0 8 7 1 -1 2 2 7
+ddblt 0 5 9 6 11 1 2 6 3 8 keydestov 0xc638
+dddump 0
+end
+case random-290
+dd
+ddsurf 0 11 3 565
+ddsurf 1 2 8 565
+ddfill 0 847134797
+ddfill 1 3028562871
+ddkey 1 src 0x77e5
+ddfast 0 11 -1 1 1 1 1 1
+ddfast 0 -1 0 1 0 1 1 3
+dddump 0
+end
+case random-291
+dd
+ddsurf 0 12 8 32
+ddsurf 1 7 7 32
+ddfill 0 308942809
+ddfill 1 1119022513
+ddfast 0 6 3 1 5 0 6 5
+dddump 0
+end
+case random-292
+dd
+ddsurf 0 10 14 8
+ddsurf 1 9 8 8
+ddfill 0 3742742763
+ddfill 1 1763012879
+ddkey 1 src 0xbb
+ddblt 0 1 5 10 6 1 -1 2 8 3
+ddblt 0 1 8 8 12 1 -1 3 6 7
+ddblt 0 8 2 9 11 1 7 -1 8 8 keydestov 0xcb
+ddblt 0 -1 6 1 14 1 4 -1 6 7 keysrcov 0xbb
+ddblt 0 5 8 9 11 1 5 3 9 6
+dddump 0
+end
+case random-293
+dd
+ddsurf 0 17 9 8
+ddsurf 1 13 6 8
+ddfill 0 3744420453
+ddfill 1 2568671861
+ddkey 0 dest 0xeb
+ddfast 0 -1 6 1 0 4 12 6
+ddblt 0 4 0 14 7 1 -1 -1 9 6 keydest
+ddblt 0 0 4 2 8 1 5 0 7 4
+dddump 0
+end
+case random-294
+dd
+ddsurf 0 5 9 555
+ddsurf 1 1 3 555
+ddfill 0 3161604389
+ddfill 1 2122439407
+ddkey 1 src 0xc21
+ddblt 0 1 0 1 2 1 -1 0 -1 2 keysrcov 0xc21
+ddblt 0 1 9 2 10 1 -1 2 0 3
+ddblt 0 4 1 5 1 1 1 4 2 4 mirrorud
+ddfast 0 4 1 1 -1 -1 0 3
+ddblt 0 1 6 2 10 1 1 -1 2 3
+dddump 0
+end
+case random-295
+dd
+ddsurf 0 5 6 555
+ddsurf 1 5 7 555
+ddfill 0 2434366619
+ddfill 1 1875253311
+ddfast 0 0 3 1 0 5 6 8
+ddblt 0 1 2 5 7 1 0 0 4 5
+ddblt 0 3 1 4 1 1 5 2 6 2 keydestov 0xa2ad
+dddump 0
+end
+case random-296
+dd
+ddsurf 0 2 6 8
+ddsurf 1 2 9 8
+ddfill 0 4229290997
+ddfill 1 2852147265
+ddfast 0 2 1 1 -1 0 0 1
+dddump 0
+end
+case random-297
+dd
+ddsurf 0 11 7 555
+ddsurf 1 7 9 555
+ddfill 0 2359326833
+ddfill 1 4134350183
+ddblt 0 0 1 8 6 1 0 -1 8 4
+ddfast 0 4 -1 1 -1 0 5 8
+dddump 0
+end
+case random-298
+dd
+ddsurf 0 4 9 8
+ddsurf 1 8 4 8
+ddfill 0 528027733
+ddfill 1 2466673517
+ddfast 0 0 6 1 3 3 8 5
+ddblt 0 2 7 5 7 1 4 0 7 0
+ddblt 0 -1 9 3 9 1 4 2 8 2
+ddblt 0 -1 5 2 6 1 5 2 8 3
+ddfast 0 0 3 1 -1 0 4 5
+ddblt 0 4 8 5 10 1 2 -1 3 1 keydestov 0x21
+dddump 0
+end
+case random-299
+dd
+ddsurf 0 7 7 32
+ddsurf 1 3 5 32
+ddfill 0 2716768751
+ddfill 1 683634791
+ddkey 1 src 0x8e0c72c5
+ddkey 0 dest 0xf1c704d6
+ddblt 0 2 5 5 5 1 1 0 4 0 keydestov 0xf1c704d6
+ddblt 0 4 1 7 2 1 0 -1 3 0 mirrorud
+dddump 0
+end
+case edge-stretch
+dd
+ddsurf 0 12 9 32
+ddsurf 1 5 3 32
+ddfill 0 1
+ddfill 1 2
+ddblt 0 0 0 11 7 1 all
+ddblt 0 0 0 2 2 1 all
+dddump 0
+end
+case edge-formats
+dd
+ddsurf 0 12 9 565
+ddsurf 1 5 3 32
+ddfill 0 1
+ddfill 1 2
+ddblt 0 0 0 5 3 1 all
+dddump 0
+end
+case edge-key-unset
+dd
+ddsurf 0 12 9 32
+ddsurf 1 5 3 32
+ddfill 0 1
+ddfill 1 2
+ddblt 0 0 0 5 3 1 all keysrc
+ddfast 0 0 0 1 all srckey
+dddump 0
+end
+case edge-fill-highbits
+dd
+ddsurf 0 12 9 565
+ddfill 0 1
+ddcolor 0 all 0x12345
+dddump 0
+end
+case edge-fast-bothkeys
+dd
+ddsurf 0 12 9 32
+ddsurf 1 5 3 32
+ddfill 0 1
+ddfill 1 2
+ddkey 1 src 0
+ddkey 0 dest 0
+ddfast 0 0 0 1 all srckey destkey
+dddump 0
+end
+case edge-nosource
+dd
+ddsurf 0 12 9 32
+ddfill 0 1
+ddblt 0 all - all
+dddump 0
+end
+case nodev
+ddsurf 0 4 4 32
+end

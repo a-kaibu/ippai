@@ -73,6 +73,22 @@ Formats: `bw gray2 gray4 gray8 gray16 bgr555 bgr565 bgr24 rgb24 bgr32 bgra pbgra
 rgba64 cmyk alpha8 idx1 idx2 idx4 idx8` (GUID_WICPixelFormat...). The palette: 16 colors, entry i =
 ARGB (i == 5 ? 0x40 : 0xff, i * 17, 255 - i * 13, i * 71 mod 256).
 
+## DirectDraw
+
+Eight surface slots, separate from the GDI ones.
+
+| line | calls | prints |
+|---|---|---|
+| `dd` | DirectDrawCreateEx (IDirectDraw7; ddraw.dll loaded when first needed), SetCooperativeLevel DDSCL_NORMAL | `dd ok`, `dd none`, `dd failed <hr>` |
+| `ddsurf <s> <w> <h> <8\|555\|565\|32>` | CreateSurface, DDSCAPS_OFFSCREENPLAIN \| SYSTEMMEMORY, that RGB format (8: DDPF_PALETTEINDEXED8, no palette) | `ddsurf failed <hr>` |
+| `ddfill <s> <seed>`, `dddump <s>` | Lock; each row's pixel bytes from xorshift32 / printed | `dd <s> <w> <h> <bpp>` and the rows as hex |
+| `ddkey <s> src\|dest <v>\|none` | SetColorKey DDCKEY_SRCBLT / DESTBLT, low = high = v (none: NULL) | `ddkey hr <hr>` on failure |
+| `ddblt <d> <rect> <s\|-> <rect> [keysrc] [keydest] [keysrcov <v>] [keydestov <v>] [mirrorlr] [mirrorud]` | Blt (DDBLT_WAIT and the flags; the overrides and mirrors through DDBLTFX) | `ret <hr>` |
+| `ddcolor <d> <rect> <v>` | Blt DDBLT_COLORFILL | `ret <hr>` |
+| `ddfast <d> <x> <y> <s> <rect> [srckey] [destkey]` | BltFast (DDBLTFAST_WAIT) | `ret <hr>` |
+
+A rect is `all` (NULL) or `x0 y0 x1 y1`. Without `dd` the lines print `nodev`.
+
 ## Models
 
 `wingfx model <suite>` prints what Windows prints, case by case. A case whose behavior the

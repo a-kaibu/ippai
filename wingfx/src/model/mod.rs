@@ -3,6 +3,7 @@
 //! with Windows only).
 
 pub mod d3d11;
+pub mod ddraw;
 pub mod d3d9;
 pub mod gdi;
 pub mod wic;
@@ -33,6 +34,7 @@ fn run_ops(case: &Case) -> Res<Vec<String>> {
     let mut g = gdi::Gdi::new();
     let mut d = d3d9::D3d9::default();
     let mut d11 = d3d11::D3d11::default();
+    let mut dd = ddraw::Ddraw::default();
     for op in &case.ops {
         if g.op(op, &mut out)? {
             continue;
@@ -44,6 +46,9 @@ fn run_ops(case: &Case) -> Res<Vec<String>> {
             continue;
         }
         if wic::op(op, &mut out)? {
+            continue;
+        }
+        if dd.op(op, &mut out)? {
             continue;
         }
         return Err(Fail::Bad);
