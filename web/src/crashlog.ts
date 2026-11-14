@@ -21,6 +21,7 @@
 //
 // masu serve keeps the server's copies under --logs (GET /log-list, /logs/<name>.txt).
 
+import { eachFrame } from "./frames";
 import { toast as sonner } from "sonner";
 import { meter, meterLine } from "./meter";
 import { grabScreen, grabStats, screenDue, screenLine, screenStats, smallJpeg } from "./screen-stats";
@@ -90,7 +91,7 @@ class Perf {
 
   constructor() {
     addEventListener("vnvm-frame", () => this.frames++);
-    const loop = (t: number) => {
+    eachFrame((t) => {
       if (this.rafLast) {
         const d = t - this.rafLast;
         this.longest = Math.max(this.longest, d);
@@ -98,9 +99,7 @@ class Perf {
       }
       this.rafLast = t;
       this.raf++;
-      requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
+    });
     try {
       new PerformanceObserver((l) => {
         for (const e of l.getEntries()) {

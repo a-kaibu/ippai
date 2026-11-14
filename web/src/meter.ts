@@ -3,6 +3,8 @@
 // with synchronous requests), the page's own fetches (read-ahead chunks, saved regions), wasm
 // heap, JS heap and fps, for the run log's perf lines (crashlog.ts, the last 10 s).
 
+import { eachFrame } from "./frames";
+
 export interface MeterWasm {
   wasmMemory: WebAssembly.Memory;
   HEAPF64?: Float64Array;
@@ -125,17 +127,16 @@ export class Meter {
    * page that imported this (the game list too) kept a frame loop going for good, so the
    * renderer never idled on a phone. */
   private countFrames(): void {
-    if (this.looping || typeof requestAnimationFrame === "undefined") return;
+    if (this.looping) return;
     this.looping = true;
-    const loop = () => {
+    const stop = eachFrame(() => {
       if (!this.wasm) {
         this.looping = false;
+        stop();
         return;
       }
       this.raf++;
-      requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
+    });
   }
 
   attach(wasm: MeterWasm): void {

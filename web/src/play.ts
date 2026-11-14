@@ -1,3 +1,4 @@
+import { eachFrame } from "./frames";
 import { trackPlay } from "./library-data";
 let stopPlay: (() => void) | undefined;
 // Runs sake (crates/sake, the from-scratch Win32 layer, built by crates/sake/build.sh → public/sake/)
@@ -1222,10 +1223,13 @@ function watch(
   // the drawing's WebGPU device lost and made again, or not (host/vngpu.js)
   let lost = 0;
   const frame = () => {
-    if (exited) return closeGame();
-    if (!live()) return;
+    if (exited) {
+      stop();
+      return closeGame();
+    }
+    if (!live()) return stop();
     // (a state is being taken: the memory stays as it is)
-    if (memGate.closed) return void requestAnimationFrame(frame);
+    if (memGate.closed) return;
     const l = sake._vnhost_render_lost_state?.() ?? 0;
     if (l !== lost) {
       const n = lostNotice(lost, l);
@@ -1255,9 +1259,9 @@ function watch(
       dispatchEvent(new CustomEvent("vnvm-frame", { detail: { heap: sake.HEAPU8, bits, width, height } }));
       if (getUi().status) log("");
     }
-    requestAnimationFrame(frame);
   };
-  requestAnimationFrame(frame);
+  // (the page's one frame loop, frames.ts)
+  const stop = eachFrame(frame);
   return () => {
     video?.stop();
     adec?.stop();
