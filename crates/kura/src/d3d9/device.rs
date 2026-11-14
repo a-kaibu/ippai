@@ -503,6 +503,12 @@ impl Device {
         for w in &self.shown {
             gpu::record(|b| b.cmd(&[gpu::DESTROY_TEXTURE, w.gpu]));
         }
+        // (what the device made for itself: the declarations of FVFs, the buffer strips are
+        // unrolled into; kept for every device ever made before)
+        for &decl in self.fvf_decls.values() {
+            d.release(decl);
+        }
+        d.guest_free(self.strip_buf.0);
         // (the reference CreateDevice took on the IDirect3D9)
         d.release(self.d3d);
     }

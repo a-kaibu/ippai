@@ -536,15 +536,41 @@ fn pace() {
     static NEXT: Mutex<f64> = Mutex::new(0.0);
     const FRAME: f64 = 1000.0 / 60.0;
     let t = now();
-    let wait = {
-        let mut next = NEXT.lock().unwrap_or_else(|e| e.into_inner());
-        // (late frames don't make the next ones early)
-        let at = if *next + FRAME < t { t } else { next.max(t) };
-        *next = at + FRAME;
-        at - t
-    };
+    let wait = pace_wait(&mut NEXT.lock().unwrap_or_else(|e| e.into_inner()), t, FRAME);
     if wait > 0.0 {
         std::thread::sleep(Duration::from_secs_f64(wait / 1000.0));
+    }
+}
+
+/// How long a Present at `t` waits for the frame after `next` (and `next` moved on): late
+/// frames don't make the next ones early, and no wait is longer than a frame. The clock is
+/// the wall clock: stepped back (NTP, a phone waking) by a minute, the next Present slept a
+/// minute.
+fn pace_wait(next: &mut f64, t: f64, frame: f64) -> f64 {
+    let at = if *next + frame < t || *next > t + frame { t } else { next.max(t) };
+    *next = at + frame;
+    at - t
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use proptest::prelude::*;
+    proptest! {
+        /// Any clock, stepped back or forward: every wait is between 0 and a frame, and with a
+        /// steady clock presents a frame apart do not wait at all.
+        #[test]
+        fn a_wait_is_a_frame_at_most(steps in proptest::collection::vec(-100_000.0f64..100_000.0, 1..200)) {
+            let (mut next, mut t) = (0.0, 1e12);
+            for d in steps {
+                t += d;
+                let w = super::pace_wait(&mut next, t, 16.0);
+                prop_assert!((0.0..=16.0).contains(&w), "{}", w);
+            }
+            for _ in 0..10 {
+                t += 16.0;
+                prop_assert_eq!(super::pace_wait(&mut next, t, 16.0), 0.0);
+            }
+        }
     }
 }
 

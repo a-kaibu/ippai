@@ -36,6 +36,8 @@ enum Op {
     End(usize),
     Texture(usize),
     TexDevice(usize),
+    /// SetFVF and GetVertexDeclaration (the device makes a declaration of the FVF), released
+    Fvf(usize, u32),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -48,6 +50,7 @@ fn op() -> impl Strategy<Value = Op> {
         2 => (0usize..4).prop_map(Op::End),
         1 => (0usize..4).prop_map(Op::Texture),
         2 => (0usize..4).prop_map(Op::TexDevice),
+        2 => (0usize..4, prop::sample::select(vec![0x002u32, 0x042, 0x142, 0x044, 0x152, 0x102])).prop_map(|(i, f)| Op::Fvf(i, f)),
     ]
 }
 
@@ -59,7 +62,12 @@ struct Live {
     textures: Vec<u32>,
 }
 
+fn objects() -> usize {
+    D3D.lock().unwrap().as_ref().map_or(0, |d| d.objs.len())
+}
+
 fn run(ops: &[Op]) -> Result<(), TestCaseError> {
+    let at_start = objects();
     let o = mem(4);
     unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
     let d3d = rd(o);
@@ -122,6 +130,15 @@ fn run(ops: &[Op]) -> Result<(), TestCaseError> {
                     live[i].textures.push(rd(o));
                 }
             }
+            Op::Fvf(i, fvf) => {
+                if let Some(i) = pick(i) {
+                    prop_assert_eq!(call(IF_DEVICE, 89, &[live[i].dev, fvf]), 0);
+                    wr(o, 0, 0);
+                    prop_assert_eq!(call(IF_DEVICE, 88, &[live[i].dev, o]), 0);
+                    prop_assert!(rd(o) != 0);
+                    call(IF_DECL, 2, &[rd(o)]);
+                }
+            }
             Op::TexDevice(i) => {
                 if let Some(i) = pick(i) {
                     if let Some(&t) = live[i].textures.last() {
@@ -145,6 +162,8 @@ fn run(ops: &[Op]) -> Result<(), TestCaseError> {
         prop_assert_eq!(call(IF_DEVICE, 2, &[l.dev]), 0);
     }
     prop_assert_eq!(call(IF_D3D9, 2, &[d3d]), 0);
+    // (everything the devices made for themselves went with them)
+    prop_assert_eq!(objects(), at_start, "objects left after every device was released");
     Ok(())
 }
 

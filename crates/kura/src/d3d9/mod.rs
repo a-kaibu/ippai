@@ -441,11 +441,17 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
                 0 => query_interface(d, this, iface, a(1) as *const u8, a(2) as *mut u32),
                 1 => d.add_ref(this),
                 2 => {
-                    // (conservative: what draws prepared, `device::stale`)
-                    if let Some(dev) = d.dev.as_mut() {
-                        dev.stale_all();
+                    // (what draws prepared goes only when an object goes: one that stays, or
+                    // that the device still holds, is what it was; every Release of anything
+                    // made the next draw prepare from scratch)
+                    let before = d.objs.len();
+                    let r = d.release(this);
+                    if d.objs.len() != before {
+                        if let Some(dev) = d.dev.as_mut() {
+                            dev.stale_all();
+                        }
                     }
-                    d.release(this)
+                    r
                 }
                 _ => device::call(d, iface, method, this, args, &mut after),
             }
