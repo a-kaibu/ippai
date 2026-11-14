@@ -305,3 +305,33 @@ fn objects_take_memory_as_they_come() {
     assert!(a.push(Payload { stream: 1, key: true, object: 7, offset: 4, object_size: 8, time: 0, data: vec![1; 2] }).is_none());
     assert_eq!(a.held(), 0);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+
+    /// key_before(t) is the time of the key frame seek(t) reads from: the first video key frame
+    /// after the seek, at or before t (0 when there is none).
+    #[test]
+    fn key_before_is_where_seek_goes(keys in prop::collection::vec(any::<bool>(), 1..80), preroll in 0u64..3000, packet in 400usize..2000, at in 0u32..3000) {
+        let m = Mux { packet_size: packet, preroll, streams: two_streams(None), attributes: vec![], compress_small: false };
+        let mut s = Vec::new();
+        for (k, &key) in keys.iter().enumerate() {
+            let k = k as u32;
+            s.push((2u8, key || k == 0, k * 33, vec![k as u8; 300]));
+            s.push((1u8, true, k * 33, vec![k as u8; 50]));
+        }
+        let f = m.write(&s, keys.len() as u64 * 33 + 100);
+        let mut r = Reader::new(f).unwrap();
+        let t = at as u64 * 10_000;
+        let key = r.key_before(t);
+        prop_assert!(key <= t);
+        r.seek(t);
+        // (a packet may hold the end of the object before the key frame: decoded, not shown)
+        let first = std::iter::from_fn(|| r.next_sample()).find(|s| s.stream == 2 && s.key).unwrap();
+        if t > 0 {
+            prop_assert_eq!(first.time, key);
+        }
+        // (a key frame's time, at or before t: the packets sent by then hold it)
+        prop_assert!(keys.iter().enumerate().any(|(k, &kf)| (kf || k == 0) && k as u64 * 33 * 10_000 == key));
+    }
+}

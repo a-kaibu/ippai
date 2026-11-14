@@ -770,6 +770,21 @@ impl<S: Source> Reader<S> {
         if t == 0 {
             return;
         }
+        self.next = self.key_packet(t).0;
+    }
+
+    /// The time (100 ns, preroll off) of the video key frame `seek(t)` goes back to: a caller
+    /// behind `t` seeks only when it is past what it has shown (else it decodes less by going
+    /// on). 0 for the start.
+    pub fn key_before(&mut self, t: u64) -> u64 {
+        if t == 0 {
+            return 0;
+        }
+        self.key_packet(t).1
+    }
+
+    /// The packet a seek to `t` reads from, and its key frame's time.
+    fn key_packet(&mut self, t: u64) -> (u64, u64) {
         let want = t / MS + self.header.preroll;
         // the last packet sent at or before the time wanted (send times grow)
         let (mut lo, mut hi) = (0u64, self.header.packets.max(1));
@@ -785,14 +800,18 @@ impl<S: Source> Reader<S> {
         let mut k = lo;
         loop {
             let p = self.packet_at(k).unwrap_or_default();
-            let key = video.is_empty()
-                || p.payloads.iter().any(|pl| video.contains(&pl.stream) && pl.key && pl.offset == 0 && (pl.time as u64) <= want);
-            if key || k == 0 {
-                break;
+            let key = p.payloads.iter().find(|pl| video.contains(&pl.stream) && pl.key && pl.offset == 0 && (pl.time as u64) <= want);
+            if let Some(pl) = key {
+                return (k, (pl.time as u64).saturating_sub(self.header.preroll).saturating_mul(MS));
+            }
+            if video.is_empty() {
+                return (k, t);
+            }
+            if k == 0 {
+                return (0, 0);
             }
             k -= 1;
         }
-        self.next = k;
     }
 }
 

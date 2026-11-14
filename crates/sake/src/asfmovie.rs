@@ -35,6 +35,9 @@ impl Video {
     fn at(&mut self, t: u64) -> Option<&[u8]> {
         let back = self.shown.as_ref().is_some_and(|s| s.0 > t);
         let far = self.shown.as_ref().map_or(t > SKIP, |s| t > s.0 + SKIP) && self.pending.back().is_none_or(|p| p.0 < t);
+        // (far behind, a seek helps only when its key frame is past the picture shown: with key
+        // frames further apart than SKIP it went back before it and the movie never caught up)
+        let far = far && self.shown.as_ref().is_none_or(|s| self.r.key_before(t) > s.0);
         if back || far {
             self.r.seek(t);
             self.codec.flush();
@@ -50,7 +53,11 @@ impl Video {
                 break;
             }
             let frames = match self.r.next_sample() {
-                Some(s) => self.codec.decode(&s.data, s.time, s.key),
+                Some(s) => {
+                    #[cfg(test)]
+                    DECODED.with(|c| c.set(c.get() + 1));
+                    self.codec.decode(&s.data, s.time, s.key)
+                }
                 None => {
                     self.ended = true;
                     self.codec.drain()
@@ -65,6 +72,14 @@ impl Video {
         self.shown.as_ref().or(self.pending.front()).map(|p| &p.1[..])
     }
 }
+
+// (tests: audio seeks)
+#[cfg(test)]
+thread_local!(static SEEKS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+
+// (tests: pictures decoded)
+#[cfg(test)]
+thread_local!(static DECODED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
 
 static VIDEOS: Mutex<Option<HashMap<u32, Video>>> = Mutex::new(None);
 
@@ -121,10 +136,16 @@ pub struct Audio {
     pcm: VecDeque<[f32; 2]>,
     base: Option<u64>,
     ended: bool,
+    /// the frame the last seek was for: the sound may begin after it (a stream with a time
+    /// offset), and what is asked for before it is silence, not another seek
+    sought: u64,
 }
 
 impl Audio {
     fn seek(&mut self, frame: u64) {
+        #[cfg(test)]
+        SEEKS.with(|c| c.set(c.get() + 1));
+        self.sought = frame;
         self.r.seek((frame as u128 * SEC as u128 / self.rate.max(1) as u128) as u64);
         self.codec.flush();
         self.pcm.clear();
@@ -135,7 +156,10 @@ impl Audio {
     /// Appends `n` stereo frames from frame `from` to `out` (silence past the end).
     pub fn take(&mut self, from: u64, n: usize, out: &mut Vec<f32>) {
         let have = self.base.map(|b| (b, b + self.pcm.len() as u64));
-        if have.is_none_or(|(b, e)| from < b || from > e + 2 * self.rate as u64) {
+        // (from before the first sound, at or after the frame sought: the sound begins later; it
+        // sought, flushed and decoded a packet on every call until playback reached it)
+        let late = have.is_some_and(|(b, _)| self.sought <= from && from < b);
+        if have.is_none_or(|(b, e)| (from < b && !late) || from > e + 2 * self.rate as u64) {
             self.seek(from);
         }
         while !self.ended && self.base.is_none_or(|b| b + (self.pcm.len() as u64) < from + n as u64) {
@@ -206,7 +230,7 @@ pub fn open(path: &str) -> Option<Opened> {
     let frames = (h.duration as u128 * rate.0 as u128).div_ceil(rate.1 as u128 * SEC as u128).max(1) as u32;
     let audio = pick(false).and_then(|(s, i, codec)| {
         let Info::Audio { rate, .. } = i else { return None };
-        Some(Audio { r: reader(path, s.number)?, codec, rate, pcm: VecDeque::new(), base: None, ended: false })
+        Some(Audio { r: reader(path, s.number)?, codec, rate, pcm: VecDeque::new(), base: None, ended: false, sought: 0 })
     });
     let v = Video { r: reader(path, vs.number)?, codec, rate, pending: VecDeque::new(), shown: None, ended: false };
     static NEXT: AtomicU32 = AtomicU32::new(ID_BASE);
@@ -253,6 +277,69 @@ mod tests {
     /// The sound's frame i: (left, right)
     fn pcm(i: u32) -> (i16, i16) {
         ((i * 3) as i16, -((i * 5 % 30000) as i16))
+    }
+
+    /// A file of `n` pictures 40 ms apart, a key frame every `key`, no sound; its path.
+    fn pictures(n: u32, key: u32) -> String {
+        let streams = vec![asf::Stream { number: 2, kind: asf::Kind::Video { width: W, height: H }, format: bih(), encrypted: false, time_offset: 0, spread: None, avg_time_per_frame: 400_000, bitrate: 0 }];
+        let s: Vec<_> = (0..n).map(|k| (2u8, k % key == 0, k * 40, picture(k))).collect();
+        // (small packets: a seek's packet holds little of the pictures before its key frame)
+        let m = Mux { packet_size: 100, preroll: 0, streams, attributes: vec![], compress_small: false };
+        let p = std::env::temp_dir().join(format!("sake-asfmovie-{}-{n}-{key}.wmv", std::process::id()));
+        std::fs::write(&p, m.write(&s, n as u64 * 40)).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    /// Far behind (more than SKIP), with key frames further apart than SKIP: going on decodes
+    /// fewer pictures than seeking back to a key frame before the one shown (which made a slow
+    /// decoder fall behind for good), and a key frame past it is still sought.
+    #[test]
+    fn catching_up_never_goes_back_before_the_picture_shown() {
+        let o = open(&pictures(400, 100)).unwrap();
+        let mut last = 0;
+        for n in [10i32, 70, 130, 190, 250, 330, 399] {
+            let mut px = vec![0u8; (W * H * 4) as usize];
+            DECODED.with(|c| c.set(0));
+            // SAFETY: px is H rows of 4 * W bytes
+            assert!(unsafe { frame(o.id, n, px.as_mut_ptr(), 4 * W as usize, W, H) });
+            assert_eq!(px, rgba_of(n as u32), "frame {n}");
+            let decoded = DECODED.with(|c| c.get()) as i32;
+            // from the picture shown, or from the last key frame when that is later
+            let from = last.max(n / 100 * 100);
+            // (a seek starts a few objects early: the packet holds the end of the one before)
+            assert!(decoded <= n - from + 4, "frame {n} after {last}: {decoded} pictures decoded");
+            last = n;
+        }
+        close(o.id);
+    }
+
+    /// Sound that begins 200 ms in (1600 frames), asked for from the start in small steps: the
+    /// frames before it are silence, the file is sought once, the samples come after.
+    #[test]
+    fn sound_that_begins_late_is_sought_once() {
+        let streams = vec![
+            asf::Stream { number: 1, kind: asf::Kind::Audio, format: wave(), encrypted: false, time_offset: 0, spread: None, avg_time_per_frame: 0, bitrate: RATE * 32 },
+            asf::Stream { number: 2, kind: asf::Kind::Video { width: W, height: H }, format: bih(), encrypted: false, time_offset: 0, spread: None, avg_time_per_frame: 400_000, bitrate: 0 },
+        ];
+        let mut s = vec![(2u8, true, 0, picture(0))];
+        for a in 0..4u32 {
+            let data = (a * 400..a * 400 + 400).flat_map(|i| { let (l, r) = pcm(i); [l.to_le_bytes(), r.to_le_bytes()].concat() }).collect();
+            s.push((1, true, 200 + a * 50, data));
+        }
+        let m = Mux { packet_size: 800, preroll: 0, streams, attributes: vec![], compress_small: false };
+        let p = std::env::temp_dir().join(format!("sake-asfmovie-late-{}.wmv", std::process::id()));
+        std::fs::write(&p, m.write(&s, 400)).unwrap();
+        let mut a = open(p.to_str().unwrap()).unwrap().audio.unwrap();
+        SEEKS.with(|c| c.set(0));
+        let mut got = Vec::new();
+        for k in 0..30 {
+            a.take(k * 100, 100, &mut got);
+        }
+        assert_eq!(SEEKS.with(|c| c.get()), 1, "seeks");
+        for f in 0..3000u64 {
+            let want = if f < 1600 { [0.0; 2] } else { let (l, r) = pcm((f - 1600) as u32); [l as f32 / 32768.0, r as f32 / 32768.0] };
+            assert_eq!([got[2 * f as usize], got[2 * f as usize + 1]], want, "frame {f}");
+        }
     }
 
     /// A file of PICS pictures and 400 ms of sound in 50 ms objects, interleaved; its path.
