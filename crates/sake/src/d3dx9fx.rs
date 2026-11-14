@@ -115,6 +115,21 @@ struct Effect {
     ctabs: HashMap<u32, Vec<Const>>,
     /// shader preshaders by shader object
     pres: HashMap<u32, Pres>,
+    /// guest copies of the names and strings the Get*Desc / GetString calls handed out (one
+    /// per string, valid while the effect lives, as Windows' point into the effect)
+    strings: HashMap<Vec<u8>, u32>,
+}
+
+/// A guest copy of `s` (NUL-terminated) owned by effect `this`.
+fn fx_str(this: u32, s: &[u8]) -> u32 {
+    with(this, |e| {
+        *e.strings.entry(s.to_vec()).or_insert_with(|| {
+            let a = mem::heap_alloc(s.len() as u32 + 1, true);
+            mem::write(a, s);
+            a
+        })
+    })
+    .unwrap_or(0)
 }
 
 struct Const {
@@ -979,10 +994,25 @@ fn this(c: &Ctx) -> u32 {
 }
 const D3DERR_INVALIDCALL: u32 = 0x8876086c;
 
+/// ID3DXEffect::Release: at the last reference the effect's shaders, textures, saved state
+/// block and device reference go, with its handles and strings.
 fn fx_release(c: &mut Ctx) -> u32 {
-    let n = r32(c.a(0) + 4).saturating_sub(1);
-    w32(c.a(0) + 4, n);
-    n
+    let o = c.a(0);
+    let (n, last) = crate::d3dx9::release_count(o);
+    if !last {
+        return n;
+    }
+    let Some(e) = FX.lock().unwrap().get_or_insert_with(HashMap::default).remove(&o) else { return 0 };
+    for p in e.strings.values().copied().chain([e.hbase]) {
+        mem::heap_free(p);
+    }
+    mem::heap_free(o);
+    for x in e.objects.iter().map(|x| x.created).chain([e.block, e.device]) {
+        if x != 0 {
+            com_call(c, x, 2, &[]);
+        }
+    }
+    0
 }
 fn GetDesc(c: &mut Ctx) -> u32 {
     let d = c.a(1);
@@ -1005,11 +1035,8 @@ fn GetParameterDesc(c: &mut Ctx) -> u32 {
     })
     .flatten();
     let Some(p) = r else { return D3DERR_INVALIDCALL };
-    let s = |x: &str| {
-        let a = mem::heap_alloc(x.len() as u32 + 1, true);
-        mem::write(a, x.as_bytes());
-        a
-    };
+    let fx = this(c);
+    let s = |x: &str| fx_str(fx, x.as_bytes());
     w32(d, s(&p.name));
     w32(d + 4, if p.semantic.is_empty() { 0 } else { s(&p.semantic) });
     let members = if p.class == PC_STRUCT && p.elements == 0 { p.children.len() as u32 } else { 0 };
@@ -1022,9 +1049,7 @@ fn GetTechniqueDesc(c: &mut Ctx) -> u32 {
     let (h, d) = (c.a(1), c.a(2));
     let r = with(this(c), |e| e.tech_of(h).map(|t| (e.techniques[t].name.clone(), e.techniques[t].passes.len(), e.techniques[t].annotations.len()))).flatten();
     let Some((name, n, a)) = r else { return D3DERR_INVALIDCALL };
-    let s = mem::heap_alloc(name.len() as u32 + 1, true);
-    mem::write(s, name.as_bytes());
-    w32(d, s);
+    w32(d, fx_str(this(c), name.as_bytes()));
     w32(d + 4, n as u32);
     w32(d + 8, a as u32);
     0
@@ -1033,9 +1058,7 @@ fn GetPassDesc(c: &mut Ctx) -> u32 {
     let (h, d) = (c.a(1), c.a(2));
     let r = with(this(c), |e| e.pass_of(h).map(|(t, k)| (e.techniques[t].passes[k].name.clone(), e.techniques[t].passes[k].annotations.len()))).flatten();
     let Some((name, a)) = r else { return D3DERR_INVALIDCALL };
-    let s = mem::heap_alloc(name.len() as u32 + 1, true);
-    mem::write(s, name.as_bytes());
-    w32(d, s);
+    w32(d, fx_str(this(c), name.as_bytes()));
     w32(d + 4, a as u32);
     w32(d + 8, 0);
     w32(d + 12, 0);
@@ -1325,9 +1348,9 @@ fn GetString(c: &mut Ctx) -> u32 {
     })
     .flatten();
     let Some(s) = r else { return D3DERR_INVALIDCALL };
-    let a = mem::heap_alloc(s.len() as u32 + 1, true);
-    mem::write(a, &s);
-    w32(out, a);
+    // (a string object's data may end in its NUL)
+    let s = s.strip_suffix(&[0]).unwrap_or(&s);
+    w32(out, fx_str(this(c), s));
     0
 }
 fn set_texture(c: &mut Ctx, h: u32, tex: u32) -> u32 {
@@ -1525,7 +1548,7 @@ pub fn create(c: &mut Ctx, device: u32, data: &[u8]) -> Result<u32, String> {
     w32(o, effect_vtable());
     w32(o + 4, 1);
     com_call(c, device, 1, &[]);
-    let e = Effect { device, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs, pres: pres_map };
+    let e = Effect { device, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs, pres: pres_map, strings: HashMap::default() };
     FX.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, e);
     Ok(o)
 }
@@ -1587,5 +1610,58 @@ technique T <string Desc = "main";> {
             let words: Vec<u32> = o.data.chunks(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
             assert!(dxwgsl::d3d9::Shader::parse(&words).is_some());
         }
+    }
+}
+
+/// Effect lifetimes (review B-1): the names Get*Desc hand out are the effect's (one copy per
+/// string, the same pointer every call), and its last Release frees them with its handles.
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+
+    fn effect() -> u32 {
+        let src = "float Alpha = 0.5; technique T { pass P0 { ZEnable = false; } pass P1 { CullMode = None; } }";
+        let mut none = |_: &str, _: bool| None;
+        let fx = hlslc::compile_effect(src, &[], &mut none, 0).unwrap();
+        let (params, top, values, techniques, objects) = parse(&fx).unwrap();
+        let hbase = mem::heap_alloc(64, true);
+        let o = mem::heap_alloc(16, true);
+        w32(o, effect_vtable());
+        w32(o + 4, 1);
+        let e = Effect { device: 0, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs: HashMap::default(), pres: HashMap::default(), strings: HashMap::default() };
+        FX.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, e);
+        o
+    }
+
+    #[test]
+    fn desc_names_are_the_effects_and_go_with_it() {
+        let _g = enter();
+        let o = effect();
+        let (ht, hp, hb, hpass) = with(o, |e| (e.h_tech(0), e.h_param(e.top[0]), e.hbase, e.h_pass(0, 1))).unwrap();
+        let d = mem::heap_alloc(64, true);
+        let mut seen = Vec::new();
+        for _ in 0..50 {
+            assert_eq!(call(GetTechniqueDesc, &[o, ht, d]), 0);
+            let t = r32(d);
+            assert_eq!(call(GetParameterDesc, &[o, hp, d]), 0);
+            let p = r32(d);
+            assert_eq!(call(GetPassDesc, &[o, hpass, d]), 0);
+            let q = r32(d);
+            seen.push((t, p, q));
+        }
+        let (t, p, q) = seen[0];
+        assert!(seen.iter().all(|&x| x == seen[0]), "one copy per name");
+        assert_eq!((mem::cstr(t), mem::cstr(p), mem::cstr(q)), (b"T".to_vec(), b"Alpha".to_vec(), b"P1".to_vec()));
+        assert_eq!(call(add_ref, &[o]), 2);
+        assert_eq!(call(fx_release, &[o]), 1);
+        assert!(mem::heap_owns(t));
+        assert_eq!(call(fx_release, &[o]), 0);
+        assert!(with(o, |_| ()).is_none());
+        for x in [t, p, q, hb, o] {
+            assert!(!mem::heap_owns(x));
+        }
+        // (once too often: nothing)
+        mem::heap_free(d);
     }
 }

@@ -131,17 +131,19 @@ fn with<R>(f: impl FnOnce(&mut HashMap<u32, Obj>) -> R) -> R {
 fn new(iface: &'static str, impls: &[(&str, crate::api::Handler)], o: Obj) -> u32 {
     let p = com::object(iface, impls, 8);
     with(|m| m.insert(p, o));
+    com::on_free(p, free);
     p
 }
 
 fn release(c: &mut Ctx) -> u32 {
-    let this = c.a(0);
-    let n = com::release_obj(this);
-    if n == 0 {
+    com::release_obj(c.a(0))
+}
+
+/// An object's last Release: its state goes (a lock's pixels back into its bitmap first).
+fn free(this: u32) {
+    {
         frame_meta(|m| m.remove(&this));
-        if matches!(with(|m| m.get(&this).map(|o| matches!(o, Obj::Reader { .. } | Obj::Names { .. }))), Some(true)) {
-            with(|m| m.remove(&this));
-        }
+        // (every kind goes: a stream holds the whole file, a source or bitmap its pixels)
         if let Some(Obj::Lock { bitmap, fmt, rect, buf, stride, write }) = with(|m| m.remove(&this)) {
             if write {
                 let data = mem::slice(buf, stride * rect.3).to_vec();
@@ -156,7 +158,6 @@ fn release(c: &mut Ctx) -> u32 {
             mem::heap_free(buf);
         }
     }
-    n
 }
 
 // ---- streams ----

@@ -122,6 +122,10 @@ fn DWriteCreateFactory(c: &mut Ctx) -> u32 {
         let mut g = SHARED.lock().unwrap();
         if *g == 0 {
             *g = com::object(FACTORY, &factory_methods(), 8);
+            // (the shared factory is handed out again: never freed)
+            com::keep(*g);
+        } else {
+            com::add_ref_obj(*g);
         }
         *g
     } else {
@@ -137,6 +141,9 @@ fn CreateTextFormat(c: &mut Ctx) -> u32 {
     let fmt = Format { family, size: fl(c, 6), weight: c.a(3) as i32, align: 0, para: 0, wrap: 0, spacing: None, char_spacing: (0.0, 0.0, 0.0) };
     let o = com::object("IDWriteTextFormat3", &format_methods(), 8);
     formats(|m| m.insert(o, fmt));
+    com::on_free(o, |o| {
+        formats(|m| m.remove(&o));
+    });
     mem::putp(c.a(8), o);
     0
 }
@@ -272,6 +279,9 @@ fn new_layout(text: Vec<u16>, fmt: u32, w: f32, h: f32, out: u32) -> u32 {
     };
     let o = com::object("IDWriteTextLayout4", &layout_methods(), 8);
     layouts(|m| m.insert(o, Layout { fmt, text, max_w: w, max_h: h }));
+    com::on_free(o, |o| {
+        layouts(|m| m.remove(&o));
+    });
     mem::putp(out, o);
     0
 }
@@ -427,7 +437,11 @@ fn GetClusterMetrics(c: &mut Ctx) -> u32 {
 /// The IDWriteFontFace of built-in face `i` (one object per face, kept).
 fn face_obj(i: usize) -> u32 {
     static FACES: Mutex<Option<HashMap<usize, u32>>> = Mutex::new(None);
-    *FACES.lock().unwrap().get_or_insert_with(HashMap::new).entry(i).or_insert_with(|| face(i as u32))
+    *FACES.lock().unwrap().get_or_insert_with(HashMap::new).entry(i).or_insert_with(|| {
+        let f = face(i as u32);
+        com::keep(f);
+        f
+    })
 }
 
 /// The glyph runs of a laid-out text: per line with characters, (face, glyph indices,
@@ -868,6 +882,7 @@ fn GetLoader(c: &mut Ctx) -> u32 {
         let m: [(&'static str, crate::api::Handler); 3] =
             [("GetFilePathLengthFromKey", GetFilePathLengthFromKey), ("GetFilePathFromKey", GetFilePathFromKey), ("GetLastWriteTimeFromKey", GetLastWriteTimeFromKey)];
         *g = com::object("IDWriteLocalFontFileLoader", &m, 8);
+        com::keep(*g);
     }
     com::add_ref_obj(*g);
     mem::putp(c.a(1), *g);
@@ -919,6 +934,9 @@ fn strings(v: Vec<(String, String)>) -> u32 {
     ];
     let o = com::object("IDWriteLocalizedStrings", &m, 8);
     STRINGS.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, v);
+    com::on_free(o, |o| {
+        STRINGS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&o);
+    });
     o
 }
 fn strings_of(o: u32) -> Vec<(String, String)> {

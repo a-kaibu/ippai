@@ -450,16 +450,32 @@ pub(crate) fn add_ref(c: &mut Ctx) -> u32 {
     w32(c.a(0) + 4, n);
     n
 }
-pub(crate) fn release(c: &mut Ctx) -> u32 {
-    let n = r32(c.a(0) + 4).saturating_sub(1);
-    w32(c.a(0) + 4, n);
+/// Release of an object of ours with its count after the vtable pointer: the count left, and
+/// whether that was the last reference.
+pub(crate) fn release_count(o: u32) -> (u32, bool) {
+    let n = r32(o + 4);
+    if n == 0 {
+        // (released once too often: already gone)
+        return (0, false);
+    }
+    w32(o + 4, n - 1);
+    (n - 1, n == 1)
+}
+/// ID3DXBuffer::Release: at the last reference its data and the object go.
+fn buf_release(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let (n, last) = release_count(o);
+    if last {
+        mem::heap_free(r32(o + 8));
+        mem::heap_free(o);
+    }
     n
 }
 
 /// A new ID3DXBuffer holding `data`.
 pub fn buffer(data: &[u8]) -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    let vt = *V.get_or_init(|| vtable("ID3DXBuffer", &[(qi_no, 12), (add_ref, 4), (release, 4), (buf_pointer, 4), (buf_size, 4)]));
+    let vt = *V.get_or_init(|| vtable("ID3DXBuffer", &[(qi_no, 12), (add_ref, 4), (buf_release, 4), (buf_pointer, 4), (buf_size, 4)]));
     let o = mem::heap_alloc(16, true);
     let p = mem::heap_alloc((data.len() as u32).max(4), true);
     mem::write(p, data);
@@ -737,6 +753,16 @@ fn ms_apply(c: &Ctx, m: M, local: bool) -> u32 {
     let top = rm(o + 16);
     wm(o + 16, &if local { mul(&m, &top) } else { mul(&top, &m) });
     0
+}
+/// ID3DXMatrixStack::Release: at the last reference the stack below the top goes with it.
+fn ms_release(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let (n, last) = release_count(o);
+    if last {
+        STACKS.lock().unwrap().get_or_insert_with(Default::default).remove(&o);
+        mem::heap_free(o);
+    }
+    n
 }
 fn ms_pop(c: &mut Ctx) -> u32 {
     let o = c.a(0);
@@ -1270,7 +1296,7 @@ fn D3DXGetImageInfoFromFileInMemory(c: &mut Ctx) -> u32 {
 fn D3DXCreateMatrixStack(c: &mut Ctx) -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        vtable("ID3DXMatrixStack", &[(qi_no, 12), (add_ref, 4), (release, 4), (ms_pop, 4), (ms_push, 4), (ms_identity, 4),
+        vtable("ID3DXMatrixStack", &[(qi_no, 12), (add_ref, 4), (ms_release, 4), (ms_pop, 4), (ms_push, 4), (ms_identity, 4),
             (ms_load, 8), (ms_mult, 8), (ms_mult_local, 8), (ms_rotate_axis, 12), (ms_rotate_axis_local, 12),
             (ms_ypr, 16), (ms_ypr_local, 16), (ms_scale, 16), (ms_scale_local, 16), (ms_translate, 16),
             (ms_translate_local, 16), (ms_top, 4)])
@@ -1507,6 +1533,19 @@ fn font_draw(c: &mut Ctx) -> u32 {
 pub(crate) fn zero(_: &mut Ctx) -> u32 {
     0
 }
+/// ID3DXFont::Release: at the last reference its device reference goes.
+fn font_release(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let (n, last) = release_count(o);
+    if last {
+        let d = r32(o + 8);
+        mem::heap_free(o);
+        if d != 0 {
+            com_call(c, d, 2, &[]);
+        }
+    }
+    n
+}
 fn font_device(c: &mut Ctx) -> u32 {
     let d = r32(c.a(0) + 8);
     if d != 0 {
@@ -1523,7 +1562,7 @@ fn D3DXCreateFont(c: &mut Ctx) -> u32 {
     let (dev, out) = if n.contains("Indirect") { (c.a(0), c.a(2)) } else { (c.a(0), c.a(11)) };
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        let mut m: Vec<(Handler, u32)> = vec![(qi_no, 12), (add_ref, 4), (release, 4), (font_device, 8), (zero, 8), (zero, 8), (zero, 8), (zero, 8), (zero, 4)];
+        let mut m: Vec<(Handler, u32)> = vec![(qi_no, 12), (add_ref, 4), (font_release, 4), (font_device, 8), (zero, 8), (zero, 8), (zero, 8), (zero, 8), (zero, 4)];
         m.extend_from_slice(&[(zero, 20), (zero, 12), (zero, 12), (zero, 12), (zero, 12), (font_draw, 28), (font_draw, 28), (zero, 4), (zero, 4)]);
         vtable("ID3DXFont", &m)
     });
@@ -1969,5 +2008,73 @@ mod plane_tests {
             let x = plane_line(p, above, below).unwrap();
             prop_assert!((dot3(n, x) + p[3]).abs() <= 1e-3 * scale);
         }
+    }
+}
+
+/// D3DX object lifetimes (review B-1): a buffer, a matrix stack and a font free what they hold
+/// at their last Release; one Release too many does nothing.
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    fn vcall(o: u32, slot: u32) -> u32 {
+        let f = mem::rp(mem::rp(o) + 4 * slot);
+        let h = crate::api::handler_of(f).expect("a host method");
+        call(h, &[o])
+    }
+
+    proptest! {
+        /// D3DXSaveSurfaceToFileInMemory's buffers (a whole BMP each): after n AddRefs, n + 1
+        /// Releases free the data and the object, the last returning 0.
+        #[test]
+        fn buffers_free_their_data(len in 0usize..5000, n in 0u32..4) {
+            let _g = enter();
+            let o = buffer(&vec![7; len]);
+            let data = r32(o + 8);
+            for k in 0..n {
+                prop_assert_eq!(vcall(o, 1), k + 2);
+            }
+            for k in (0..=n).rev() {
+                prop_assert!(mem::heap_owns(data));
+                prop_assert_eq!(vcall(o, 2), k);
+            }
+            prop_assert!(!mem::heap_owns(data) && !mem::heap_owns(o));
+        }
+    }
+
+    #[test]
+    fn matrix_stacks_and_fonts_free_themselves() {
+        let _g = enter();
+        let out = mem::heap_alloc(8, true);
+        assert_eq!(call(D3DXCreateMatrixStack, &[0, out]), 0);
+        let s = r32(out);
+        assert_eq!(vcall(s, 4), 0); // Push
+        assert!(STACKS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&s)));
+        assert_eq!(vcall(s, 2), 0);
+        assert!(!STACKS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&s)));
+        assert!(!mem::heap_owns(s));
+        // (D3DXCreateFontW(device, ..., out) without a device: nothing else to release)
+        let mut a = vec![0u32; 11];
+        a.push(out);
+        assert_eq!(call(D3DXCreateFont, &a), 0);
+        let f = r32(out);
+        assert_eq!(vcall(f, 1), 2);
+        assert_eq!(vcall(f, 2), 1);
+        assert_eq!(vcall(f, 2), 0);
+        assert!(!mem::heap_owns(f));
+        mem::heap_free(out);
+    }
+
+    #[test]
+    fn release_count_stops_at_zero() {
+        let _g = enter();
+        let o = mem::heap_alloc(16, true);
+        w32(o + 4, 2);
+        assert_eq!(release_count(o), (1, false));
+        assert_eq!(release_count(o), (0, true));
+        assert_eq!(release_count(o), (0, false));
+        mem::heap_free(o);
     }
 }

@@ -19,7 +19,16 @@ pub const E_NOINTERFACE: u32 = 0x8000_4002;
 struct Obj {
     iface: &'static str,
     refs: u32,
+    /// what goes with the object at its last Release (its module's state), before its memory
+    free: Option<fn(u32)>,
+    /// a singleton the module hands out again (never freed)
+    kept: bool,
 }
+
+/// Blocks of released objects, freed QUARANTINE releases later: a guest that calls through a
+/// pointer it has just released still finds a vtable (whose methods find no object).
+const QUARANTINE: usize = 256;
+static FREED: Mutex<std::collections::VecDeque<u32>> = Mutex::new(std::collections::VecDeque::new());
 
 static OBJS: Mutex<Option<HashMap<u32, Obj>>> = Mutex::new(None);
 /// trap address -> (interface, method, result kind)
@@ -121,20 +130,58 @@ fn release(c: &mut Ctx) -> u32 {
     release_obj(c.a(0))
 }
 
-/// Release on `obj` (for objects whose own Release frees more): the references left.
+/// Release on `obj` (for objects whose own Release frees more): the references left. At the
+/// last one the object's `on_free` runs and its block goes (after the quarantine).
 pub fn release_obj(this: u32) -> u32 {
-    objs(|m| match m.get_mut(&this) {
-        Some(o) if o.refs > 1 => {
-            o.refs -= 1;
-            o.refs
+    let gone = objs(|m| match m.get_mut(&this) {
+        Some(o) if o.refs > 1 || o.kept => {
+            o.refs = o.refs.saturating_sub(1);
+            Err(o.refs)
         }
-        Some(_) => {
-            // (the memory is left: a guest holding a stale pointer still finds a vtable)
-            m.remove(&this);
+        Some(_) => Ok(m.remove(&this).and_then(|o| o.free)),
+        None => Err(0),
+    });
+    match gone {
+        Err(n) => n,
+        Ok(free) => {
+            // (outside the table's lock: freeing an object releases what it held)
+            if let Some(f) = free {
+                f(this);
+            }
+            let old = {
+                let mut q = FREED.lock().unwrap();
+                q.push_back(this);
+                if q.len() > QUARANTINE { q.pop_front() } else { None }
+            };
+            if let Some(p) = old {
+                mem::heap_free(p);
+            }
             0
         }
-        None => 0,
-    })
+    }
+}
+
+/// `f` runs when `obj`'s last reference goes (its module's state for it, what it holds).
+pub fn on_free(obj: u32, f: fn(u32)) {
+    objs(|m| {
+        if let Some(o) = m.get_mut(&obj) {
+            o.free = Some(f);
+        }
+    });
+}
+
+/// `obj` is a singleton handed out again: its Release never frees it.
+pub fn keep(obj: u32) {
+    objs(|m| {
+        if let Some(o) = m.get_mut(&obj) {
+            o.kept = true;
+        }
+    });
+}
+
+/// The references `obj` has (None: not a live object).
+pub fn refs(obj: u32) -> Option<u32> {
+    objs(|m| m.get(&obj).map(|o| o.refs))
 }
 
 /// Whether trap `a` is a COM method sake does not implement.
@@ -178,7 +225,7 @@ pub fn object(iface: &'static str, impls: &[(&str, Handler)], size: u32) -> u32 
     let vt = vtable(iface, impls);
     let o = mem::heap_alloc(size.max(mem::ps()), true);
     mem::wp(o, vt);
-    objs(|m| m.insert(o, Obj { iface, refs: 1 }));
+    objs(|m| m.insert(o, Obj { iface, refs: 1, free: None, kept: false }));
     o
 }
 
@@ -257,5 +304,97 @@ mod tests {
         let s = IFACES.iter().find(|t| t.0 == "IWICStream").unwrap();
         assert_eq!(s.2, &["IWICStream", "IStream", "ISequentialStream", "IUnknown"]);
         assert_eq!(s.1.len(), 18);
+    }
+}
+
+/// Object lifetimes (review B-1): the last Release runs the object's on_free once and frees its
+/// block after the quarantine; kept singletons are never freed.
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use crate::test_guest::enter;
+    use proptest::prelude::*;
+
+    static FREED_OBJS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+    fn note(o: u32) {
+        FREED_OBJS.lock().unwrap().push(o);
+    }
+    fn freed(o: u32) -> usize {
+        FREED_OBJS.lock().unwrap().iter().filter(|&&x| x == o).count()
+    }
+    fn new() -> u32 {
+        let o = object("ID2D1StrokeStyle1", &[], 8);
+        on_free(o, note);
+        o
+    }
+
+    #[test]
+    fn last_release_frees_after_the_quarantine() {
+        let _g = enter();
+        FREED_OBJS.lock().unwrap().clear();
+        let o = new();
+        add_ref_obj(o);
+        assert_eq!(release_obj(o), 1);
+        assert_eq!(freed(o), 0);
+        assert_eq!(release_obj(o), 0);
+        assert_eq!(freed(o), 1);
+        assert_eq!(refs(o), None);
+        // (still a block with its vtable for a stale call; a Release more does nothing)
+        assert!(mem::heap_owns(o));
+        assert_eq!(release_obj(o), 0);
+        assert_eq!(freed(o), 1);
+        for _ in 0..QUARANTINE {
+            let x = new();
+            release_obj(x);
+        }
+        assert!(!mem::heap_owns(o));
+    }
+
+    #[test]
+    fn kept_objects_stay() {
+        let _g = enter();
+        FREED_OBJS.lock().unwrap().clear();
+        let o = new();
+        keep(o);
+        assert_eq!(release_obj(o), 0);
+        assert_eq!(release_obj(o), 0);
+        assert_eq!(refs(o), Some(0));
+        assert_eq!(freed(o), 0);
+        add_ref_obj(o);
+        assert_eq!(refs(o), Some(1));
+    }
+
+    proptest! {
+        /// Any AddRef/Release sequence over a few objects agrees with a count per object: on_free
+        /// runs exactly when (and once) an object's count reaches 0, and the table forgets it.
+        #[test]
+        fn counts_as_a_model(ops in proptest::collection::vec((0usize..4, any::<bool>()), 0..60)) {
+            let _g = enter();
+            FREED_OBJS.lock().unwrap().clear();
+            let objs: Vec<u32> = (0..4).map(|_| new()).collect();
+            let mut model = [1u32; 4];
+            for (i, up) in ops {
+                let o = objs[i];
+                if model[i] == 0 {
+                    continue;
+                }
+                if up {
+                    add_ref_obj(o);
+                    model[i] += 1;
+                } else {
+                    model[i] -= 1;
+                    prop_assert_eq!(release_obj(o), model[i]);
+                }
+                prop_assert_eq!(refs(o), (model[i] > 0).then_some(model[i]));
+                prop_assert_eq!(freed(o), (model[i] == 0) as usize);
+            }
+            for (i, &o) in objs.iter().enumerate() {
+                while model[i] > 0 {
+                    model[i] -= 1;
+                    release_obj(o);
+                }
+                prop_assert_eq!(freed(o), 1);
+            }
+        }
     }
 }

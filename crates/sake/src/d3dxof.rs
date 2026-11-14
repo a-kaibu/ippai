@@ -33,8 +33,9 @@ enum Kind {
     File(Arc<Mutex<Templates>>),
     /// the file, the objects it holds
     Enum(Shared, Vec<u32>),
-    /// the file, node, next child, children it holds, its data in guest memory
-    Data { f: Shared, node: usize, next: usize, kids: Vec<u32>, buf: Option<u32>, owner: u32 },
+    /// the file, node, next child, children it holds, its data in guest memory (and the
+    /// strings that data points to)
+    Data { f: Shared, node: usize, next: usize, kids: Vec<u32>, buf: Option<u32>, strs: Vec<u32>, owner: u32 },
     Ref { f: Shared, name: Option<Vec<u8>>, guid: Option<Guid> },
 }
 
@@ -102,8 +103,7 @@ fn release(c: &mut Ctx) -> u32 {
     release_obj(c.a(0))
 }
 
-/// Release; an object at 0 lets go of what it holds. (Its memory stays: a stale pointer still
-/// finds a vtable.)
+/// Release; an object at 0 lets go of what it holds, its data (GetData's) and its memory.
 pub fn release_obj(this: u32) -> u32 {
     let mut todo = vec![this];
     let mut first = None;
@@ -114,9 +114,19 @@ pub fn release_obj(this: u32) -> u32 {
             let n = o.refs;
             if n == 0 {
                 match m.remove(&p).map(|o| o.kind) {
-                    Some(Kind::Enum(_, held)) | Some(Kind::Data { kids: held, .. }) => todo.extend(held),
+                    Some(Kind::Enum(_, held)) => todo.extend(held),
+                    Some(Kind::Data { kids, buf, strs, .. }) => {
+                        todo.extend(kids);
+                        for s in strs {
+                            mem::heap_free(s);
+                        }
+                        if let Some(b) = buf {
+                            mem::heap_free(b - 16);
+                        }
+                    }
                     _ => {}
                 }
+                mem::heap_free(p);
             }
             Some(n)
         });
@@ -223,7 +233,7 @@ fn create_save_object(c: &mut Ctx) -> u32 {
 /// A new data object for `node`, held by `holders` (the enumerator, and the parent for a child);
 /// `owner`: the enumerator (0: none), which holds its children too.
 fn data_obj(f: &Shared, node: usize, holders: &[u32], owner: u32, extra: u32) -> u32 {
-    let o = new_obj(Kind::Data { f: f.clone(), node, next: 0, kids: Vec::new(), buf: None, owner }, holders.len() as u32 + extra);
+    let o = new_obj(Kind::Data { f: f.clone(), node, next: 0, kids: Vec::new(), buf: None, strs: Vec::new(), owner }, holders.len() as u32 + extra);
     objs(|m| {
         for h in holders {
             match m.get_mut(h).map(|h| &mut h.kind) {
@@ -361,14 +371,17 @@ fn data_buf(this: u32) -> Option<(u32, Vec<(Vec<u8>, usize, usize)>, usize)> {
             let p = base + 16;
             mem::w32(p - 4, 2);
             mem::write(p, &n.data);
+            let mut made = Vec::new();
             for (off, s) in &n.strs {
                 let sp = mem::heap_alloc(s.len() as u32 + 1, true);
                 mem::write(sp, s);
                 mem::wp(p + *off as u32, sp);
+                made.push(sp);
             }
             objs(|m| {
-                if let Some(Kind::Data { buf, .. }) = m.get_mut(&this).map(|o| &mut o.kind) {
+                if let Some(Kind::Data { buf, strs, .. }) = m.get_mut(&this).map(|o| &mut o.kind) {
                     *buf = Some(p);
+                    *strs = made;
                 }
             });
             p
@@ -543,4 +556,55 @@ fn vt_ref() -> u32 {
 
 pub fn init() {
     implement("d3dxof", "DirectXFileCreate", DirectXFileCreate);
+}
+
+/// Data object lifetimes (review B-1): GetData's copy of an object's data and the strings in
+/// it go with the object's last Release, as does the object itself.
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use crate::mem::{r32, w32};
+    use crate::test_guest::{call, enter};
+
+    fn guest(b: &[u8]) -> u32 {
+        let p = mem::heap_alloc(b.len() as u32, false);
+        mem::write(p, b);
+        p
+    }
+
+    #[test]
+    fn data_and_strings_go_with_the_object() {
+        let _g = enter();
+        let out = mem::heap_alloc(8, true);
+        assert_eq!(call(DirectXFileCreate, &[out]), 0);
+        let file = r32(out);
+        let t = b"xof 0302txt 0032\ntemplate Filename {\n<3D82AB43-62DA-11CF-AB39-0020AF71E433>\nSTRING filename;\n}\n";
+        let tp = guest(t);
+        assert_eq!(call(register_templates, &[file, tp, t.len() as u32]), 0);
+        let x = b"xof 0302txt 0032\nFilename {\n\"foo.bmp\";\n}\n";
+        let xp = guest(x);
+        // DXFILELOADMEMORY {pointer, size}, DXFILELOAD_FROMMEMORY
+        let src = mem::heap_alloc(8, true);
+        w32(src, xp);
+        w32(src + 4, x.len() as u32);
+        assert_eq!(call(create_enum_object, &[file, src, 2, out]), 0);
+        let en = r32(out);
+        assert_eq!(call(get_next_data_object, &[en, out]), 0);
+        let data = r32(out);
+        let (size, ptr) = (mem::heap_alloc(4, true), mem::heap_alloc(8, true));
+        assert_eq!(call(get_data, &[data, 0, size, ptr]), 0);
+        let p = r32(ptr);
+        let s = r32(p);
+        assert_eq!(mem::cstr(s), b"foo.bmp");
+        // (the enumerator holds its objects: they go with it)
+        assert_eq!(call(release, &[data]), 1);
+        assert!(mem::heap_owns(s));
+        assert_eq!(call(release, &[en]), 0);
+        assert!(!mem::heap_owns(s) && !mem::heap_owns(p - 16) && !mem::heap_owns(data) && !mem::heap_owns(en));
+        assert_eq!(call(release, &[file]), 0);
+        assert!(!mem::heap_owns(file));
+        for q in [out, tp, xp, src, size, ptr] {
+            mem::heap_free(q);
+        }
+    }
 }

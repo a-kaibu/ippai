@@ -1266,18 +1266,17 @@ fn B_QueryInterface(c: &mut Ctx) -> u32 {
             0
         }
         0xb021_0783 => {
-            with_buf(this, |b| b.refs += 1);
-            put32(out, new_object(notify_vtbl(), this));
+            put32(out, child(notify_vtbl(), this));
             0
         }
         // IDirectSound3DListener (the primary buffer) / IDirectSound3DBuffer: accepted, the sound
         // is not positioned
         0x279a_fa84 => {
-            put32(out, new_object(listener3d_vtbl(), this));
+            put32(out, child(listener3d_vtbl(), this));
             0
         }
         0x279a_fa86 => {
-            put32(out, new_object(buffer3d_vtbl(), this));
+            put32(out, child(buffer3d_vtbl(), this));
             0
         }
         _ => {
@@ -1325,25 +1324,34 @@ fn B_AddRef(c: &mut Ctx) -> u32 {
     .unwrap_or(1)
 }
 fn B_Release(c: &mut Ctx) -> u32 {
-    let this = c.a(0);
-    let (left, data) = with(|d| {
-        let Some(b) = d.bufs.get_mut(&this) else { return (0, None) };
+    buf_release(c.a(0))
+}
+/// Release of buffer `this` (the guest's, or a notify / 3D object's reference on it): at the
+/// last one it leaves the mixer, and its PCM goes once no duplicate shares it.
+fn buf_release(this: u32) -> u32 {
+    let gone = with(|d| {
+        let b = d.bufs.get_mut(&this)?;
         b.refs = b.refs.saturating_sub(1);
         if b.refs > 0 {
-            return (b.refs, None);
+            return Some(Err(b.refs));
         }
         let b = d.bufs.remove(&this).unwrap();
         // the data goes once neither the buffer nor a duplicate of it is left
         let shared = d.bufs.values().any(|x| x.owner == b.owner);
-        (0, (!shared && b.data != 0).then_some(b.data))
+        Some(Ok((!shared && b.data != 0).then_some(b.data)))
     });
-    if let Some(p) = data {
-        mem::heap_free(p);
+    match gone {
+        // (not a buffer: released once too often)
+        None => 0,
+        Some(Err(n)) => n,
+        Some(Ok(data)) => {
+            if let Some(p) = data {
+                mem::heap_free(p);
+            }
+            mem::heap_free(this);
+            0
+        }
     }
-    if left == 0 {
-        mem::heap_free(this);
-    }
-    left
 }
 fn B_GetCaps(c: &mut Ctx) -> u32 {
     let p = c.a(1);
@@ -1503,6 +1511,7 @@ fn N_QueryInterface(c: &mut Ctx) -> u32 {
     let (this, iid, out) = (c.a(0), c.a(1), c.a(2));
     let buf = r32(this + 4);
     if r32(iid) == 0xb021_0783 || r32(iid) == 0 {
+        w32(this + 8, r32(this + 8) + 1);
         put32(out, this);
         return 0;
     }
@@ -1510,11 +1519,33 @@ fn N_QueryInterface(c: &mut Ctx) -> u32 {
     put32(out, 0);
     E_NOINTERFACE
 }
-fn N_AddRef(_: &mut Ctx) -> u32 {
-    1
+/// An interface object of buffer `buf` (IDirectSoundNotify, IDirectSound3DBuffer/Listener):
+/// {vtable, buffer, references}; it holds a reference on the buffer until its last Release.
+fn child(vtbl: u32, buf: u32) -> u32 {
+    with_buf(buf, |b| b.refs += 1);
+    let o = new_object(vtbl, buf);
+    w32(o + 8, 1);
+    o
 }
-fn N_Release(_: &mut Ctx) -> u32 {
-    0
+fn N_AddRef(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let n = r32(o + 8) + 1;
+    w32(o + 8, n);
+    n
+}
+fn N_Release(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let n = r32(o + 8);
+    if n == 0 {
+        return 0;
+    }
+    w32(o + 8, n - 1);
+    if n == 1 {
+        let buf = r32(o + 4);
+        mem::heap_free(o);
+        buf_release(buf);
+    }
+    n - 1
 }
 /// DSBPOSITIONNOTIFY {dwOffset, hEventNotify}: 8 bytes on x86; 16 on x64, the handle at 8 (after
 /// 4 bytes of padding). Reading x64's as x86's took the padding for the events, so none was ever
@@ -2080,5 +2111,121 @@ mod notify_layout_tests {
         let read = |a: u32| u32::from_le_bytes(bytes[a as usize..a as usize + 4].try_into().unwrap());
         assert_eq!(notify_list(4, 0, true, read).iter().map(|x| x.1).collect::<Vec<_>>(), [0x104, 0x108, 0x10c, 0x110]);
         assert_eq!(notify_list(4, 0, false, read)[1].1, 0, "x86's reading of an x64 array");
+    }
+}
+
+/// Buffer lifetimes (review B-3): IDirectSoundNotify and the 3D interfaces hold a reference on
+/// their buffer until their own last Release; the buffer and its PCM go with the last of all.
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    const IID_NOTIFY: u32 = 0xb021_0783;
+    const IID_3DBUFFER: u32 = 0x279a_fa86;
+
+    fn buffer() -> (u32, u32) {
+        let wfx = mem::heap_alloc(20, true);
+        // WAVE_FORMAT_PCM, 2 channels, 44100, 176400 bytes/s, align 4, 16 bits
+        mem::w16(wfx, 1);
+        mem::w16(wfx + 2, 2);
+        w32(wfx + 4, 44100);
+        w32(wfx + 8, 176400);
+        mem::w16(wfx + 12, 4);
+        mem::w16(wfx + 14, 16);
+        // DSBUFFERDESC: size, DSBCAPS_CTRLPOSITIONNOTIFY, 4096 bytes, reserved, format
+        let desc = mem::heap_alloc(36, true);
+        for (o, v) in [(0, 36), (4, 0x100), (8, 4096), (16, wfx)] {
+            w32(desc + o, v);
+        }
+        let out = mem::heap_alloc(8, true);
+        assert_eq!(call(DS_CreateSoundBuffer, &[0, desc, out]), 0);
+        let b = r32(out);
+        let data = with_buf(b, |x| x.data).unwrap();
+        for p in [wfx, desc, out] {
+            mem::heap_free(p);
+        }
+        (b, data)
+    }
+    fn qi(b: u32, iid: u32) -> u32 {
+        let g = mem::heap_alloc(16, true);
+        w32(g, iid);
+        let out = mem::heap_alloc(8, true);
+        assert_eq!(call(B_QueryInterface, &[b, g, out]), 0);
+        let o = r32(out);
+        mem::heap_free(g);
+        mem::heap_free(out);
+        o
+    }
+    fn alive(b: u32) -> bool {
+        with(|d| d.bufs.contains_key(&b))
+    }
+
+    /// cmvs's streaming pattern: a buffer, its notify interface, both released: nothing stays.
+    #[test]
+    fn notify_releases_its_buffer() {
+        let _g = enter();
+        let (b, data) = buffer();
+        let n = qi(b, IID_NOTIFY);
+        assert_eq!(with_buf(b, |x| x.refs), Some(2));
+        assert_eq!(call(B_Release, &[b]), 1);
+        assert!(alive(b));
+        assert_eq!(call(N_Release, &[n]), 0);
+        assert!(!alive(b));
+        assert!(!mem::heap_owns(data) && !mem::heap_owns(b) && !mem::heap_owns(n));
+    }
+
+    proptest! {
+        /// Any mix of AddRef / Release / QueryInterface on a buffer and its interfaces agrees
+        /// with one count each: the buffer lives while any count does, and every block goes at
+        /// the end.
+        #[test]
+        fn counts_as_a_model(ops in proptest::collection::vec((0u8..5, any::<prop::sample::Index>()), 0..40)) {
+            let _g = enter();
+            let (b, data) = buffer();
+            // [0]: the buffer's own count (the guest's), then each interface object's
+            let mut objs = vec![(b, 1u32)];
+            for (op, k) in ops {
+                let live: Vec<usize> = (0..objs.len()).filter(|&i| objs[i].1 > 0).collect();
+                if live.is_empty() {
+                    break;
+                }
+                let i = live[k.index(live.len())];
+                let (o, n) = objs[i];
+                let is_buf = i == 0;
+                match op {
+                    0 | 1 if objs[0].1 > 0 || objs.iter().skip(1).any(|x| x.1 > 0) => {
+                        if alive(b) {
+                            let iid = if op == 0 { IID_NOTIFY } else { IID_3DBUFFER };
+                            objs.push((qi(b, iid), 1));
+                        }
+                    }
+                    2 => {
+                        let r = call(if is_buf { B_AddRef } else { N_AddRef }, &[o]);
+                        objs[i].1 = n + 1;
+                        if !is_buf {
+                            prop_assert_eq!(r, n + 1);
+                        }
+                    }
+                    _ => {
+                        call(if is_buf { B_Release } else { N_Release }, &[o]);
+                        objs[i].1 = n - 1;
+                    }
+                }
+                let held = objs.iter().skip(1).filter(|x| x.1 > 0).count() as u32;
+                prop_assert_eq!(alive(b), objs[0].1 > 0 || held > 0);
+                if alive(b) {
+                    prop_assert_eq!(with_buf(b, |x| x.refs), Some(objs[0].1 + held));
+                }
+            }
+            for (i, &(o, n)) in objs.iter().enumerate() {
+                for _ in 0..n {
+                    call(if i == 0 { B_Release } else { N_Release }, &[o]);
+                }
+            }
+            prop_assert!(!alive(b));
+            prop_assert!(!mem::heap_owns(data));
+        }
     }
 }

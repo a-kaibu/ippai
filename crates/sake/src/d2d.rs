@@ -187,8 +187,12 @@ struct State {
     hwnds: HashMap<u32, (u32, u32)>,
     /// HWND / compatible render target -> the D3D11 device its textures come from
     d3d: HashMap<u32, u32>,
-    /// bitmap object -> the texture made for it (CreateBitmap1's targets), released with it
+    /// bitmap object -> the texture made for it (CreateBitmap1's targets, a compatible render
+    /// target's, a swap chain's buffer), released with it
     owned: HashMap<u32, u32>,
+    /// context -> the D3D11 objects it made or took (an HWND render target's swap chain,
+    /// immediate context and device, a compatible one's device), released with it
+    held: HashMap<u32, Vec<u32>>,
 }
 
 static S: Mutex<Option<State>> = Mutex::new(None);
@@ -240,7 +244,12 @@ fn back_buffer(c: &mut Ctx, sc: u32) -> u32 {
     c.call(mem::rp(mem::rp(sc) + mem::ps() * 9), &[sc, 0, iid, iid + 16]);
     let tex = r32(iid + 16);
     mem::heap_free(iid);
-    new_bitmap(tex)
+    let bmp = new_bitmap(tex);
+    // (GetBuffer's reference: the bitmap's, released with it)
+    if tex != 0 {
+        st(|s| s.owned.insert(bmp, tex));
+    }
+    bmp
 }
 
 /// CreateHwndRenderTarget(render target properties, HWND properties, out)
@@ -262,7 +271,7 @@ fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
     let (sc_out, dev_out, ctx_out) = (desc + 60, desc + 64, desc + 68);
     let create = crate::api::export("d3d11", "D3D11CreateDeviceAndSwapChain");
     let hr = c.call(create, &[0, 1, 0, 0x20, 0, 0, 7, desc, sc_out, dev_out, 0, ctx_out]);
-    let (sc, d3d) = (r32(sc_out), r32(dev_out));
+    let (sc, d3d, imm) = (r32(sc_out), r32(dev_out), r32(ctx_out));
     mem::heap_free(desc);
     if hr != 0 || sc == 0 {
         mem::putp(out, 0);
@@ -290,9 +299,10 @@ fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
         s.dcs.insert(o, Dc { device, ..Default::default() });
         s.hwnds.insert(o, (sc, hwnd));
         s.d3d.insert(o, d3d);
+        s.held.insert(o, [sc, imm, d3d].into_iter().filter(|&x| x != 0).collect());
     });
     let bmp = back_buffer(c, sc);
-    set_target(o, bmp);
+    set_target(c, o, bmp, true);
     mem::putp(out, o);
     0
 }
@@ -330,20 +340,23 @@ fn CreateCompatibleRenderTarget(c: &mut Ctx) -> u32 {
         mem::putp(out, 0);
         return 0x8007_000e;
     }
+    // (the texture is the bitmap's: released with it; drawn elsewhere as a surface)
     let bmp = new_bitmap(tex);
-    if let Some(gpu) = gpu2d::texture_gpu(tex) {
-        st(|s| s.images.insert(bmp, Image { gpu, w, h, opaque: false }));
-    }
+    st(|s| s.owned.insert(bmp, tex));
     gpu2d::clear(tex, [0.0; 4]);
     let mut methods: Vec<(&str, Handler)> = vec![("GetBitmap", GetBitmap as Handler), ("CreateCompatibleRenderTarget", CreateCompatibleRenderTarget)];
     methods.extend(context_methods());
     let o = com::object("ID2D1BitmapRenderTarget", &methods, 8);
+    // (it keeps its device and the D3D11 device its textures come from)
+    com::add_ref_obj(device);
+    c.call(mem::rp(mem::rp(d3d) + mem::ps()), &[d3d]);
     st(|s| {
         s.parents.insert(o, device);
         s.dcs.insert(o, Dc { device, ..Default::default() });
         s.d3d.insert(o, d3d);
+        s.held.insert(o, vec![d3d]);
     });
-    set_target(o, bmp);
+    set_target(c, o, bmp, true);
     mem::putp(out, o);
     0
 }
@@ -368,11 +381,12 @@ fn HwndEndDraw(c: &mut Ctx) -> u32 {
 fn Resize(c: &mut Ctx) -> u32 {
     let (o, p) = (c.a(0), c.a(1));
     let Some((sc, _)) = st(|s| s.hwnds.get(&o).copied()) else { return 0x8007_0057 };
-    flush(o);
+    // (the old buffer's bitmap goes first: its reference on the buffer with it)
+    set_target(c, o, 0, true);
     // IDXGISwapChain::ResizeBuffers(0 = keep the count, w, h, keep the format, flags)
     c.call(mem::rp(mem::rp(sc) + mem::ps() * 13), &[sc, 0, r32(p), r32(p + 4), 0, 0]);
     let bmp = back_buffer(c, sc);
-    set_target(o, bmp);
+    set_target(c, o, bmp, true);
     0
 }
 fn GetHwnd(c: &mut Ctx) -> u32 {
@@ -393,23 +407,39 @@ fn D2D1CreateFactory(c: &mut Ctx) -> u32 {
     0
 }
 
+/// A device of `factory` (which it keeps).
 fn new_device(factory: u32, out: u32) -> u32 {
     let d = com::object(
         DEVICE,
         &[("CreateDeviceContext", CreateDeviceContext as Handler), ("GetFactory", GetFactory), ("ClearResources", ok), ("SetMaximumTextureMemory", ok)],
         8,
     );
+    com::add_ref_obj(factory);
     st(|s| s.parents.insert(d, factory));
+    com::on_free(d, free_device);
     mem::putp(out, d);
     0
+}
+fn free_device(d: u32) {
+    if let Some(f) = st(|s| s.parents.remove(&d)) {
+        com::release_obj(f);
+    }
 }
 
 fn CreateDevice(c: &mut Ctx) -> u32 {
     new_device(c.a(0), c.a(2))
 }
 
+/// A device of a factory of its own (the device's reference alone).
+fn device_of_new_factory(out: u32) -> u32 {
+    let f = factory();
+    let r = new_device(f, out);
+    com::release_obj(f);
+    r
+}
+
 fn D2D1CreateDevice(c: &mut Ctx) -> u32 {
-    new_device(factory(), c.a(2))
+    device_of_new_factory(c.a(2))
 }
 
 fn GetFactory(c: &mut Ctx) -> u32 {
@@ -427,6 +457,7 @@ fn GetFactory(c: &mut Ctx) -> u32 {
 
 fn context_methods() -> Vec<(&'static str, Handler)> {
     vec![
+        ("Release", DcRelease),
         ("CreateSolidColorBrush", CreateSolidColorBrush),
         ("CreateBitmapFromDxgiSurface", CreateBitmapFromDxgiSurface),
         ("CreateBitmap#57", CreateBitmap1),
@@ -481,6 +512,8 @@ fn zero(_: &mut Ctx) -> u32 {
 fn CreateDeviceContext(c: &mut Ctx) -> u32 {
     let o = com::object(CONTEXT, &context_methods(), 8);
     let device = c.a(0);
+    // (a context keeps its device)
+    com::add_ref_obj(device);
     st(|s| {
         s.parents.insert(o, device);
         s.dcs.insert(o, Dc { device, ..Default::default() })
@@ -492,7 +525,7 @@ fn CreateDeviceContext(c: &mut Ctx) -> u32 {
 fn D2D1CreateDeviceContext(c: &mut Ctx) -> u32 {
     // (dxgi surface, properties, out): a device and a context targeting the surface
     let dev_out = mem::heap_alloc(8, true);
-    new_device(factory(), dev_out);
+    device_of_new_factory(dev_out);
     let device = mem::rp(dev_out);
     mem::heap_free(dev_out);
     let o = com::object(CONTEXT, &context_methods(), 8);
@@ -503,7 +536,7 @@ fn D2D1CreateDeviceContext(c: &mut Ctx) -> u32 {
         s.parents.insert(o, device);
         s.dcs.insert(o, Dc { device, ..Default::default() })
     });
-    set_target(o, bmp);
+    set_target(c, o, bmp, true);
     mem::putp(c.a(2), o);
     0
 }
@@ -524,7 +557,7 @@ fn CreateDxgiSurfaceRenderTarget(c: &mut Ctx) -> u32 {
         s.parents.insert(o, device);
         s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
     });
-    set_target(o, bmp);
+    set_target(c, o, bmp, true);
     mem::putp(c.a(3), o);
     0
 }
@@ -581,8 +614,12 @@ fn CreateSolidColorBrush(c: &mut Ctx) -> u32 {
         8,
     );
     st(|s| s.brushes.insert(o, Brush { color, opacity, linear: None }));
+    com::on_free(o, free_brush);
     mem::putp(c.a(3), o);
     0
+}
+fn free_brush(o: u32) {
+    st(|s| s.brushes.remove(&o));
 }
 fn SetColor(c: &mut Ctx) -> u32 {
     let p = c.a(1);
@@ -742,6 +779,11 @@ fn BitmapFormat(c: &mut Ctx) -> u32 {
 
 fn BitmapRelease(c: &mut Ctx) -> u32 {
     let this = c.a(0);
+    release_bitmap(c, this)
+}
+
+/// Release of bitmap `this` (from the guest, or from a context that held it as its target).
+fn release_bitmap(c: &mut Ctx, this: u32) -> u32 {
     let n = com::release_obj(this);
     if n == 0 {
         // (a texture of its own: CreateBitmap1's, released with it, ID3D11Texture2D::Release)
@@ -893,20 +935,62 @@ fn BitmapPixelSize(c: &mut Ctx) -> u32 {
     c.a(1)
 }
 
-fn set_target(dc: u32, bmp: u32) {
+/// `bmp` (0: none) becomes what `dc` draws into: the context keeps a reference on it (`adopt`:
+/// the caller's, of a bitmap made for it) and lets the last one go.
+fn set_target(c: &mut Ctx, dc: u32, bmp: u32, adopt: bool) {
     flush(dc);
-    st(|s| {
+    let old = st(|s| {
         let (surface, w, h) = s.bitmaps.get(&bmp).copied().unwrap_or_default();
-        if let Some(d) = s.dcs.get_mut(&dc) {
-            (d.target, d.surface, d.w, d.h) = (bmp, surface, w, h);
-            d.items.clear();
-            d.bitmap = None;
-        }
+        let d = s.dcs.get_mut(&dc)?;
+        let old = std::mem::replace(&mut d.target, bmp);
+        (d.surface, d.w, d.h) = (surface, w, h);
+        d.items.clear();
+        d.bitmap = None;
+        Some(old)
     });
+    let Some(old) = old else {
+        if adopt && bmp != 0 {
+            release_bitmap(c, bmp);
+        }
+        return;
+    };
+    if bmp != 0 && !adopt {
+        com::add_ref_obj(bmp);
+    }
+    if old != 0 {
+        release_bitmap(c, old);
+    }
 }
 fn SetTarget(c: &mut Ctx) -> u32 {
-    set_target(c.a(0), c.a(1));
+    set_target(c, c.a(0), c.a(1), false);
     0
+}
+
+/// Release of a context: at the last reference its target, its device and what it holds of
+/// D3D11 go with it (what it drew and did not flush is lost, as on Windows).
+fn DcRelease(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let n = com::release_obj(this);
+    if n == 0 {
+        let (dc, held) = st(|s| {
+            s.hwnds.remove(&this);
+            s.d3d.remove(&this);
+            s.parents.remove(&this);
+            (s.dcs.remove(&this), s.held.remove(&this).unwrap_or_default())
+        });
+        if let Some(d) = dc {
+            if d.target != 0 {
+                release_bitmap(c, d.target);
+            }
+            if d.device != 0 {
+                com::release_obj(d.device);
+            }
+        }
+        for o in held {
+            c.call(mem::rp(mem::rp(o) + mem::ps() * 2), &[o]);
+        }
+    }
+    n
 }
 fn GetTarget(c: &mut Ctx) -> u32 {
     let t = st(|s| s.dcs.get(&c.a(0)).map_or(0, |d| d.target));
@@ -1106,6 +1190,9 @@ fn CreateGradientStopCollection(c: &mut Ctx) -> u32 {
     }).collect();
     let o = com::object("ID2D1GradientStopCollection", &[("GetGradientStopCount", StopCount as Handler)], 8);
     st(|s| s.stops.insert(o, stops));
+    com::on_free(o, |o| {
+        st(|s| s.stops.remove(&o));
+    });
     mem::putp(c.a(5), o);
     0
 }
@@ -1121,6 +1208,7 @@ fn CreateLinearGradientBrush(c: &mut Ctx) -> u32 {
     let o = com::object("ID2D1LinearGradientBrush", &[("SetOpacity", SetOpacity as Handler), ("GetOpacity", GetOpacity)], 8);
     let linear = Some(([rf(lp, 0), rf(lp, 1)], [rf(lp, 2), rf(lp, 3)], stops));
     st(|s| s.brushes.insert(o, Brush { color: [0.0; 4], opacity, linear }));
+    com::on_free(o, free_brush);
     mem::putp(c.a(4), o);
     0
 }
@@ -1419,9 +1507,18 @@ fn geoms<R>(f: impl FnOnce(&mut HashMap<u32, Geom>) -> R) -> R {
 fn geom_methods() -> Vec<(&'static str, Handler)> {
     vec![("Open", GeomOpen as Handler), ("GetFactory", GetFactoryOfGeom)]
 }
+/// A geometry keeps its factory (after the vtable pointer) and a transformed one its source.
+fn free_geom(o: u32) {
+    com::release_obj(r32(o + mem::ps()));
+    if let Some(Geom::Xformed { src, .. }) = geoms(|m| m.remove(&o)) {
+        com::release_obj(src);
+    }
+}
 fn CreatePathGeometry(c: &mut Ctx) -> u32 {
     let o = com::object("ID2D1PathGeometry1", &geom_methods(), 16);
     w32(o + mem::ps(), c.a(0));
+    com::add_ref_obj(c.a(0));
+    com::on_free(o, free_geom);
     geoms(|m| m.insert(o, Geom::Path { glyphs: Vec::new(), figures: false }));
     mem::putp(c.a(1), o);
     0
@@ -1438,7 +1535,9 @@ fn CreateTransformedGeometry(c: &mut Ctx) -> u32 {
     let xf = [rf(m, 0), rf(m, 1), rf(m, 2), rf(m, 3), rf(m, 4), rf(m, 5)];
     let o = com::object("ID2D1TransformedGeometry", &[("GetFactory", GetFactoryOfGeom as Handler)], 16);
     w32(o + mem::ps(), c.a(0));
+    com::add_ref_obj(c.a(0));
     com::add_ref_obj(src);
+    com::on_free(o, free_geom);
     geoms(|g| g.insert(o, Geom::Xformed { src, m: xf }));
     mem::putp(out, o);
     0
@@ -1467,6 +1566,10 @@ fn GeomOpen(c: &mut Ctx) -> u32 {
     let o = com::object("ID2D1GeometrySink", &m, 16);
     w32(o + mem::ps(), c.a(0));
     com::add_ref_obj(c.a(0));
+    // (the sink keeps its geometry)
+    com::on_free(o, |o| {
+        com::release_obj(r32(o + mem::ps()));
+    });
     mem::putp(c.a(1), o);
     0
 }
@@ -1660,6 +1763,9 @@ pub fn init() {
 
 #[cfg(test)]
 mod draw_tests;
+
+#[cfg(test)]
+mod lifetime_tests;
 
 #[cfg(test)]
 mod source_tests {

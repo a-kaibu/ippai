@@ -9,7 +9,7 @@
 use std::sync::Mutex;
 
 use crate::api::{implement, vtable, Ctx, Handler};
-use crate::d3dx9::{add_ref, buffer, com_call, qi_no, release};
+use crate::d3dx9::{add_ref, buffer, com_call, qi_no};
 use crate::mem::{self, r32, w32};
 
 const INVALIDDATA: u32 = 0x8876_0b59;
@@ -79,7 +79,32 @@ struct Table {
     creator: u32,
 }
 
-static TABLES: Mutex<Vec<Table>> = Mutex::new(Vec::new());
+/// (a released table's place stays, empty: objects name theirs by index)
+static TABLES: Mutex<Vec<Option<Table>>> = Mutex::new(Vec::new());
+
+/// The guest strings a table made.
+fn free_table(t: Table) {
+    for p in t.ks.iter().map(|k| k.name_ptr).chain([t.creator, t.base]) {
+        mem::heap_free(p);
+    }
+}
+
+/// ID3DXConstantTable::Release: at the last reference the table, its strings and its copy of
+/// the CTAB go.
+fn ct_release(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let n = r32(o + 4).saturating_sub(1);
+    w32(o + 4, n);
+    if n == 0 {
+        let t = TABLES.lock().unwrap().get_mut(r32(o + 16) as usize).and_then(Option::take);
+        if let Some(t) = t {
+            free_table(t);
+            mem::heap_free(r32(o + 8));
+            mem::heap_free(o);
+        }
+    }
+    n
+}
 
 /// registers one element of a type takes
 fn regs_of(t: &Table, k: &K) -> u32 {
@@ -173,7 +198,7 @@ fn table_vt() -> u32 {
             &[
                 (qi_no, 12),
                 (add_ref, 4),
-                (release, 4),
+                (ct_release, 4),
                 (ct_pointer, 4),
                 (ct_size, 4),
                 (ct_desc, 8),
@@ -216,14 +241,19 @@ fn new_table(code: &[u8]) -> Option<u32> {
     w32(o + 8, data);
     w32(o + 12, d.len() as u32);
     let mut tabs = TABLES.lock().unwrap();
-    w32(o + 16, tabs.len() as u32);
-    tabs.push(t);
+    // (a released table's place first)
+    let i = tabs.iter().position(Option::is_none).unwrap_or_else(|| {
+        tabs.push(None);
+        tabs.len() - 1
+    });
+    w32(o + 16, i as u32);
+    tabs[i] = Some(t);
     Some(o)
 }
 
 fn with<R>(this: u32, f: impl FnOnce(&Table) -> R) -> Option<R> {
     let tabs = TABLES.lock().unwrap();
-    tabs.get(r32(this + 16) as usize).map(f)
+    tabs.get(r32(this + 16) as usize)?.as_ref().map(f)
 }
 
 /// The constant a handle names: one of ours, or a name ("a", "s.b", "a[2]") under `parent`.
@@ -645,6 +675,7 @@ fn get_table(code: &[u8], out: u32) -> u32 {
     }
 }
 
+/// A guest copy of `s` kept for good (one per distinct string).
 fn profile(s: &str) -> u32 {
     static P: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
     let mut p = P.lock().unwrap();
@@ -705,11 +736,13 @@ fn D3DXGetShaderSamplers(c: &mut Ctx) -> u32 {
     for &k in &t.top {
         if t.ks[k].set == 3 {
             if names != 0 {
-                w32(names + 4 * t.ks[k].reg, t.ks[k].name_ptr);
+                // (Windows' point into the shader; ours are kept, one per name)
+                w32(names + 4 * t.ks[k].reg, profile(&t.ks[k].name));
             }
             n = n.max(t.ks[k].reg + 1);
         }
     }
+    free_table(t);
     if count != 0 {
         w32(count, n);
     }
@@ -813,6 +846,63 @@ mod tests {
         assert!(names.contains(&("tex".to_string(), 3, 0, 1)), "{names:?}");
         assert!(names.iter().any(|n| n.0 == "lights" && n.3 == 4), "{names:?}");
         assert!(names.iter().any(|n| n.0 == "wvp" && n.3 == 4), "{names:?}");
+    }
+}
+
+/// Constant table lifetimes (review B-1): the last Release frees the table's strings, handles
+/// and CTAB copy, and the next table takes its place; D3DXGetShaderSamplers keeps one string
+/// per name instead of a new table's worth each call.
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+
+    fn code() -> Vec<u8> {
+        let src = "float4 tint; sampler2D tex; float4 main(float2 uv : TEXCOORD0) : COLOR { return tex2D(tex, uv) * tint; }";
+        let mut inc = |_: &str, _: bool| None;
+        hlslc::compile(src, &[], &mut inc, "main", "ps_3_0", 0).unwrap()
+    }
+
+    #[test]
+    fn tables_free_what_they_made() {
+        let _g = enter();
+        let code = code();
+        let t = new_table(&code).unwrap();
+        let (data, i) = (r32(t + 8), r32(t + 16));
+        let made: Vec<u32> = with(t, |x| x.ks.iter().map(|k| k.name_ptr).chain([x.creator, x.base]).collect()).unwrap();
+        assert!(made.iter().all(|&p| mem::heap_owns(p)));
+        assert_eq!(call(add_ref, &[t]), 2);
+        assert_eq!(call(ct_release, &[t]), 1);
+        assert!(mem::heap_owns(data));
+        assert_eq!(call(ct_release, &[t]), 0);
+        assert!(!mem::heap_owns(data) && !mem::heap_owns(t));
+        assert!(made.iter().all(|&p| !mem::heap_owns(p)));
+        assert!(TABLES.lock().unwrap()[i as usize].is_none());
+        // (a new table reuses the place)
+        let t2 = new_table(&code).unwrap();
+        assert_eq!(r32(t2 + 16), i);
+        assert_eq!(call(ct_release, &[t2]), 0);
+    }
+
+    #[test]
+    fn sampler_names_are_kept_once() {
+        let _g = enter();
+        let code = code();
+        let p = mem::heap_alloc(code.len() as u32, false);
+        mem::write(p, &code);
+        let names = mem::heap_alloc(64, true);
+        let count = mem::heap_alloc(4, true);
+        assert_eq!(call(D3DXGetShaderSamplers, &[p, names, count]), 0);
+        assert_eq!(r32(count), 1);
+        let first = r32(names);
+        assert_eq!(mem::cstr(first), b"tex");
+        for _ in 0..10 {
+            call(D3DXGetShaderSamplers, &[p, names, count]);
+            assert_eq!(r32(names), first);
+        }
+        for x in [p, names, count] {
+            mem::heap_free(x);
+        }
     }
 }
 
