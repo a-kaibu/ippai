@@ -1,5 +1,15 @@
+import { same } from "./file-records";
 /** Bytes per second an upload is given at least before it is given up (a phone's poor link). */
 const SLOW_LINK = 64 * 1024;
+
+/** What a store that met another device's newer save rejects with (every later store of the
+ * page too: the player must reload to take the other device's save). */
+export class SaveConflict extends Error {
+  constructor() {
+    super("別の端末でセーブが更新されました。再読み込みが必要です");
+    this.name = "SaveConflict";
+  }
+}
 
 /** Serialize writes per game and keep the last acknowledged revision. Every request has a time
  * limit (`waitMs`, an upload also a second per SLOW_LINK bytes): one that stalls without failing
@@ -55,14 +65,14 @@ export class SaveTransport {
       if (!r.ok) throw new Error(`セーブの取得に失敗しました: HTTP ${r.status}`);
       const revision = r.headers.get("etag");
       const bytes = new Uint8Array(await r.arrayBuffer());
-      if (!revision || bytes.length !== base.length || !bytes.every((b, i) => b === base[i]))
-        throw new Error("別の端末でセーブが更新されました。再読み込みが必要です");
+      if (!revision || !same(bytes, base)) throw new SaveConflict();
       this.revisions.set(url, revision);
     }
     this.bases.delete(url);
   }
   store(url: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
-    const snapshot = data.slice();
+    // (the caller's array as it is: callers hand a fresh export and do not change it)
+    const snapshot = data;
     const previous = this.queues.get(url) ?? Promise.resolve();
     const pending = previous
       .catch(() => {})
@@ -81,12 +91,12 @@ export class SaveTransport {
           const current = await this.request(url, { cache: "no-store", signal: this.limit(snapshot.length) });
           if (current.ok && current.headers.get("etag")) {
             const bytes = new Uint8Array(await current.arrayBuffer());
-            if (bytes.length === snapshot.length && bytes.every((b, i) => b === snapshot[i])) {
+            if (same(bytes, snapshot)) {
               this.revisions.set(url, current.headers.get("etag")!);
               return;
             }
           }
-          throw new Error("別の端末でセーブが更新されました。再読み込みが必要です");
+          throw new SaveConflict();
         }
         if (!r.ok) throw new Error(`セーブの保存に失敗しました: HTTP ${r.status}`);
         const revision = r.headers.get("etag");

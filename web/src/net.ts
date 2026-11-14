@@ -8,7 +8,7 @@
 
 import { blake3Hex } from "./blake3";
 import { drain, gate } from "./budget";
-import { deviceChunks, type ChunkStore } from "./chunkstore";
+import { deviceChunks, listChunks, type ChunkStore } from "./chunkstore";
 
 export const CHUNKS = "ippai-chunks-v1";
 const RETRY = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
@@ -257,21 +257,17 @@ const KEEP_BYTES = 2 * 1024 ** 3;
  * chunks' own (x-ippai-size; FastCDC chunks are 4 MiB on average, 64 MiB at most). Also asks the
  * browser to keep this origin's data under storage pressure.
  */
-export async function trimChunks(saved: () => Promise<Set<string>> = async () => new Set()): Promise<void> {
+export async function trimChunks(
+  saved: () => Promise<Set<string>> = async () => new Set(),
+  store?: ChunkStore | null,
+): Promise<void> {
   void navigator.storage?.persist?.().catch(() => false);
-  const cache = await chunkCache();
+  const cache = store === undefined ? await chunkCache() : store;
   if (!cache) return;
   const { quota = 0, usage = 0 } = (await navigator.storage?.estimate?.().catch(() => undefined)) ?? {};
-  const keys = await cache.keys();
-  const sizes = await Promise.all(
-    keys.map(async (k) => {
-      const r = await cache.match(k).catch(() => undefined);
-      if (!r) return 0;
-      const n = Number(r.headers.get(SIZE));
-      return n > 0 ? n : ((await r.blob().catch(() => null))?.size ?? 0);
-    }),
-  );
-  const chunks = sizes.reduce((a, b) => a + b, 0);
+  // (listed with sizes and times a few files at a time, not every chunk opened at once)
+  const kept = await listChunks(cache);
+  const chunks = kept.reduce((a, k) => a + k.size, 0);
   let limit = Math.min(KEEP_BYTES, quota ? quota * 0.5 : KEEP_BYTES);
   // (usage counts the chunks too, as the browser last measured)
   if (quota && usage) limit = Math.min(limit, quota * SHARE - Math.max(0, usage - chunks));
@@ -280,12 +276,23 @@ export async function trimChunks(saved: () => Promise<Set<string>> = async () =>
   const keep = await saved().catch(() => null);
   // (the saved games' lists out of reach: nothing goes rather than their chunks)
   if (!keep) return;
-  for (const [i, k] of keys.entries()) {
+  for (const k of trimOrder(kept)) {
     if (over <= 0) break;
-    if (keep.has(k.url.slice(k.url.lastIndexOf("/") + 1))) continue;
-    await cache.delete(k);
-    over -= sizes[i]!;
+    if (keep.has(chunkName(k.url))) continue;
+    // (one that stayed, open in the network worker for a read: still counted)
+    if (await cache.delete(k).catch(() => false)) over -= k.size;
   }
+}
+/** A kept chunk's name (its hex, a block's with its ?b=..&s=..). */
+const chunkName = (url: string) => url.slice(url.lastIndexOf("/") + 1);
+
+/** The order chunks go in at a trim: the oldest written first (OPFS lists by name, not age);
+ * those with no time (Cache Storage's, older still) first, in their order. */
+export function trimOrder<T extends { time: number }>(kept: readonly T[]): T[] {
+  return kept
+    .map((k, i) => [k, i] as const)
+    .sort((a, b) => a[0].time - b[0].time || a[1] - b[1])
+    .map(([k]) => k);
 }
 /** Of the quota, what the origin may fill in all before chunks go (trimChunks). */
 const SHARE = 0.8;

@@ -1,7 +1,7 @@
-import { SaveTransport } from "./save-transport";
+import { SaveConflict, SaveTransport } from "./save-transport";
 import { withRetries } from "./net";
 import { snapping } from "./savestate";
-import { portablePath, selectRecords } from "./file-records";
+import { portablePath, same, selectRecords } from "./file-records";
 // Saved games: what the game wrote (in kura's in-memory file system) survives the page.
 // The files written under the game's folders and the prefix's user folders go to the browser's
 // origin private file system (OPFS) as one blob per game, whenever they change (checked every
@@ -22,6 +22,9 @@ export interface SavesModule {
 export interface SaveFiles {
   read(file: string): Promise<Uint8Array<ArrayBuffer> | null>;
   write(file: string, data: Uint8Array): Promise<void>;
+  /** the files kept, and a removal (stash keeps the newest few copies set aside) */
+  list?(): Promise<string[]>;
+  remove?(file: string): Promise<void>;
 }
 
 const opfs: SaveFiles = {
@@ -42,6 +45,16 @@ const opfs: SaveFiles = {
     const w = await (await dir.getFileHandle(file, { create: true })).createWritable();
     await w.write(data as Uint8Array<ArrayBuffer>);
     await w.close();
+  },
+  async list() {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("saves", { create: true });
+    const out: string[] = [];
+    for await (const name of (dir as unknown as { keys(): AsyncIterable<string> }).keys()) out.push(name);
+    return out;
+  },
+  async remove(file) {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("saves");
+    await dir.removeEntry(file);
   },
 };
 
@@ -84,6 +97,24 @@ async function stash(name: string, what: string, data: Uint8Array): Promise<void
   await files
     .write(`${name}.${what}-${Date.now()}.bin`, data)
     .catch((e: unknown) => console.warn("saves: stash", e));
+  // (the newest STASH_KEEP of the name's copies stay: before, every conflict left a whole copy
+  // for good, counted against the quota the chunk cache is trimmed by)
+  const all = await files.list?.().catch(() => []);
+  if (!all || !files.remove) return;
+  for (const f of stashesToDrop(name, all)) await files.remove(f).catch(() => undefined);
+}
+
+/** Copies set aside kept per game (stash). */
+export const STASH_KEEP = 3;
+
+/** Of the files `all`, `name`'s copies set aside beyond the newest STASH_KEEP (by their time). */
+export function stashesToDrop(name: string, all: readonly string[]): string[] {
+  const pre = `${name}.`;
+  const mine = all
+    .filter((f) => f.startsWith(pre) && /^(server|local)-\d+\.bin$/.test(f.slice(pre.length)))
+    .map((f) => [f, Number(/-(\d+)\.bin$/.exec(f)![1])] as const)
+    .sort((a, b) => b[1] - a[1]);
+  return mine.slice(STASH_KEEP).map(([f]) => f);
 }
 
 // (one save of a name at a time: a later one's "dirty" never lands under an earlier one's "clean")
@@ -153,31 +184,37 @@ export async function loadSaves(
 export function exportFiles(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
   const s = new TextEncoder().encode(`${roots.join(":")}\0`);
   const sp = m._malloc(s.length + 8) >>> 0;
-  new Uint8Array(m.wasmMemory.buffer).set(s, sp);
-  const lenp = sp + Math.ceil(s.length / 4) * 4;
-  const p = m._vnhost_vfs_export(sp, lenp) >>> 0;
-  const len = new Uint32Array(m.wasmMemory.buffer, lenp, 1)[0]!;
-  const out = new Uint8Array(len);
-  out.set(new Uint8Array(m.wasmMemory.buffer, p, len));
-  m._vnhost_free(p);
-  m._vnhost_free(sp);
-  return out;
+  // (no room in the host heap: not the roots written over the guest's memory at address 0)
+  if (!sp) throw new Error("saves: no memory for the export");
+  try {
+    new Uint8Array(m.wasmMemory.buffer).set(s, sp);
+    const lenp = sp + Math.ceil(s.length / 4) * 4;
+    const p = m._vnhost_vfs_export(sp, lenp) >>> 0;
+    if (!p) throw new Error("saves: no memory for the export");
+    const len = new Uint32Array(m.wasmMemory.buffer, lenp, 1)[0]!;
+    const out = new Uint8Array(len);
+    out.set(new Uint8Array(m.wasmMemory.buffer, p, len));
+    m._vnhost_free(p);
+    return out;
+  } finally {
+    m._vnhost_free(sp);
+  }
 }
 
 function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
   return selectRecords(exportFiles(m, roots), portablePath)!;
 }
 
-function same(a: Uint8Array | null, b: Uint8Array): boolean {
-  if (!a || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
 /** Writes `data` as `name`'s blob: this browser's copy, then the server's (rejects when the
  * server's failed; this browser's copy is kept, marked as not sent). `local` false: this
- * browser's copy already holds these bytes (marked dirty), only the server's is written. */
-export function storeSaves(name: string, data: Uint8Array<ArrayBuffer>, local = true): Promise<boolean> {
+ * browser's copy already holds these bytes (marked dirty), only the server's is written;
+ * `upload` false: this browser's copy only (marked not sent: sent later, or at the next start). */
+export function storeSaves(
+  name: string,
+  data: Uint8Array<ArrayBuffer>,
+  local = true,
+  upload = true,
+): Promise<boolean> {
   return locked(name, async () => {
     const url = backup(name);
     // This browser's copy first: with the link down the save still survives the page (the
@@ -192,6 +229,7 @@ export function storeSaves(name: string, data: Uint8Array<ArrayBuffer>, local = 
         console.warn("saves: local cache", e);
       }
     }
+    if (!upload) return false;
     await transport.store(url, data);
     await writeSync(name, { base: transport.revision(url) ?? null, dirty: false }).catch((e: unknown) =>
       console.warn("saves: local cache", e),
@@ -199,6 +237,10 @@ export function storeSaves(name: string, data: Uint8Array<ArrayBuffer>, local = 
     return true;
   });
 }
+
+/** The least time between two uploads of a game's saves while it plays (keepSaving; one forced
+ * by the page being hidden or the game quitting goes at once). */
+export const UPLOAD_EVERY = 60_000;
 
 /**
  * Keeps saving what the game writes under `roots` for `name`. Returns a function that saves now
@@ -210,8 +252,9 @@ export function keepSaving(
   name: string,
   roots: string[],
   last: Uint8Array | null,
-  // (tests: the clock and the export)
-  opt: { now?: () => number; read?: () => Uint8Array<ArrayBuffer> } = {},
+  // (tests: the clock and the export; `notice`: what the player is told, once, when the server's
+  // copy stopped taking this page's saves: another device saved since)
+  opt: { now?: () => number; read?: () => Uint8Array<ArrayBuffer>; notice?: (message: string) => void } = {},
 ): (force?: boolean) => Promise<void> {
   const now = opt.now ?? Date.now;
   const read = opt.read ?? (() => exportSaves(m, roots));
@@ -225,6 +268,7 @@ export function keepSaving(
   let unsent: Uint8Array<ArrayBuffer> | null = null;
   let failures = 0;
   let retryAt = 0;
+  let told = false;
   const perform = async (force: boolean) => {
     // (a save state is being taken: the memory stays as it is; the next look saves)
     if (snapping()) return;
@@ -241,15 +285,29 @@ export function keepSaving(
       }
       // (the same bytes as this browser's copy already: only the upload again, and only when due)
       const local = !same(unsent, data);
-      if (!local && !force && now() < retryAt) return;
+      const due = force || now() >= retryAt;
+      if (!local && !due) return;
       unsent = data;
-      await storeSaves(name, data, local);
+      // (between uploads, a change is written to this browser's copy only: an engine that
+      // rewrites a system file every few lines made each 5 s look upload the whole set again;
+      // the upload follows UPLOAD_EVERY after the last, at once when the page is hidden or the
+      // game quits, and a page killed meanwhile sends this copy at its next start)
+      await storeSaves(name, data, local, due);
+      if (!due) return;
       last = data;
       unsent = null;
       failures = 0;
+      retryAt = now() + UPLOAD_EVERY;
     } catch (e) {
+      if (e instanceof SaveConflict && !told) {
+        told = true;
+        opt.notice?.(
+          "別の端末でこのゲームのセーブが更新されたため、サーバーへの保存を止めました（この端末には保存しています）。再読み込みすると別の端末のセーブを使います",
+        );
+      }
       failures++;
-      retryAt = now() + Math.min(5000 * 2 ** failures, 5 * 60_000);
+      // (a forced one that failed does not bring the next plain upload forward)
+      retryAt = Math.max(retryAt, now() + Math.min(5000 * 2 ** failures, 5 * 60_000));
       console.warn(`saves: ${String(e)}`);
     }
   };

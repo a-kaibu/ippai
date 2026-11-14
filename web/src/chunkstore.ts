@@ -17,7 +17,58 @@ export interface ChunkStore {
   put(request: Key, response: Response): Promise<void>;
   delete(request: Key): Promise<boolean>;
   keys(): Promise<readonly { url: string }[]>;
+  /** What is kept, with each one's bytes and when it was written (ms; 0: not known), none empty
+   * (chunkstore's own; a plain Cache has none: listChunks measures it). */
+  list?(): Promise<Kept[]>;
 }
+/** A kept chunk or block: its key, bytes, when written (ms since 1970; 0: not known). */
+export interface Kept {
+  url: string;
+  size: number;
+  time: number;
+}
+/** How many files are opened at once to list a store (not all of them together: tens of
+ * thousands of File objects on a phone's main thread). */
+const LIST_AT_ONCE = 16;
+
+/** Runs `f` over `xs`, `width` at a time, in order of the results. */
+async function batched<T, R>(xs: readonly T[], width: number, f: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = Array.from({ length: xs.length });
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(width, xs.length) }, async () => {
+      while (next < xs.length) {
+        const i = next++;
+        out[i] = await f(xs[i]!);
+      }
+    }),
+  );
+  return out;
+}
+
+/** The old Cache Storage's entries with their sizes (x-ippai-size, else measured), not `skip`'s. */
+async function listOld(old: Cache | null, skip: (k: Key) => boolean = () => false): Promise<Kept[]> {
+  const keys = ((await old?.keys().catch(() => [])) ?? []).filter((k) => !skip(k));
+  const sized = await batched(keys, LIST_AT_ONCE, async (k): Promise<Kept> => {
+    const r = await old?.match(k.url).catch(() => undefined);
+    const n = Number(r?.headers.get(SIZE));
+    const size = n > 0 ? n : ((await r?.blob().catch(() => null))?.size ?? 0);
+    return { url: k.url, size, time: 0 };
+  });
+  return sized.filter((k) => k.size > 0);
+}
+
+/** What `store` keeps with sizes and times (its list(), else its keys measured a few at a time). */
+export function listChunks(store: ChunkStore): Promise<Kept[]> {
+  return store.list ? store.list() : listOld(store as unknown as Cache);
+}
+
+/** Whether a store's put failed because the file is open elsewhere for a read (the network
+ * worker's synchronous handle): then it is there already. */
+const busy = (e: unknown) => e instanceof DOMException && e.name === "NoModificationAllowedError";
+
+/** Empty files (writes cut short by a killed tab) older than this go at a listing. */
+export const EMPTY_STALE_MS = 10 * 60 * 1000;
 /** A URL, or what keys() gave. */
 export type Key = string | URL | { url: string };
 
@@ -70,12 +121,28 @@ export function opfsStore(dir: FileSystemDirectoryHandle, old: Cache | null): Ch
         if (k) await old?.put(k, response);
         return;
       }
-      const data = new Uint8Array(await response.arrayBuffer());
-      if (!data.length) return;
-      const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      // (the body as it comes, not read whole first and copied again)
+      if (response.headers.get(SIZE) === "0" || !response.body) return;
+      let w: FileSystemWritableFileStream;
       try {
-        await w.write(data);
-        await w.close();
+        w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      } catch (e) {
+        // (open for a read in the network worker: kept there already, as checked as this)
+        if (busy(e)) return;
+        throw e;
+      }
+      try {
+        // (QuotaExceededError goes to the caller: net.ts storeChunk, isFull)
+        const r = response.body.getReader();
+        let n = 0;
+        for (;;) {
+          const { done, value } = await r.read();
+          if (done) break;
+          n += value.length;
+          await w.write(value);
+        }
+        if (n) await w.close();
+        else await w.abort();
       } catch (e) {
         await w.abort().catch(() => undefined);
         throw e;
@@ -107,14 +174,43 @@ export function opfsStore(dir: FileSystemDirectoryHandle, old: Cache | null): Ch
       for (const k of (await old?.keys().catch(() => [])) ?? []) if (!seen.has(chunkFileName(k))) out.push(k);
       return out;
     },
+    async list() {
+      const handles: FileSystemFileHandle[] = [];
+      for await (const h of (dir as unknown as { values(): AsyncIterable<FileSystemHandle> }).values())
+        if (h.kind === "file" && chunkFileName(h.name)) handles.push(h as FileSystemFileHandle);
+      const now = Date.now();
+      const files = await batched(handles, LIST_AT_ONCE, async (h) => {
+        try {
+          const f = await h.getFile();
+          // (an empty one: being written now, or a write a killed tab cut short; those go)
+          if (!f.size && now - f.lastModified > EMPTY_STALE_MS)
+            await dir.removeEntry(h.name).catch(() => undefined);
+          return { url: `opfs:/${CHUNK_DIR}/${h.name}`, size: f.size, time: f.lastModified };
+        } catch {
+          return { url: "", size: 0, time: 0 };
+        }
+      });
+      const out = files.filter((f) => f.size > 0);
+      const seen = new Set(handles.map((h) => h.name));
+      return out.concat(await listOld(old, (k) => seen.has(chunkFileName(k))));
+    },
   };
 }
 
 let opened: Promise<FileSystemDirectoryHandle | null> | undefined;
 
+// (Cache Storage's chunk cache opened once, for the CacheStorage it came from)
+let oldOpened: { of: CacheStorage; p: Promise<Cache | null> } | undefined;
+
 /** The device's chunk store: OPFS (with Cache Storage's old entries), else Cache Storage alone, else none. */
 export async function deviceChunks(): Promise<ChunkStore | null> {
-  const old = typeof caches === "undefined" ? null : await caches.open("ippai-chunks-v1").catch(() => null);
+  let old: Cache | null = null;
+  if (typeof caches !== "undefined") {
+    if (oldOpened?.of !== caches)
+      oldOpened = { of: caches, p: caches.open("ippai-chunks-v1").catch(() => null) };
+    old = await oldOpened.p;
+    if (!old) oldOpened = undefined;
+  }
   // (the folder opened once; none: Cache Storage alone, asked again next time)
   const dir = await (opened ??= (async () => {
     try {

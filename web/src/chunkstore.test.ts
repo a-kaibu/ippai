@@ -1,6 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import source from "../../host/fetch-bridge.js?raw";
-import { chunkFileName, opfsStore, type ChunkStore } from "./chunkstore";
+import { chunkFileName, EMPTY_STALE_MS, listChunks, opfsStore, type ChunkStore } from "./chunkstore";
 
 // An OPFS folder as Chromium's behaves for what the stores use: a file exists (empty) from its
 // creation, a writable's bytes land whole at close (abort: none), removeEntry of a file with an
@@ -8,16 +8,25 @@ import { chunkFileName, opfsStore, type ChunkStore } from "./chunkstore";
 class FakeDir {
   files = new Map<string, Uint8Array>();
   open = new Map<string, number>();
+  /** when each file was written last (ms), and the clock */
+  times = new Map<string, number>();
+  now = 1_000_000;
+  /** files whose writables refuse to open (a read in the network worker holds them) */
+  held = new Set<string>();
   async getFileHandle(name: string, opt: { create?: boolean } = {}) {
     if (!this.files.has(name)) {
       if (!opt.create) throw new DOMException("no", "NotFoundError");
       this.files.set(name, new Uint8Array(0));
+      this.times.set(name, this.now);
     }
     return {
+      kind: "file" as const,
+      name,
       getFile: async () => {
-        return new File([this.files.get(name)!.slice()], name);
+        return new File([this.files.get(name)!.slice()], name, { lastModified: this.times.get(name) });
       },
       createWritable: async () => {
+        if (this.held.has(name)) throw new DOMException("held", "NoModificationAllowedError");
         let parts: Uint8Array[] = [];
         return {
           write: async (d: Uint8Array) => {
@@ -29,6 +38,7 @@ class FakeDir {
             let at = 0;
             for (const p of parts) all.set(p, (at += p.length) - p.length);
             this.files.set(name, all);
+            this.times.set(name, this.now);
           },
           abort: async () => {
             parts = [];
@@ -63,6 +73,9 @@ class FakeDir {
   }
   async *keys() {
     yield* Array.from(this.files.keys());
+  }
+  async *values() {
+    for (const name of Array.from(this.files.keys())) yield await this.getFileHandle(name);
   }
 }
 
@@ -181,6 +194,16 @@ test("the page's and the worker's stores over one folder agree with a model (dif
     const names = (await page.keys()).map((k) => chunkFileName(k));
     expect(new Set(names).size).toBe(names.length);
     expect(new Set(names)).toEqual(new Set([...model.keys()].map((k) => chunkFileName(k))));
+    // (list: the same ones, each with its bytes, once; listChunks over the old cache alone: its own)
+    const listed = await page.list!();
+    expect(listed.length).toBe(model.size);
+    for (const k of listed) {
+      const m = [...model.entries()].find(([u]) => chunkFileName(u) === chunkFileName(k));
+      expect(k.size, k.url).toBe(m![1].d.length);
+    }
+    const oldList = await listChunks(old as unknown as ChunkStore);
+    expect(oldList.map((k) => k.url).sort()).toEqual([...old.m.keys()].sort());
+    for (const k of oldList) expect(k.size).toBe(old.m.get(k.url)!.b.length);
     worker.closeAll();
   }
 });
@@ -216,4 +239,37 @@ test("the worker's handles: kept a while for the next reads, closed so a delete 
   expect(await worker.delete(url(3))).toBe(true);
   expect(dir.files.has(hex(3))).toBe(false);
   worker.closeAll();
+});
+
+test("list: sizes and times as written, an empty file not listed (gone once stale); a put to a file a read holds is a no-op", async () => {
+  const dir = new FakeDir();
+  const page = opfsStore(dir as unknown as FileSystemDirectoryHandle, null);
+  const t0 = (dir.now = Date.now());
+  await page.put(url(1), resp(new Uint8Array([1, 2, 3])));
+  dir.now += 5000;
+  await page.put(url(2), resp(new Uint8Array(7)));
+  // (a write cut short by a killed tab: an empty file)
+  await dir.getFileHandle(hex(3), { create: true });
+  // (an empty body: nothing kept)
+  await page.put(url(4), resp(new Uint8Array(0)));
+  expect(dir.files.has(hex(4))).toBe(false);
+  let l = await page.list!();
+  expect(l.map((k) => [chunkFileName(k), k.size, k.time])).toEqual([
+    [hex(1), 3, t0],
+    [hex(2), 7, t0 + 5000],
+  ]);
+  expect(dir.files.has(hex(3))).toBe(true);
+  dir.now += EMPTY_STALE_MS + 1;
+  const real = Date.now;
+  Date.now = () => dir.now;
+  try {
+    l = await page.list!();
+  } finally {
+    Date.now = real;
+  }
+  expect(l.length).toBe(2);
+  expect(dir.files.has(hex(3)), "a stale empty file goes").toBe(false);
+  dir.held.add(hex(1));
+  await page.put(url(1), resp(new Uint8Array([9])));
+  expect(dir.files.get(hex(1))).toEqual(new Uint8Array([1, 2, 3]));
 });

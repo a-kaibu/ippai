@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, test } from "vite-plus/test";
 import {
   installationPath,
   joinRecords,
@@ -6,6 +6,7 @@ import {
   movedPath,
   portablePath,
   renameRecords,
+  same,
   selectRecords,
   withRegistry,
 } from "./file-records";
@@ -131,4 +132,91 @@ describe("saves of before the rename (Z:\\vnvm)", () => {
       expect(renameRecords(got)).toEqual(got);
     }
   });
+});
+
+/** A record: path bytes, mtime, data (file-records.ts's layout). */
+function rec(path: Uint8Array, data: Uint8Array): Uint8Array {
+  const out = new Uint8Array(16 + path.length + data.length);
+  const v = new DataView(out.buffer);
+  v.setUint32(0, path.length, true);
+  out.set(path, 4);
+  v.setBigInt64(4 + path.length, 123n, true);
+  v.setUint32(12 + path.length, data.length, true);
+  out.set(data, 16 + path.length);
+  return out;
+}
+
+test("records whose paths are any bytes (not UTF-8 too): kept byte for byte, never a throw (property, seeded)", () => {
+  let x = 5;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 300; run++) {
+    const recs: Uint8Array[] = [];
+    for (let i = rnd(6); i > 0; i--) {
+      const ascii = rnd(2) ? "/vnvm/game/" : "/ippai/prefix/drive_c/ProgramData/";
+      const tail = Uint8Array.from({ length: rnd(12) }, () => (rnd(3) ? 0x61 + rnd(26) : 0x80 + rnd(128)));
+      const path = new Uint8Array([...new TextEncoder().encode(ascii), ...tail]);
+      recs.push(
+        rec(
+          path,
+          Uint8Array.from({ length: rnd(20) }, () => rnd(256)),
+        ),
+      );
+    }
+    const all = joinRecords(new Uint8Array(0), null) ?? new Uint8Array(0);
+    const data = new Uint8Array(recs.reduce((a, r) => a + r.length, all.length));
+    let at = 0;
+    for (const r of recs) data.set(r, (at += r.length) - r.length);
+    // (everything kept: the same bytes, the same array; nothing: empty)
+    const every = selectRecords(data, () => true)!;
+    expect(every).toBe(data);
+    expect(selectRecords(data, () => false)!.length).toBe(0);
+    // (kept by a test of the decoded path: the kept records whole and in order)
+    const want: number[] = [];
+    for (const r of recs)
+      if (
+        new TextDecoder()
+          .decode(r.subarray(4, 4 + new DataView(r.buffer).getUint32(0, true)))
+          .includes("Program")
+      )
+        want.push(...r);
+    expect(Array.from(selectRecords(data, (p) => p.includes("Program"))!)).toEqual(want);
+    // (renamed: a valid UTF-8 /vnvm/ path moved, an odd one left as its bytes; nothing lost)
+    const moved = renameRecords(data)!;
+    const back: number[] = [];
+    for (const r of recs) {
+      const n = new DataView(r.buffer).getUint32(0, true);
+      const raw = r.subarray(4, 4 + n);
+      let text: string | null;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+      } catch {
+        text = null;
+      }
+      if (text?.startsWith("/vnvm/game/"))
+        back.push(...rec(new TextEncoder().encode(text.replace("/vnvm/", "/ippai/")), r.subarray(16 + n)));
+      else back.push(...r);
+    }
+    expect(Array.from(moved)).toEqual(back);
+  }
+});
+
+test("same: true exactly when the bytes are, at any offsets (property, differential with a byte loop)", () => {
+  let x = 9;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 2000; run++) {
+    const n = rnd(40);
+    const buf = new Uint8Array(n + 16);
+    for (let i = 0; i < buf.length; i++) buf[i] = rnd(2) ? 0 : rnd(256);
+    const a = buf.subarray(rnd(8), 0).length === 0 ? new Uint8Array(buf.buffer, rnd(8), n) : buf;
+    const b = new Uint8Array(new ArrayBuffer(n + 8), rnd(2) ? 0 : rnd(8), n);
+    b.set(a);
+    // (bytes that floats would call equal: +0 and -0)
+    if (n >= 8 && rnd(3) === 0) b[b.length - 1] = a[a.length - 1]! ^ 0x80;
+    else if (n && rnd(2)) b[rnd(n)]! ^= 1 << rnd(8);
+    const want = a.every((v, i) => v === b[i]);
+    expect(same(a, b), `run ${run}`).toBe(want);
+    expect(same(a, a)).toBe(true);
+  }
+  expect(same(null, new Uint8Array(0))).toBe(false);
+  expect(same(new Uint8Array(3), new Uint8Array(4))).toBe(false);
 });

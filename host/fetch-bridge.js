@@ -339,7 +339,15 @@ function ippaiOpfsStore(dir, old) {
       }
       const data = new Uint8Array(await response.arrayBuffer());
       if (!data.length) return;
-      const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      // (this worker's own read handle let go; another's (the page's save, another tab): kept already)
+      close(name);
+      let w;
+      try {
+        w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      } catch (e) {
+        if (e?.name === 'NoModificationAllowedError') return;
+        throw e;
+      }
       try {
         await w.write(data);
         await w.close();

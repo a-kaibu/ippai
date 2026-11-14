@@ -1,5 +1,15 @@
 import { afterAll, beforeAll, expect, test, vi } from "vite-plus/test";
-import { keepSaving, loadSaves, savesFor, storeSaves, type SaveFiles, type SavesModule } from "./saves";
+import {
+  keepSaving,
+  loadSaves,
+  savesFor,
+  stashesToDrop,
+  STASH_KEEP,
+  storeSaves,
+  UPLOAD_EVERY,
+  type SaveFiles,
+  type SavesModule,
+} from "./saves";
 
 // The saved-game blobs across pages and devices (saves.ts): a model of ippai serve's /saves
 // (crates/ippai/src/saves.rs: a revision per name, If-Match, its revisions kept) and of each
@@ -329,5 +339,140 @@ test("saves asked for while one is stuck wait as one, not one per tick", async (
   release();
   await Promise.all([first, ...waiting]);
   expect(k.counts().reads).toBe(2);
+  // (the second change within a minute of the upload: on this device now, sent when due)
+  expect(eq(s.data, blob(5))).toBe(true);
+  expect(eq(d.m.get("game.bin"), blob(6))).toBe(true);
+  k.at(UPLOAD_EVERY);
+  await k.save();
   expect(eq(s.data, blob(6))).toBe(true);
+});
+
+/**
+ * Random plays: the game writes (new bytes or the same), the clock moves, the server goes down
+ * and up, the page is hidden (a forced save). At every point this browser's copy holds the
+ * newest save; uploads that were not forced are UPLOAD_EVERY apart at least; a forced save with
+ * the server up leaves the newest on the server; nothing is uploaded twice in a row
+ * (property, seeded).
+ */
+test("property: uploads at most once a minute unless forced, the newest always on the device", async () => {
+  let x = 99;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 150; run++) {
+    const s = new Server();
+    const d = new Device();
+    online = true;
+    let v = 1;
+    let current = blob(v);
+    const k = await keeper(d, s, () => current as Uint8Array<ArrayBuffer>, blob(v));
+    let t = 0;
+    let lastPlain = -Infinity;
+    for (let step = 0; step < 40; step++) {
+      t += rnd(30_000);
+      k.at(t);
+      const op = rnd(6);
+      if (op < 3) {
+        if (rnd(4)) current = blob(++v);
+        k.write();
+      } else if (op === 3) s.up = !s.up;
+      const force = rnd(8) === 0;
+      const before = s.history.length;
+      await k.save(force);
+      if (s.history.length > before) {
+        expect(s.history.length - before, `run ${run} step ${step}`).toBe(1);
+        if (!force) {
+          expect(t - lastPlain, `run ${run} step ${step}: plain uploads apart`).toBeGreaterThanOrEqual(
+            UPLOAD_EVERY,
+          );
+        }
+        lastPlain = t;
+        const h = s.history;
+        if (h.length > 1)
+          expect(eq(h.at(-1), h.at(-2)), `run ${run} step ${step}: the same twice`).toBe(false);
+      }
+      expect(eq(d.m.get("game.bin") ?? blob(1), current), `run ${run} step ${step}: on the device`).toBe(
+        true,
+      );
+      if (force && s.up) expect(eq(s.data ?? blob(1), current), `run ${run} step ${step}: forced`).toBe(true);
+    }
+    s.up = true;
+  }
+});
+
+test("copies set aside: only the newest few of a game stay, other games' and the blob untouched (property, seeded)", async () => {
+  let x = 17;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 300; run++) {
+    const names = ["game", "game.x", "other"];
+    const all: string[] = ["game.bin", "game.sync.json", "game.x.bin", "gamer.server-5.bin"];
+    for (let i = rnd(10); i > 0; i--)
+      all.push(`${names[rnd(3)]}.${rnd(2) ? "server" : "local"}-${rnd(1e6)}.bin`);
+    const drop = stashesToDrop("game", all);
+    const mine = all.filter((f) => /^game\.(server|local)-\d+\.bin$/.test(f));
+    expect(drop.length).toBe(Math.max(0, mine.length - STASH_KEEP));
+    const time = (f: string) => Number(/-(\d+)\.bin$/.exec(f)![1]);
+    const kept = mine.filter((f) => !drop.includes(f));
+    for (const d of drop) {
+      expect(mine).toContain(d);
+      for (const k of kept) expect(time(k)).toBeGreaterThanOrEqual(time(d));
+    }
+  }
+  // through stash: a server copy set aside 5 times leaves 3
+  const s = new Server();
+  const d = new Device();
+  d.files.list = async () => [...d.m.keys()];
+  d.files.remove = async (f) => void d.m.delete(f);
+  online = true;
+  const real = Date.now;
+  let t = 1000;
+  Date.now = () => t;
+  try {
+    for (let i = 0; i < 5; i++) {
+      t += 10;
+      // (saved here offline, the server's moved meanwhile: the server's is set aside)
+      savesFor(d.files, s.request);
+      s.data = blob(100 + i);
+      s.rev++;
+      d.m.set("game.bin", blob(200 + i));
+      d.m.set("game.sync.json", new TextEncoder().encode(JSON.stringify({ base: '"0"', dirty: true })));
+      await loadSaves("game");
+    }
+  } finally {
+    Date.now = real;
+  }
+  expect([...d.m.keys()].filter((f) => f.includes(".server-")).length).toBe(STASH_KEEP);
+});
+
+test("another device's newer save stops the uploads: the player is told once", async () => {
+  const s = new Server();
+  const d = new Device();
+  online = true;
+  let current = blob(1);
+  await page(d, s);
+  const notices: string[] = [];
+  let changes = 0;
+  let t = 0;
+  const m = { _vnhost_vfs_changes: () => changes } as unknown as SavesModule;
+  const g = globalThis as unknown as { addEventListener?: unknown };
+  const had = g.addEventListener;
+  g.addEventListener ??= () => {};
+  vi.useFakeTimers();
+  const save = keepSaving(m, "game", [], null, {
+    now: () => t,
+    read: () => current as Uint8Array<ArrayBuffer>,
+    notice: (n) => notices.push(n),
+  });
+  vi.useRealTimers();
+  if (!had) delete g.addEventListener;
+  // (another device saved meanwhile)
+  s.data = blob(50);
+  s.rev++;
+  for (let i = 0; i < 4; i++) {
+    current = blob(2 + i);
+    changes++;
+    t += UPLOAD_EVERY * 10;
+    await save(true);
+  }
+  expect(notices.length).toBe(1);
+  expect(eq(s.data, blob(50))).toBe(true);
+  expect(eq(d.m.get("game.bin"), blob(5))).toBe(true);
 });

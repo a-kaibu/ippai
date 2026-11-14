@@ -7,7 +7,9 @@
 
 import { coverUrl, type GameEntry } from "./launcher";
 import { gameBusy } from "./budget";
+import { listChunks } from "./chunkstore";
 import { directFetcher, limit, type Unzstd } from "./direct";
+import { shared } from "./poll";
 import {
   chunkCache,
   chunkPath,
@@ -252,15 +254,14 @@ export async function storageUse(): Promise<{
   if (!cache) return null;
   const est = await navigator.storage?.estimate?.().catch(() => undefined);
   const persisted = await navigator.storage?.persisted?.().catch(() => undefined);
-  let chunks = 0;
-  const keys = await cache.keys();
-  for (const k of keys) {
-    const r = await cache.match(k).catch(() => undefined);
-    const n = Number(r?.headers.get("x-ippai-size"));
-    chunks += n > 0 ? n : ((await r?.blob().catch(() => null))?.size ?? 0);
-  }
-  return { quota: est?.quota, usage: est?.usage, persisted, chunks, count: keys.length };
+  // (sizes from the files a few at a time, not a Response per chunk opened one after the other)
+  const kept = await listChunks(cache);
+  const chunks = kept.reduce((a, k) => a + k.size, 0);
+  return { quota: est?.quota, usage: est?.usage, persisted, chunks, count: kept.length };
 }
+
+/** How long one listing of the device's chunks is used (onDevice). */
+const ONDEVICE_MS = 2000;
 
 const chunksOf = (g: GameEntry) => chunksOfTrees(gameTrees(g));
 
@@ -272,11 +273,14 @@ export async function savedChunks(but?: string): Promise<Set<string>> {
   return keep;
 }
 
-async function onDevice(): Promise<Set<string>> {
+/** The names of the chunks on the device: one listing shared by the callers of the next
+ * ONDEVICE_MS (the 保存 tab, each game's 詳細 and its parts asked for one each, every few
+ * seconds while a save ran: tens of thousands of files listed again and again); `fresh` lists anew. */
+const onDevice = shared(ONDEVICE_MS, async (): Promise<Set<string>> => {
   const cache = await chunkCache();
   const keys = (await cache?.keys()) ?? [];
   return new Set(keys.map((r) => r.url.slice(r.url.lastIndexOf("/") + 1)));
-}
+});
 
 /** How much of `g` is on the device (null: no chunk cache here). */
 export async function offlineState(g: GameEntry): Promise<OfflineState | null> {
@@ -456,7 +460,7 @@ export async function saveOffline(
   running.add(g.id);
   try {
     await saveApp(g, signal);
-    const [lists, have] = await Promise.all([treeLists(trees), onDevice()]);
+    const [lists, have] = await Promise.all([treeLists(trees), onDevice(true)]);
     const sizes = new Map<string, number>();
     const all = new Set<string>();
     let chunk = 1 << 18;
@@ -600,7 +604,7 @@ export async function saveOffline(
     if (full)
       throw new Error("端末の空き容量がなくなったため、保存を止めました（空き容量を確認してください）");
     // done only when every chunk is on the device now (the browser may have dropped some)
-    const now = await onDevice();
+    const now = await onDevice(true);
     const lost = hashes.filter((h) => !now.has(h)).length;
     if (lost) throw new Error(`${lost} 個のチャンクが端末に残りませんでした（空き容量を確認してください）`);
     setSaved(g.id, { trees, status: "done" });
@@ -624,10 +628,20 @@ export async function dropOffline(g: GameEntry): Promise<void> {
   if (!cache) return;
   const [{ hashes }, keep] = await Promise.all([chunksOf(g), savedChunks(g.id)]);
   setSaved(g.id, null);
+  // (DROP_AT_ONCE at a time: not thousands of file removals started together)
+  const go = hashes.filter((h) => !keep.has(h));
+  let next = 0;
   await Promise.all(
-    hashes.filter((h) => !keep.has(h)).map((h) => cache.delete(new URL(chunkPath(h), store()).href)),
+    Array.from({ length: Math.min(DROP_AT_ONCE, go.length) }, async () => {
+      while (next < go.length)
+        await cache.delete(new URL(chunkPath(go[next++]!), store()).href).catch(() => false);
+    }),
   );
+  void onDevice(true).catch(() => undefined);
 }
+
+/** Chunk removals at once (dropOffline). */
+const DROP_AT_ONCE = 16;
 
 /** Whether `id` was saved to the device to the end (as this browser remembers: read at once,
  * in the click that starts a game; chunks the browser dropped since are fetched as it plays). */

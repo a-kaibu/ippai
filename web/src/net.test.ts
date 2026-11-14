@@ -10,6 +10,7 @@ import {
   storeChunk,
   treeChunks,
   trimChunks,
+  trimOrder,
   watchRetries,
 } from "./net";
 
@@ -312,4 +313,71 @@ test("a chunk the full device could not take: storeChunk says so, keepChunk lets
   const room = { put: async (_k: unknown, r: Response) => void (kept = r) } as unknown as ChunkStore;
   await storeChunk(room, "https://s/chunks/ab/abc", data);
   expect(kept?.headers.get("x-ippai-size")).toBe("3");
+});
+
+/**
+ * trimChunks over a store with list() (OPFS: listed by name, not age), random sizes, times,
+ * saved ones and deletes refused (a read holds the file), against a model: the chunks go oldest
+ * written first, saved ones never, a refused delete is not counted as freed, and the trim stops
+ * as soon as what is left fits (property, seeded).
+ */
+test("trim: the oldest written go first, counted only when gone (property, seeded)", async () => {
+  let x = 7;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  const hex = (i: number) => i.toString(16).padStart(32, "0");
+  for (let run = 0; run < 200; run++) {
+    const n = 1 + rnd(40);
+    const kept = Array.from({ length: n }, (_, i) => ({
+      url: `opfs:/ippai-chunks/${hex(i)}`,
+      size: 1 + rnd(1000),
+      time: rnd(4) ? 1 + rnd(50) : 0,
+    }));
+    const saved = new Set(kept.filter(() => !rnd(5)).map((k) => k.url.slice(-32)));
+    const held = new Set(kept.filter(() => !rnd(6)).map((k) => k.url));
+    const quota = 1 + rnd(40 * 1000);
+    const gone: string[] = [];
+    const store: ChunkStore = {
+      match: async () => undefined,
+      put: async () => undefined,
+      keys: async () => kept,
+      list: async () => kept.map((k) => ({ ...k })),
+      delete: async (k) => {
+        const u = typeof k === "string" ? k : "url" in k ? k.url : String(k);
+        if (held.has(u)) return false;
+        gone.push(u);
+        return true;
+      },
+    };
+    const g = globalThis as unknown as { caches?: unknown };
+    const old = g.caches;
+    Object.defineProperty(navigator, "storage", {
+      value: { estimate: async () => ({ quota }) },
+      configurable: true,
+    });
+    try {
+      await trimChunks(async () => saved, store);
+    } finally {
+      g.caches = old;
+    }
+    const limit = quota * 0.5;
+    // model: in trim order, skip saved, delete; stop when what is left fits
+    const order = trimOrder(kept);
+    let over = kept.reduce((a, k) => a + k.size, 0) - limit;
+    const want: string[] = [];
+    for (const k of order) {
+      if (over <= 0) break;
+      if (saved.has(k.url.slice(-32))) continue;
+      if (!held.has(k.url)) {
+        want.push(k.url);
+        over -= k.size;
+      }
+    }
+    expect(gone, `run ${run}`).toEqual(want);
+    // the order: by time, then as listed
+    for (let i = 1; i < order.length; i++) {
+      const a = order[i - 1]!,
+        b = order[i]!;
+      expect(a.time < b.time || (a.time === b.time && kept.indexOf(a) < kept.indexOf(b))).toBe(true);
+    }
+  }
 });

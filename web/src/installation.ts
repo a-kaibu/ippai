@@ -1,7 +1,7 @@
 // One browser installation: never uploaded with game saves or library exports.
 import { toast } from "sonner";
 import { exportFiles, type SavesModule } from "./saves";
-import { installationPath, legacyRegistry, renameRecords, selectRecords } from "./file-records";
+import { installationPath, legacyRegistry, renameRecords, same, selectRecords } from "./file-records";
 interface State {
   key: CryptoKey;
   iv: Uint8Array<ArrayBuffer>;
@@ -48,7 +48,9 @@ let lease: Promise<boolean> | undefined;
  * write (most games never write outside the user folders, so any number of them run at once).
  */
 function ownInstallation(): Promise<boolean> {
-  return (lease ??= new Promise((resolve) => {
+  // (not had: asked again at the next write, so a tab outliving the owner takes over; before,
+  // its changes were dropped for the rest of its life)
+  const p = (lease ??= new Promise((resolve) => {
     if (!navigator.locks) return resolve(false);
     void navigator.locks
       .request("ippai-installation", { ifAvailable: true }, async (lock) => {
@@ -59,6 +61,10 @@ function ownInstallation(): Promise<boolean> {
       })
       .catch(() => resolve(false));
   }));
+  void p.then((had) => {
+    if (!had && lease === p) lease = undefined;
+  });
+  return p;
 }
 async function decrypt(state: State | undefined): Promise<Uint8Array<ArrayBuffer> | null> {
   if (!state) return null;
@@ -92,11 +98,20 @@ export async function loadInstallation(): Promise<{
   }
   return { files: selectRecords(plain, installationPath), registry };
 }
+/** How often the installation is looked at (installers and runtimes write it, seldom; the
+ * page being hidden or left looks at once). Each look with the file system changed exports the
+ * whole C: drive: every 5 s, as the saves, was a periodic hitch for the whole session. */
+export const INSTALL_LOOK_MS = 30_000;
+
+/** Keeps this device's installation (installationPath) written whenever it changes; returns a
+ * look now (tests; the page's own timer and events call it too). */
 export function keepInstallation(
   module: SavesModule,
   initial: Uint8Array<ArrayBuffer> | null,
   failed: () => void,
-): void {
+  // (tests: no timer and no page events)
+  opt: { timers?: boolean } = {},
+): () => Promise<void> {
   let previous = initial;
   let revision = -1;
   let pending = false;
@@ -111,7 +126,7 @@ export function keepInstallation(
       const data = selectRecords(exportFiles(module, ["/ippai/prefix/drive_c"]), installationPath)!;
       revision = current;
       if (!data.length) return;
-      if (previous?.length === data.length && previous.every((b, i) => data[i] === b)) return;
+      if (same(previous, data)) return;
       if (!(await ownInstallation())) {
         // (another tab writes the installation: this one's changes stay in its memory)
         if (!busy) {
@@ -132,7 +147,10 @@ export function keepInstallation(
       pending = false;
     }
   };
-  // (as often as the game saves: saves.ts keepSaving)
-  setInterval(() => void save(), 5000);
-  addEventListener("pagehide", () => void save());
+  if (opt.timers !== false) {
+    setInterval(() => void save(), INSTALL_LOOK_MS);
+    addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void save());
+    addEventListener("pagehide", () => void save());
+  }
+  return save;
 }

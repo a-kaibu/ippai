@@ -667,7 +667,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   recorder.attach(sake);
   if (!nosave) {
     // (the game quits: the upload tried now, even in the pause after a failed one)
-    const save = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved);
+    const save = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved, {
+      notice: (m) => (log(m), toast.warning(m, { duration: 15_000 })),
+    });
     saveNow = () => save(true);
   }
   // for tests/play.mjs (headless Chromium can't present WebGPU canvases)

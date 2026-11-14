@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { HardDrive, Loader2 } from "lucide-react";
 import type { GameEntry } from "../launcher";
+import { every, throttled } from "../poll";
 import {
   offlineParts,
   offlineState,
@@ -46,7 +47,15 @@ export function duration(s: number): string {
 export function useSaves(): ReadonlyMap<string, Progress> {
   // (a new Map each change: React compares snapshots)
   const [snap, setSnap] = useState(() => new Map(savesRunning()));
-  useEffect(() => watchSaves(() => setSnap(new Map(savesRunning()))), []);
+  // (at most 4 times a second: a fast link saves many chunks a second, each a render of the list)
+  useEffect(() => {
+    const update = throttled(250, () => setSnap(new Map(savesRunning())));
+    const off = watchSaves(update);
+    return () => {
+      off();
+      update.cancel();
+    };
+  }, []);
   return snap;
 }
 
@@ -97,16 +106,15 @@ export function GameParts({ game, saving }: { game: GameEntry; saving: boolean }
   useEffect(() => {
     let live = true;
     const load = () =>
-      void offlineParts(game).then(
+      offlineParts(game).then(
         (p) => live && setParts(p),
         () => live && setParts(null),
       );
-    load();
     // (while it is being saved: the parts fill as it goes)
-    const t = saving ? setInterval(load, 3000) : undefined;
+    const stop = saving ? every(3000, load) : (void load(), () => {});
     return () => {
       live = false;
-      clearInterval(t);
+      stop();
     };
   }, [game, saving]);
   if (!parts)
@@ -162,11 +170,11 @@ export function StorageOverview({ games }: { games: GameEntry[] }) {
         setStates(s);
       }
     };
-    void load();
-    const t = busy ? setInterval(() => void load(), 5000) : undefined;
+    // (while a save runs: again 5 s after each pass ends, never one on top of another)
+    const stop = busy ? every(5000, load) : (void load(), () => {});
     return () => {
       live = false;
-      clearInterval(t);
+      stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, busy]);
