@@ -10,6 +10,7 @@ use super::draw_tests::{call, d3d_prims, layouts, out, put_bytes, rd, rotated, t
 use super::trace_tests::{alloc, attach_page, on_low_stack, Rng, CALLS, SERIAL};
 use super::*;
 use crate::render::model;
+use super::device::{set_prep_mode, JOINED_HERE, PREP_DIFFS};
 
 const V8: u32 = 16;
 
@@ -237,5 +238,144 @@ fn d3d8_draws_read_what_direct3d_reads() {
         for seed in 0..8 {
             run(seed);
         }
+        // the same with every reused preparation checked against one from scratch: SetVertexShader,
+        // SetIndices and SetPixelShader no longer stale everything (review b02), the Direct3D 9
+        // calls they make say what changed
+        set_prep_mode(2);
+        PREP_DIFFS.store(0, std::sync::atomic::Ordering::Relaxed);
+        for seed in 8..16 {
+            run(seed);
+        }
+        set_prep_mode(0xff);
+        assert_eq!(PREP_DIFFS.load(std::sync::atomic::Ordering::Relaxed), 0, "a reused preparation differs (see stderr)");
+    });
+}
+
+/// A device made for these tests: (IDirect3D8, IDirect3DDevice8).
+fn device8() -> (u32, u32) {
+    attach_page();
+    let o = out();
+    assert_eq!(unsafe { vnhost_d3d9_call(d3d8::CREATE, [o].as_ptr(), &CALLS) }, 0);
+    let d3d = rd(o);
+    let pp = unsafe { alloc(52) as u32 };
+    for (i, x) in [64, 64, 22, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+        unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
+    }
+    let o = out();
+    assert_eq!(call(IF_D3D9 + V8, 15, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
+    (d3d, rd(o))
+}
+
+/// SetVertexShader(FVF) + SetIndices (the same base vertex) + DrawPrimitiveUP per sprite, as
+/// DirectX 8 engines draw: the draws join (#120; each Direct3D 8 call staled everything, the
+/// uniforms too, so none did).
+#[test]
+fn d3d8_sprite_draws_join() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    on_low_stack(|| {
+        unsafe {
+            let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+            vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+        }
+        let (_, dev) = device8();
+        let devc = |m: u32, a: &[u32]| -> u32 { call(IF_DEVICE + V8, m, &[&[dev][..], a].concat()) };
+        let o = out();
+        assert_eq!(devc(24, &[1024, 0, 101, 1, o]), 0);
+        let ib = rd(o);
+        let up = unsafe { alloc(16 * 6) as u32 };
+        let mut v = Vec::new();
+        for (x, y) in [(0f32, 0f32), (8.0, 0.0), (0.0, 8.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)] {
+            for f in [x, y, 0.5] {
+                v.extend_from_slice(&f.to_le_bytes());
+            }
+            v.extend_from_slice(&0xff80_4020u32.to_le_bytes());
+        }
+        put_bytes(up, &v);
+        devc(34, &[]);
+        JOINED_HERE.with(|j| j.set(0));
+        for _ in 0..20 {
+            assert_eq!(devc(76, &[0x44]), 0);
+            assert_eq!(devc(85, &[ib, 0]), 0);
+            assert_eq!(devc(72, &[4, 2, up, 16]), 0);
+        }
+        // the same shader and base vertex again: nothing to prepare again (prep_gen kept); a
+        // getter neither; another base vertex does
+        let gen = || D3D.lock().unwrap().as_ref().unwrap().dev.as_ref().unwrap().prep_gen;
+        let g0 = gen();
+        assert_eq!(devc(76, &[0x44]), 0);
+        assert_eq!(devc(85, &[ib, 0]), 0);
+        let (o, b) = (out(), out());
+        assert_eq!(devc(86, &[o, b]), 0);
+        call(IF_IB + V8, 2, &[rd(o)]);
+        assert_eq!(devc(77, &[out()]), 0);
+        assert_eq!(devc(89, &[out()]), 0);
+        assert_eq!(gen(), g0, "SetVertexShader / SetIndices / getters staled the preparation");
+        assert_eq!(devc(85, &[ib, 3]), 0);
+        assert_ne!(gen(), g0, "another base vertex must prepare again");
+        devc(35, &[]);
+        let joined = JOINED_HERE.with(|j| j.get());
+        gpu::flush();
+        gpu::pump();
+        gpu::set_pump(None);
+        assert!(joined >= 10, "{joined} of 20 draws joined");
+    });
+}
+
+/// Direct3D 8 handles: state blocks and pixel shaders deleted give their slots back; GetDeviceCaps
+/// to NULL writes nothing; a CreateDevice that fails leaves the live device's handles alone.
+#[test]
+fn d3d8_handles() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    on_low_stack(|| {
+        unsafe {
+            let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+            vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+        }
+        let (d3d, dev) = device8();
+        let devc = |m: u32, a: &[u32]| -> u32 { call(IF_DEVICE + V8, m, &[&[dev][..], a].concat()) };
+        // CreateStateBlock(ALL) / DeleteStateBlock per frame: the same token
+        let mut tokens = std::collections::HashSet::new();
+        for _ in 0..50 {
+            let o = out();
+            assert_eq!(devc(57, &[1, o]), 0);
+            let t = rd(o);
+            assert_eq!(devc(54, &[t]), 0, "ApplyStateBlock");
+            assert_eq!(devc(56, &[t]), 0);
+            tokens.insert(t);
+            assert_ne!(devc(54, &[t]), 0, "a deleted state block applies");
+        }
+        assert_eq!(tokens.len(), 1, "state block tokens grew: {tokens:?}");
+        // ps.1.1: mov r0, v0
+        let code = [0xffff_0101u32, 0x0000_0001, 0x800f_0000, 0x90e4_0000, 0x0000_ffff];
+        let f = unsafe { alloc(4 * code.len() as u32) as u32 };
+        put_bytes(f, &code.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
+        let mut handles = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let o = out();
+            assert_eq!(devc(87, &[f, o]), 0);
+            let h = rd(o);
+            assert_eq!(devc(88, &[h]), 0);
+            assert_eq!(devc(88, &[0]), 0);
+            assert_eq!(devc(90, &[h]), 0);
+            handles.insert(h);
+        }
+        assert_eq!(handles.len(), 1, "pixel shader handles grew: {handles:?}");
+        // GetDeviceCaps(NULL): nothing written at 0 (natively: no crash)
+        let _ = devc(7, &[0]);
+        let _ = call(IF_D3D9 + V8, 13, &[d3d, 0, 1, 0]);
+        // a vertex shader handle, then a CreateDevice that fails (no out pointer)
+        let t = decl_tokens(&[(0, 0, 2, 0, 0)]);
+        let p = unsafe { alloc(4 * t.len() as u32) as u32 };
+        put_bytes(p, &t.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>());
+        let o = out();
+        assert_eq!(devc(75, &[p, 0, o, 0]), 0);
+        let vs = rd(o);
+        let pp = unsafe { alloc(52) as u32 };
+        for (i, x) in [64, 64, 22, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+            unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
+        }
+        assert_ne!(call(IF_D3D9 + V8, 15, &[d3d, 0, 1, 1, 0x40, pp, 0]), 0);
+        assert_eq!(devc(76, &[vs]), 0, "the live device's vertex shader went with a failed CreateDevice");
+        gpu::set_pump(None);
     });
 }

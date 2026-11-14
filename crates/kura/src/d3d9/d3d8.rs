@@ -89,7 +89,11 @@ pub(crate) fn caps8_of(c: &[u32; 76]) -> [u32; 53] {
     o
 }
 
-unsafe fn caps8(c: &mut [u32; 76], out: u32) {
+/// (only what Direct3D 9 answered: on its error, a NULL pointer among them, nothing is written)
+unsafe fn caps8(c: &mut [u32; 76], out: u32, r: u32) {
+    if r != S_OK || out == 0 {
+        return;
+    }
     let o = caps8_of(c);
     std::ptr::copy_nonoverlapping(o.as_ptr(), out as *mut u32, 53);
 }
@@ -229,7 +233,7 @@ unsafe fn d3d8_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, af
         13 => {
             let mut c = [0u32; 76];
             let r = c9(d, IF_D3D9, 14, this, &[me, a(1), a(2), c.as_mut_ptr() as u32], after);
-            caps8(&mut c, a(3));
+            caps8(&mut c, a(3), r);
             r
         }
         14 => c9(d, IF_D3D9, 15, this, &[me, a(1)], after),
@@ -238,7 +242,20 @@ unsafe fn d3d8_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, af
             let mut p = pp9(a(5));
             let r = c9(d, IF_D3D9, 16, this, &[me, a(1), a(2), a(3), a(4), p.as_mut_ptr() as u32, a(6)], after);
             pp8(a(5), &p);
-            d.d8 = State::default();
+            // (a device that failed to be made leaves the live one's shaders and state blocks;
+            // a new one starts with none: release what the old tables held)
+            if r == S_OK {
+                let old = std::mem::take(&mut d.d8);
+                for vs in old.vs.into_iter().flatten() {
+                    d.release(vs.decl);
+                    if vs.vs != 0 {
+                        d.release(vs.vs);
+                    }
+                }
+                for id in old.ps.into_iter().flatten().chain(old.sb.into_iter().filter(|&id| id != 0)) {
+                    d.release(id);
+                }
+            }
             // (Direct3D 8's own states: ZBIAS and the rest 0, PATCHSEGMENTS 1.0,
             // SOFTWAREVERTEXPROCESSING as created; POINTSIZE_MIN 0, POINTSIZE_MAX 8192.0 on
             // either device: tests/winref/golden/d3d8state-32)
@@ -376,14 +393,17 @@ unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, 
     let dev = IF_DEVICE;
     // (methods of Direct3D 8's own, not only forwarded to Direct3D 9's through device::call: what
     // draws prepared may change, device::stale)
-    if !matches!(m, 3 | 4 | 6 | 9..=12 | 15..=19 | 29 | 32..=52 | 58..=64 | 66..=73 | 79 | 80 | 83 | 91 | 92) {
+    // (also not: getters, and the Set* calls whose Direct3D 9 calls say what they change
+    // themselves: SetVertexShader 76, SetPixelShader 88, SetIndices 85 but for its base vertex,
+    // below; staling on them defeated the reuse and joining of draws in DirectX 8 engines)
+    if !matches!(m, 3 | 4 | 6 | 9..=12 | 15..=19 | 29 | 32..=52 | 58..=64 | 66..=73 | 76 | 77 | 79 | 80 | 83..=86 | 88 | 89 | 91 | 92) {
         if let Some(dv) = d.dev.as_mut() {
             dv.stale_all();
         }
     }
     // the same method in Direct3D 9, arguments unchanged
     let same = |d: &mut D3d, m9: u32, after: &mut After| {
-        let args: Vec<u32> = (0..10).map(a).collect();
+        let args: [u32; 10] = std::array::from_fn(a);
         device::call(d, dev, m9, this, args.as_ptr(), after)
     };
     match m {
@@ -392,7 +412,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, 
         7 => {
             let mut c = [0u32; 76];
             let r = c9(d, dev, 7, this, &[me, c.as_mut_ptr() as u32], after);
-            caps8(&mut c, a(1));
+            caps8(&mut c, a(1), r);
             r
         }
         8 => c9(d, dev, 8, this, &[me, 0, a(1)], after),
@@ -539,6 +559,11 @@ unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, 
             c9(d, dev, 101, this, &[me, a(1), a(2), &mut off as *mut u32 as u32, a(3)], after)
         }
         85 => {
+            if d.d8.base_vertex != a(2) {
+                if let Some(dv) = d.dev.as_mut() {
+                    dv.stale_all();
+                }
+            }
             d.d8.base_vertex = a(2);
             c9(d, dev, 104, this, &[me, a(1)], after)
         }
@@ -551,8 +576,17 @@ unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, 
             let r = c9(d, dev, 106, this, &[me, a(1), &mut o as *mut u32 as u32], after);
             if r == S_OK {
                 let id = d.id_of(o);
-                d.d8.ps.push(Some(id));
-                wr(a(2), 0, d.d8.ps.len() as u32);
+                let h = match d.d8.ps.iter().position(|x| x.is_none()) {
+                    Some(i) => {
+                        d.d8.ps[i] = Some(id);
+                        i + 1
+                    }
+                    None => {
+                        d.d8.ps.push(Some(id));
+                        d.d8.ps.len()
+                    }
+                };
+                wr(a(2), 0, h as u32);
             }
             r
         }
@@ -609,8 +643,17 @@ unsafe fn give(t: &[u32], data: u32, size: u32) -> u32 {
 
 fn new_token(d: &mut D3d, addr: u32) -> u32 {
     let id = d.id_of(addr);
-    d.d8.sb.push(id);
-    d.d8.sb.len() as u32
+    // (a deleted one's slot again, as shaders: a state block per frame grew the table for ever)
+    match d.d8.sb.iter().position(|&x| x == 0) {
+        Some(i) => {
+            d.d8.sb[i] = id;
+            i as u32 + 1
+        }
+        None => {
+            d.d8.sb.push(id);
+            d.d8.sb.len() as u32
+        }
+    }
 }
 
 fn token(d: &D3d, t: u32) -> Option<u32> {
