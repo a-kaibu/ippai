@@ -50,14 +50,17 @@ fn mem_end() -> u64 {
 }
 
 /// The guest's half of the linear memory ends here: sake's own statics, heap and stacks are
-/// above it (crates/sake/build.sh GLOBAL_BASE). The one upper range the guest may touch is the
-/// trap range ([`create`]'s: API entry points, which programs read and patch like code).
+/// above it (crates/sake/build.sh GLOBAL_BASE). The guest may not write there, except in the
+/// trap range ([`create`]'s: API entry points, which programs patch like code). Reads there
+/// stay allowed: on Windows they fault too, but programs that read through a pointer an API
+/// left unset (a sake shortcoming) went on with garbage before, and the Wine tests show
+/// several that then crash; a read cannot corrupt sake.
 const GUEST_END: u64 = koji::jit::GUEST_HI as u64;
 
 /// [`create`]'s trap range, for [`check`]'s slow path.
 static TRAP_LO: AtomicU32 = AtomicU32::new(0);
 static TRAP_HI: AtomicU32 = AtomicU32::new(0);
-/// IPPAI_UPPER_OPEN: the old rule (anything up to the end of the memory), as an off-switch.
+/// IPPAI_UPPER_OPEN: the old rule (writes too, up to the end of the memory), as an off-switch.
 static UPPER_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether the guest may access `addr..addr + len` (`end`: the memory's size): below
@@ -80,8 +83,8 @@ fn upper_allowed(addr: u32, top: u64, end: u64, lo: u32, hi: u32, open: bool) ->
 
 #[cold]
 #[inline(never)]
-fn upper_ok(addr: u32, len: u32) -> bool {
-    allowed(addr, len, mem_end(), TRAP_LO.load(Ordering::Relaxed), TRAP_HI.load(Ordering::Relaxed), UPPER_OPEN.load(Ordering::Relaxed))
+fn upper_ok(addr: u32, len: u32, write: bool) -> bool {
+    allowed(addr, len, mem_end(), TRAP_LO.load(Ordering::Relaxed), TRAP_HI.load(Ordering::Relaxed), !write || UPPER_OPEN.load(Ordering::Relaxed))
 }
 
 /// (once: a guest access to sake's own memory is an access violation; the log says where)
@@ -90,7 +93,7 @@ fn upper_ok(addr: u32, len: u32) -> bool {
 fn refused(addr: u32, len: u32) -> Fault {
     if addr as u64 + len as u64 > GUEST_END && addr >= NULL_PAGES {
         static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| eprintln!("kura: guest access to {addr:#x} (+{len}) is in sake's memory, not the guest's: access violation (IPPAI_UPPER_OPEN=1 allows it)"));
+        ONCE.call_once(|| eprintln!("kura: guest write to {addr:#x} (+{len}) is in sake's memory, not the guest's: access violation (IPPAI_UPPER_OPEN=1 allows it)"));
     }
     Fault { addr, write: false }
 }
@@ -99,7 +102,7 @@ fn refused(addr: u32, len: u32) -> Fault {
 fn check(addr: u32, len: u32, write: bool) -> Result<*mut u8, Fault> {
     // (the fast path is allowed()'s first test; the statics are read on the slow one only)
     let top = addr as u64 + len as u64;
-    if !(addr >= NULL_PAGES && top <= GUEST_END && top <= mem_end()) && !upper_ok(addr, len) {
+    if !(addr >= NULL_PAGES && top <= GUEST_END && top <= mem_end()) && !upper_ok(addr, len, write) {
         return Err(Fault { write, ..refused(addr, len) });
     }
     if crate::jit::faults(addr, len, write) {

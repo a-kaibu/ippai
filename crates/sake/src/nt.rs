@@ -807,6 +807,12 @@ fn basic(out: u32, t: u32, attrs: u32) {
 /// NtQueryInformationFile(h, iosb, buf, len, class)
 fn nt_query_information_file(c: &mut Ctx) -> u32 {
     let (h, io, out, len, class) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if class == 9 {
+        return file_name_information(h, io, out, len);
+    }
+    if class == 18 {
+        return file_all_information(c, h, io, out, len);
+    }
     let need = match class {
         4 => 40,
         5 => 24,
@@ -854,6 +860,66 @@ fn nt_query_information_file(c: &mut Ctx) -> u32 {
     mem::heap_free(i);
     iosb(io, 0, need);
     0
+}
+
+/// FileNameInformation: FILE_NAME_INFORMATION { FileNameLength, FileName } with the path past
+/// the drive ("\\dir\\file", no NUL); a buffer of the header's 8 bytes or more but short of the
+/// name gets what fits and STATUS_BUFFER_OVERFLOW (Wine's ntdll file test_file_name_information).
+fn file_name_information(h: u32, io: u32, out: u32, len: u32) -> u32 {
+    if len < 8 {
+        return 0xc000_0004; // STATUS_INFO_LENGTH_MISMATCH
+    }
+    let Some(f) = crate::obj::file(h) else { return 0xc000_0008 };
+    let (st, info, w) = file_name_info(&crate::files::host_to_win(&f.path), len);
+    mem::write(out, &w);
+    iosb(io, st, info);
+    st
+}
+/// FileAllInformation: FILE_ALL_INFORMATION = basic (40), standard (24), internal (8), EA (4),
+/// access (4), position (8), mode (4), alignment (4), then FILE_NAME_INFORMATION at 96 (as
+/// FileNameInformation: what fits, STATUS_BUFFER_OVERFLOW). The structure is 104 bytes.
+fn file_all_information(c: &mut Ctx, h: u32, io: u32, out: u32, len: u32) -> u32 {
+    if len < 104 {
+        return 0xc000_0004; // STATUS_INFO_LENGTH_MISMATCH
+    }
+    let Some(f) = crate::obj::file(h) else { return 0xc000_0008 };
+    let Some(i) = by_handle(c, h) else { return 0xc000_0008 };
+    let (attrs, size_hi, size_lo) = (r32(i), r32(i + 32), r32(i + 36));
+    basic(out, i + 4, attrs);
+    for o in [40, 48] {
+        w32(out + o, size_lo);
+        w32(out + o + 4, size_hi);
+    }
+    w32(out + 56, r32(i + 40));
+    w32(out + 60, (attrs & 0x10 != 0) as u32 * 0x100);
+    mem::heap_free(i);
+    mem::fill(out + 64, 16, 0);
+    let p = mem::heap_alloc(8, true);
+    k32(c, "SetFilePointerEx", &[h, 0, 0, p, 1]);
+    copy(out + 80, p, 8);
+    mem::heap_free(p);
+    mem::fill(out + 88, 8, 0);
+    let (st, n, w) = file_name_info(&crate::files::host_to_win(&f.path), len - 96);
+    mem::write(out + 96, &w);
+    iosb(io, st, 96 + n);
+    st
+}
+/// (status, bytes given, the bytes to write) for a Windows path and a buffer of `len` >= 8
+fn file_name_info(win: &str, len: u32) -> (u32, u32, Vec<u8>) {
+    let name = win.get(2..).filter(|_| win.as_bytes().get(1) == Some(&b':')).unwrap_or(win);
+    let name: Vec<u16> = if name.is_empty() { vec![b'\\' as u16] } else { name.encode_utf16().collect() };
+    let bytes = 2 * name.len() as u32;
+    let mut w = bytes.to_le_bytes().to_vec();
+    let room = ((len - 4) / 2) as usize;
+    for c in name.iter().take(room) {
+        w.extend(c.to_le_bytes());
+    }
+    if room < name.len() {
+        let n = w.len() as u32;
+        (0x8000_0005, n, w) // STATUS_BUFFER_OVERFLOW
+    } else {
+        (0, 4 + bytes, w)
+    }
 }
 
 /// NtSetInformationFile(h, iosb, buf, len, class): the position and the end of file.
@@ -1934,6 +2000,34 @@ mod hooked_tests {
             }
             mem::w8(t + at, old);
             prop_assert_eq!(hooked("NtReadFile"), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod file_name_tests {
+    use super::file_name_info;
+    use proptest::prelude::*;
+
+    /// Wine's ntdll file test_file_name_information: the 8-byte header buffer overflows with the
+    /// first two characters, a big one gets the whole name without a NUL
+    #[test]
+    fn as_ntdll_gives_it() {
+        let (st, n, w) = file_name_info("C:\\windows\\system32", 8);
+        assert_eq!((st, n), (0x8000_0005, 8));
+        assert_eq!(w, [34, 0, 0, 0, b'\\', 0, b'w', 0]);
+        let (st, n, w) = file_name_info("C:\\windows\\system32", 200);
+        assert_eq!((st, n, w.len()), (0, 38, 38));
+        assert_eq!(file_name_info("C:", 64).2, [2, 0, 0, 0, b'\\', 0]);
+    }
+
+    proptest! {
+        #[test]
+        fn never_past_the_buffer(name in "[a-zA-Z0-9\\\\ .]{0,80}", len in 8u32..400) {
+            let (st, n, w) = file_name_info(&format!("C:{name}"), len);
+            prop_assert!(w.len() as u32 <= len);
+            prop_assert_eq!(u32::from_le_bytes(w[..4].try_into().unwrap()), 2 * name.len().max(1) as u32);
+            if st == 0 { prop_assert_eq!(n as usize, w.len()); } else { prop_assert_eq!(n as usize, w.len()); prop_assert!(n <= len); }
         }
     }
 }

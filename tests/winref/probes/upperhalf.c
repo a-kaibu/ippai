@@ -1,13 +1,12 @@
 /* arch: 32
  * The upper half of a 32-bit process (review 2026-11-14 A-1): addresses from 2 GB up are not the
- * program's (sake keeps its own heap and statics there), so reads and writes there are access violations with the address, and APIs given a buffer there
- * fail (ReadFile: ERROR_NOACCESS) instead of writing it. */
+ * program's (sake keeps its own heap and statics there), so writes there are access violations
+ * with the address, and APIs given a buffer there fail (ReadFile: ERROR_NOACCESS) instead of
+ * writing it. (Reads there fault on Windows too; sake lets them through, see kura cpu.rs.) */
 #include "../probe.h"
 
-void f_rd(void *p);
 void f_wr(void *p);
-__asm__(".text\n.globl _f_rd\n_f_rd:\n mov 4(%esp), %ecx\n mov (%ecx), %eax\n ret\n"
-        ".globl _f_wr\n_f_wr:\n mov 4(%esp), %ecx\n movl $9, (%ecx)\n ret\n");
+__asm__(".text\n.globl _f_wr\n_f_wr:\n mov 4(%esp), %ecx\n movl $9, (%ecx)\n ret\n");
 
 static DWORD code, kind, at;
 static int hits;
@@ -36,7 +35,6 @@ int main(void) {
     AddVectoredExceptionHandler(1, handler);
     static const DWORD addrs[] = { 0x80000000, 0x80001000, 0x80400000, 0x90000000, 0xc0000000, 0xf0000000 };
     for (int i = 0; i < 6; i++) {
-        one("read", f_rd, addrs[i]);
         one("write", f_wr, addrs[i]);
     }
     /* ReadFile into the upper half */
