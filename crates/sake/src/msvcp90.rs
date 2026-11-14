@@ -72,7 +72,8 @@ fn tidy(s: u32, built: bool, newsize: u32) {
 }
 
 /// _Copy(newsize, oldlen): a bigger buffer, the first `oldlen` characters kept
-fn copy(s: u32, newsize: u32, oldlen: u32) {
+/// (false: the guest heap is full, the string as it was)
+fn copy(s: u32, newsize: u32, oldlen: u32) -> bool {
     let res = capacity(s);
     let mut newres = newsize | ALLOC_MASK;
     if MAX_SIZE < newres {
@@ -81,6 +82,9 @@ fn copy(s: u32, newsize: u32, oldlen: u32) {
         newres = res + res / 2;
     }
     let p = alloc(newres + 1);
+    if p == 0 {
+        return false;
+    }
     if oldlen > 0 {
         let old = mem::slice(ptr(s), oldlen).to_vec();
         mem::write(p, &old);
@@ -89,6 +93,7 @@ fn copy(s: u32, newsize: u32, oldlen: u32) {
     w32(s + BX, p);
     w32(s + RES, newres);
     eos(s, oldlen);
+    true
 }
 
 /// _Grow(newsize): room for `newsize` characters; whether there are any
@@ -97,7 +102,11 @@ fn grow(c: &mut Ctx, s: u32, newsize: u32) -> bool {
         crate::fatal(c.cpu, "msvcp90: basic_string too long (std::length_error is not thrown here)");
     }
     if capacity(s) < newsize {
-        copy(s, newsize, size(s));
+        if !copy(s, newsize, size(s)) {
+            // (its callers write `newsize` characters next: not into the old buffer, nor at
+            // address 0 as before)
+            crate::fatal(c.cpu, "msvcp90: the guest heap is full (std::bad_alloc is not thrown here)");
+        }
     } else if newsize == 0 {
         eos(s, 0);
     }

@@ -2670,11 +2670,31 @@ fn STDIO_FD() -> u32 {
     SB_SIZE()
 }
 fn stdio_file(c: &mut Ctx, this: u32) -> u32 {
-    let f = crate::api::export("ucrtbase", "__acrt_iob_func");
+    let f = crt_fn("__acrt_iob_func");
     gcall(c, f, &[A::I(r32(this + STDIO_FD()))]) as u32
 }
-fn crt(c: &mut Ctx, name: &str, args: &[A]) -> i32 {
-    let f = crate::api::export("ucrtbase", name);
+/// The ucrtbase export `name`, looked up once (a string-keyed lookup per character of a
+/// `cout << ...` before).
+fn crt_fn(name: &'static str) -> u32 {
+    const NAMES: [&str; 5] = ["__acrt_iob_func", "fputc", "fgetc", "ungetc", "fflush"];
+    static AT: [OnceLock<u32>; 5] = [const { OnceLock::new() }; 5];
+    match NAMES.iter().position(|&n| n == name) {
+        Some(i) => match AT[i].get() {
+            Some(&a) => a,
+            None => {
+                let a = crate::api::export("ucrtbase", name);
+                // (kept once there is one)
+                if a != 0 {
+                    let _ = AT[i].set(a);
+                }
+                a
+            }
+        },
+        None => crate::api::export("ucrtbase", name),
+    }
+}
+fn crt(c: &mut Ctx, name: &'static str, args: &[A]) -> i32 {
+    let f = crt_fn(name);
     gcall(c, f, args) as i32
 }
 fn stdio_overflow<const W: bool>(c: &mut Ctx) -> u32 {
@@ -2846,16 +2866,26 @@ fn rsfun(c: &mut Ctx) -> u32 {
     0
 }
 /// _Smanip<streamsize> { pfun, manarg at 8 } (x86 too: the __int64 is 8-aligned)
-fn smanip64(c: &mut Ctx, name: &str, f: Handler) -> u32 {
+/// The trap of manipulator function `name`, made once: host_fn per setw() took the trap
+/// table's write lock (every other thread's API calls waited) for an address that never changes.
+fn manip_fn(name: &'static str, f: Handler) -> u32 {
+    const NAMES: [&str; 5] = ["msvcp::swfun", "msvcp::spfun", "msvcp::sbfun", "msvcp::sifun", "msvcp::rsfun"];
+    static AT: [OnceLock<u32>; 5] = [const { OnceLock::new() }; 5];
+    match NAMES.iter().position(|&n| n == name) {
+        Some(i) => *AT[i].get_or_init(|| host_fn(name, f, 0)),
+        None => host_fn(name, f, 0),
+    }
+}
+fn smanip64(c: &mut Ctx, name: &'static str, f: Handler) -> u32 {
     let (ret, v) = (c.a(0), c.q(1));
-    wq(ret, host_fn(name, f, 0));
+    wq(ret, manip_fn(name, f));
     w64(ret + 8, v);
     ret
 }
 /// _Smanip<int> { pfun, int manarg after it }
-fn smanip32(c: &mut Ctx, name: &str, f: Handler) -> u32 {
+fn smanip32(c: &mut Ctx, name: &'static str, f: Handler) -> u32 {
     let (ret, v) = (c.a(0), c.a(1));
-    wq(ret, host_fn(name, f, 0));
+    wq(ret, manip_fn(name, f));
     if mem::x64() {
         w64(ret + 8, c.a64(1));
     } else {
@@ -3256,5 +3286,31 @@ pub fn init() {
     reg("?_Fiopen@std@@YAPEAU_iobuf@@PEBGHH@Z", Fiopen_w);
     for (n, f) in members::<false>().into_iter().chain(members::<true>()) {
         reg(&n, f);
+    }
+}
+
+#[cfg(test)]
+mod b08_tests {
+    use super::*;
+
+    /// setw() and friends hand out one trap per manipulator, made once (host_fn per call took
+    /// the trap table's write lock), and one ucrtbase lookup per name.
+    #[test]
+    fn manipulators_and_crt_functions_are_looked_up_once() {
+        let _g = crate::test_guest::enter();
+        let names: [(&'static str, Handler); 5] = [("msvcp::swfun", swfun), ("msvcp::spfun", spfun), ("msvcp::sbfun", sbfun), ("msvcp::sifun", sifun), ("msvcp::rsfun", rsfun)];
+        let first: Vec<u32> = names.iter().map(|&(n, f)| manip_fn(n, f)).collect();
+        for _ in 0..3 {
+            let again: Vec<u32> = names.iter().map(|&(n, f)| manip_fn(n, f)).collect();
+            assert_eq!(again, first);
+        }
+        let mut d = first.clone();
+        d.sort();
+        d.dedup();
+        assert_eq!(d.len(), first.len(), "a trap each");
+        for n in ["__acrt_iob_func", "fputc", "fgetc", "ungetc", "fflush", "fputwc"] {
+            assert_eq!(crt_fn(n), crate::api::export("ucrtbase", n), "{n}");
+            assert_eq!(crt_fn(n), crt_fn(n));
+        }
     }
 }

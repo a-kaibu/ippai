@@ -641,10 +641,88 @@ fn ex_delete(c: &mut Ctx) -> u32 {
     }
     this
 }
-/// the destructor ThrowInfo names
-fn ex_dtor(c: &mut Ctx) -> u32 {
-    ex_free_what(c.a(0));
+/// ThrowInfo's destructor of an exception sake threw (`throw`, `throw_failure`,
+/// `throw_system_error`): the message, then the block.
+/// An exception_ptr still holding it (`hold_thrown`) puts that off to its last release.
+pub(crate) fn thrown_dtor(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let free = {
+        let mut g = THROWN.lock().unwrap_or_else(|e| e.into_inner());
+        let t = g.get_or_insert_with(Default::default);
+        match t.get_mut(&this) {
+            Some(h) if h.holds > 0 => {
+                h.dead = true;
+                false
+            }
+            Some(_) => {
+                t.remove(&this);
+                true
+            }
+            // (not one of sake's blocks: only its message)
+            None => {
+                ex_free_what(this);
+                false
+            }
+        }
+    };
+    if free {
+        free_thrown(this);
+    }
     0
+}
+fn free_thrown(o: u32) {
+    ex_free_what(o);
+    if mem::heap_owns(o) {
+        mem::heap_free(o);
+    }
+}
+/// A block sake threw: how many exception_ptrs hold it, whether its catch is done with it.
+#[derive(Default)]
+struct Thrown {
+    holds: u32,
+    dead: bool,
+}
+/// The exception objects sake threw that are not freed yet (exception_ptr keeps the thrown
+/// object itself, not a copy: the catch's end must not free it under one).
+static THROWN: std::sync::Mutex<Option<std::collections::HashMap<u32, Thrown>>> = std::sync::Mutex::new(None);
+/// `o`, a block of sake's to throw
+pub(crate) fn thrown(o: u32) -> u32 {
+    THROWN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(o, Thrown::default());
+    o
+}
+/// An exception_ptr holds `obj` (no-op unless sake threw it).
+pub(crate) fn hold_thrown(obj: u64) {
+    let mut t = THROWN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = t.as_mut().and_then(|t| t.get_mut(&(obj as u32))) {
+        h.holds += 1;
+    }
+}
+/// An exception_ptr lets `obj` go: freed when it was the last and the catch is done.
+pub(crate) fn release_thrown(obj: u64) {
+    let o = obj as u32;
+    let free = {
+        let mut t = THROWN.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(m) = t.as_mut() else { return };
+        match m.get_mut(&o) {
+            Some(h) => {
+                h.holds = h.holds.saturating_sub(1);
+                let gone = h.holds == 0 && h.dead;
+                if gone {
+                    m.remove(&o);
+                }
+                gone
+            }
+            None => false,
+        }
+    };
+    if free {
+        free_thrown(o);
+    }
+}
+/// Whether sake's thrown block `o` is not freed yet
+#[cfg(test)]
+pub(crate) fn thrown_live(o: u32) -> bool {
+    THROWN.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|m| m.contains_key(&o))
 }
 fn ex_vtable() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
@@ -681,7 +759,9 @@ fn throw_info(class: &Class) -> u32 {
     }
     let p = ps();
     // (x86: thiscall, the copy constructor's source on the stack)
-    let dtor = host_fn_this("msvcp::exception::dtor", ex_dtor, 0);
+    // (the object thrown is sake's block: its destructor frees it too, when the catch is done
+    // with it, as the thrower's stack frame would go on Windows; it stayed, a block a throw)
+    let dtor = host_fn_this("msvcp::exception::thrown_dtor", thrown_dtor, 0);
     let copy = if class.size > 3 * p { host_fn_this("msvcp::exception::copy32", copy32, 4) } else { host_fn_this("msvcp::exception::copy24", copy24, 4) };
     let n = class.names.len() as u32;
     let array = mem::heap_alloc(4 + 4 * n, true);
@@ -708,6 +788,7 @@ fn throw_info(class: &Class) -> u32 {
 /// Throws a new `class` object with message `what` (static: do_free 0) and an int after it.
 fn throw(c: &mut Ctx, class: &Class, what: u32, extra: u32) -> u32 {
     let o = mem::heap_alloc(class.size, true);
+    thrown(o);
     wp(o, ex_vtable());
     wp(o + ps(), what);
     if class.size > 3 * ps() {
@@ -772,8 +853,11 @@ const FAILURE: Class = Class {
 /// system_error makes it: "msg: iostream stream error").
 pub fn throw_failure(c: &mut Ctx, msg: &str) {
     let o = mem::heap_alloc(FAILURE.size, true);
+    thrown(o);
     wp(o, ex_vtable());
     wp(o + ps(), static_str(&format!("{msg}: iostream stream error")));
+    // (do_free: the message goes with the object)
+    mem::w8(o + 2 * ps(), 1);
     w32(o + 3 * ps(), 1);
     wp(o + 4 * ps(), iostream_category());
     throw_object(c, o, throw_info(&FAILURE));
@@ -789,6 +873,7 @@ pub fn rethrow(c: &mut Ctx) {
 
 pub fn throw_system_error(c: &mut Ctx, errno: u32, what: u32) -> u32 {
     let o = mem::heap_alloc(SYSTEM_ERROR.size, true);
+    thrown(o);
     wp(o, ex_vtable());
     wp(o + ps(), what);
     w32(o + 3 * ps(), errno);
@@ -809,7 +894,10 @@ fn x_overflow_error(c: &mut Ctx) -> u32 {
     throw(c, &OVERFLOW_ERROR, w, 0)
 }
 fn x_bad_function_call(c: &mut Ctx) -> u32 {
-    throw(c, &BAD_FUNCTION_CALL, static_str("bad function call"), 0)
+    // (one message for every throw: a new one a throw stayed, do_free unset)
+    static W: OnceLock<u32> = OnceLock::new();
+    let w = *W.get_or_init(|| static_str("bad function call"));
+    throw(c, &BAD_FUNCTION_CALL, w, 0)
 }
 
 const BAD_ALLOC: Class = Class { names: &[".?AVbad_alloc@std@@", ".?AVexception@std@@"], size: 24 };
@@ -911,5 +999,47 @@ pub fn init() {
         ("?_Facet_Register@std@@YAXPEAV_Facet_base@1@@Z", nothing),
     ] {
         reg(name, f);
+    }
+}
+
+#[cfg(test)]
+mod thrown_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+
+    /// A std exception sake threw: its catch's end frees the message and the block (both
+    /// stayed for good, a block a throw), and another object's only its message.
+    #[test]
+    fn the_catch_end_frees_a_thrown_block() {
+        let _g = enter();
+        let o = thrown(mem::heap_alloc(FAILURE.size, true));
+        let what = static_str("x: iostream stream error");
+        wp(o, ex_vtable());
+        wp(o + ps(), what);
+        w8(o + 2 * ps(), 1);
+        assert!(thrown_live(o));
+        call(thrown_dtor, &[o]);
+        assert!(!thrown_live(o));
+        assert!(!mem::heap_owns(o), "block freed");
+        assert!(!mem::heap_owns(what), "message freed");
+        // (the guest's own object: its message only, the block is the guest's)
+        let g = mem::heap_alloc(24, true);
+        let w = static_str("guest");
+        wp(g + ps(), w);
+        w8(g + 2 * ps(), 1);
+        call(thrown_dtor, &[g]);
+        assert!(mem::heap_owns(g), "not sake's to free");
+        assert_eq!(rp(g + ps()), 0);
+        mem::heap_free(g);
+    }
+
+    /// The ThrowInfo of every class sake throws names the destructor that frees the block.
+    #[test]
+    fn throw_infos_name_the_freeing_destructor() {
+        let _g = enter();
+        let want = host_fn_this("msvcp::exception::thrown_dtor", thrown_dtor, 0);
+        for class in [&FAILURE, &SYSTEM_ERROR, &INVALID_ARGUMENT, &RUNTIME_ERROR, &OVERFLOW_ERROR, &BAD_FUNCTION_CALL] {
+            assert_eq!(mem::r32(throw_info(class) + 4), want, "{:?}", class.names[0]);
+        }
     }
 }

@@ -3019,9 +3019,18 @@ fn throw_info(class: &str) -> u32 {
         w32(arr + 4 + 4 * i as u32, ct);
     }
     let ti = mem::heap_alloc(16, true);
+    // (the thrown "object" is the slot holding the pointer: freed when the catch is done with
+    // it, through ThrowInfo's destructor; it stayed, 4 bytes a throw)
+    static SLOT_DTOR: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    w32(ti + 4, *SLOT_DTOR.get_or_init(|| crate::api::host_fn_this("mfc42::throw_slot_dtor", throw_slot_dtor, 0)));
     w32(ti + 12, arr);
     T.lock().unwrap().get_or_insert_with(HashMap::default).insert(class.to_string(), ti);
     ti
+}
+/// ThrowInfo's destructor of a thrown pointer's slot (`throw`)
+fn throw_slot_dtor(c: &mut Ctx) -> u32 {
+    free(c.a(0));
+    0
 }
 /// Throws `obj` (a pointer of class `class`) from the handler `c` (its stdcall/thiscall
 /// arguments `bytes` popped)
@@ -4226,5 +4235,21 @@ mod tests {
             assert_eq!((th(0x54), th(0x60), th(0x6c), th(0x7c), th(0xbc)), (0x54, 0x58, 0x64, 0x74, 0xb4));
         });
         assert_eq!(th(0x7c), 0x7c);
+    }
+
+    /// `throw pException`'s slot goes with the catch: its ThrowInfo names the destructor
+    /// that frees it (4 bytes a throw stayed for good).
+    #[test]
+    fn a_thrown_slot_is_freed_by_its_dtor() {
+        let _g = enter();
+        let ti = throw_info("CFileException");
+        let d = r32(ti + 4);
+        assert_ne!(d, 0);
+        assert_eq!(d, r32(throw_info("CMemoryException") + 4), "one trap");
+        let slot = alloc(4);
+        w32(slot, 0x1234);
+        assert!(mem::heap_owns(slot));
+        crate::test_guest::call(throw_slot_dtor, &[slot]);
+        assert!(!mem::heap_owns(slot));
     }
 }

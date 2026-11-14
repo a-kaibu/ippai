@@ -527,9 +527,16 @@ fn eptr_set(d: u32, rec: u32) {
 #[cfg(test)]
 static LIVE_RECORDS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 fn free_record(rec: u32) {
+    if r32(rec) == 0xe06d_7363 {
+        crate::msvcp::release_thrown(record_obj(rec));
+    }
     #[cfg(test)]
     LIVE_RECORDS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     mem::heap_free(rec);
+}
+/// The thrown object of C++ exception record `rec`
+fn record_obj(rec: u32) -> u64 {
+    if x64() { r64(rec + 0x28) } else { r32(rec + 0x18) as u64 }
 }
 /// A record block (RECORD() bytes and the count, 1), 0 when the guest heap is full.
 fn alloc_record() -> u32 {
@@ -598,6 +605,7 @@ fn new_record(obj: u64, ti: u32) -> u32 {
         w32(rec + 0x18, obj as u32);
         w32(rec + 0x1c, ti);
     }
+    crate::msvcp::hold_thrown(obj);
     rec
 }
 /// __ExceptionPtrCurrentException(dst): the exception being handled, if any
@@ -609,6 +617,9 @@ fn eptr_current(c: &mut Ctx) -> u32 {
             let copy = alloc_record();
             if copy != 0 {
                 mem::copy(copy, rec, RECORD());
+                if r32(copy) == 0xe06d_7363 {
+                    crate::msvcp::hold_thrown(record_obj(copy));
+                }
             }
             copy
         })
@@ -919,6 +930,56 @@ mod eptr_tests {
             for i in 0..4 { call(eptr_destroy, &[v(i)]); }
             prop_assert_eq!(LIVE_RECORDS.load(Relaxed), start);
             prop_assert!(made > 0 || true);
+            mem::heap_free(vars);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        /// Exceptions sake threw, exception_ptrs taken of them (they hold the thrown object
+        /// itself), their copies, assignments and destruction, and each catch's end, in any
+        /// order, against a model: a block is freed exactly when its catch is done and no
+        /// record holds it any more, never before (a use after free) and never twice.
+        #[test]
+        fn thrown_blocks_live_while_held(ops in proptest::collection::vec((0u8..5, 0usize..4, 0usize..3), 1..60)) {
+            let _g = enter();
+            let vars = mem::heap_alloc(32, true);
+            let v = |i: usize| vars + 8 * i as u32;
+            let objs: Vec<u32> = (0..3).map(|_| crate::msvcp::thrown(mem::heap_alloc(24, true))).collect();
+            // (model: the object each var's record holds; whether each catch is done)
+            let mut holds: [Option<usize>; 4] = [None; 4];
+            let mut done = [false; 3];
+            let mut freed = [false; 3];
+            for (op, a, k) in ops {
+                let b = k % 4;
+                match op {
+                    // (std::current_exception inside object k's catch, while it runs)
+                    0 if !done[k] => {
+                        call(eptr_destroy, &[v(a)]);
+                        call(eptr_copy_exception, &[v(a), objs[k], 0x1000]);
+                        holds[a] = Some(k);
+                    }
+                    1 if a != b => { call(eptr_destroy, &[v(a)]); call(eptr_copy, &[v(a), v(b)]); holds[a] = holds[b]; }
+                    2 => { call(eptr_assign, &[v(a), v(b)]); holds[a] = holds[b]; }
+                    3 => { call(eptr_destroy, &[v(a)]); call(eptr_create, &[v(a)]); holds[a] = None; }
+                    // (object k's catch ends)
+                    4 if !done[k] => { call(crate::msvcp::thrown_dtor, &[objs[k]]); done[k] = true; }
+                    _ => {}
+                }
+                for k in 0..3 {
+                    let held = holds.iter().any(|h| *h == Some(k));
+                    let gone = done[k] && !held;
+                    prop_assert!(!(freed[k] && !gone), "object {} back after its free", k);
+                    freed[k] = gone;
+                    prop_assert_eq!(crate::msvcp::thrown_live(objs[k]), !gone, "object {}", k);
+                    if !gone { prop_assert!(mem::heap_owns(objs[k])); }
+                }
+            }
+            for i in 0..4 { call(eptr_destroy, &[v(i)]); }
+            for k in 0..3 {
+                if !done[k] { call(crate::msvcp::thrown_dtor, &[objs[k]]); }
+                prop_assert!(!crate::msvcp::thrown_live(objs[k]));
+            }
             mem::heap_free(vars);
         }
     }
