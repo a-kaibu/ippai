@@ -2200,7 +2200,7 @@ fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, 
             Lea if i.memory_base() == Register::RIP && i.memory_index() == Register::None => Some(V::Const(i.memory_displacement64())),
             Movsxd if i.op1_kind() == OpKind::Memory => table(&vals, i, 4).map(|t| V::Entry(t, true)),
             Mov if i.op1_kind() == OpKind::Memory && dst.is_some_and(|r| r.is_gpr32()) => table(&vals, i, 4).map(|t| V::Entry(t, false)),
-            Add if i.op1_kind() == OpKind::Register => match (get(&vals, dst.unwrap()), get(&vals, i.op1_register())) {
+            Add if i.op1_kind() == OpKind::Register && dst.is_some() => match (get(&vals, dst.unwrap()), get(&vals, i.op1_register())) {
                 (Some(V::Entry(t, s)), Some(V::Const(b))) | (Some(V::Const(b)), Some(V::Entry(t, s))) => Some(V::Target(t, s, b)),
                 _ => None,
             },
@@ -2481,6 +2481,45 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoMem;
+    impl Memory for NoMem {
+        fn read8(&mut self, a: u32) -> Result<u8, crate::Fault> {
+            Err(crate::Fault { addr: a, write: false })
+        }
+        fn write8(&mut self, a: u32, _: u8) -> Result<(), crate::Fault> {
+            Err(crate::Fault { addr: a, write: true })
+        }
+    }
+
+    /// A bounded block ending in an indirect jump with `add [mem], reg` in it (no register
+    /// destination) has no table and is no panic; so are random instruction runs before a jump.
+    #[test]
+    fn jump_table_with_a_memory_destination() {
+        let run = |bytes: &[u8]| {
+            let mut dec = Decoder::with_ip(64, bytes, 0x1000, DecoderOptions::NONE);
+            let ins: Vec<Instruction> = core::iter::from_fn(|| dec.can_decode().then(|| dec.decode())).filter(|i| !i.is_invalid()).collect();
+            if ins.is_empty() {
+                return None;
+            }
+            Some(jump_table(&mut NoMem, &ins, Some((Register::RCX, 4))))
+        };
+        // add [rax], rcx; jmp rax
+        assert_eq!(run(&[0x48, 0x01, 0x08, 0xff, 0xe0]), Some(Vec::new()));
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..20000 {
+            let mut b = [0u8; 14];
+            for v in &mut b[..12] {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                // (mostly the opcodes the table reader looks at, with random operands)
+                *v = if x >> 60 < 4 { [0x01, 0x03, 0x48, 0x8b, 0x8d, 0x63, 0x4c, 0x04][(x >> 8) as usize % 8] } else { x as u8 };
+            }
+            b[12..].copy_from_slice(&[0xff, 0xe0]);
+            run(&b);
+        }
+    }
 
     /// (local index, opcode) of every local.get/set/tee `code.locs` lists, checking that each
     /// points at one

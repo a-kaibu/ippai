@@ -301,3 +301,35 @@ fn gl_programs_trace() {
         run(seed);
     }
 }
+
+/// glShaderSource and glGetAttachedShaders of a name that is no shader / program, or with a
+/// negative count, set their error and come back (they once kept the lock while setting it and
+/// stood still for good).
+#[test]
+fn bad_names_set_an_error_and_return() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        *GL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let ctx = vngl_context_create(0);
+        vngl_make_current(ctx, 0, 0, 0);
+        let mut got = Vec::new();
+        unsafe {
+            let (sh, p) = (glCreateShader(GL_VERTEX_SHADER), glCreateProgram());
+            for (name, count) in [(sh + p + 7, 1), (p, 1), (sh, -1)] {
+                glShaderSource(name, count, std::ptr::null(), std::ptr::null());
+                got.push(glGetError());
+            }
+            for (name, max) in [(sh + p + 7, 1), (sh, 1), (p, -1)] {
+                glGetAttachedShaders(name, max, std::ptr::null_mut(), std::ptr::null_mut());
+                got.push(glGetError());
+            }
+        }
+        vngl_make_current(0, 0, 0, 0);
+        vngl_context_destroy(ctx);
+        let _ = tx.send(got);
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("the calls did not return");
+    let want = [GL_INVALID_VALUE, GL_INVALID_OPERATION, GL_INVALID_VALUE];
+    assert_eq!(got, [want, want].concat());
+}

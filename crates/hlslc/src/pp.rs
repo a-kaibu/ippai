@@ -150,7 +150,8 @@ fn clean(src: &str) -> Vec<String> {
         let mut in_str = false;
         while i < b.len() {
             if in_block {
-                if raw[i..].starts_with("*/") {
+                // (bytes: a comment in Japanese has `i` inside a character)
+                if b[i..].starts_with(b"*/") {
                     in_block = false;
                     cur.push(' ');
                     i += 2;
@@ -161,8 +162,10 @@ fn clean(src: &str) -> Vec<String> {
             }
             if in_str {
                 if b[i] == b'\\' && i + 1 < b.len() {
-                    cur.push_str(&raw[i..i + 2]);
-                    i += 2;
+                    let ch = raw[i + 1..].chars().next().unwrap();
+                    cur.push('\\');
+                    cur.push(ch);
+                    i += 1 + ch.len_utf8();
                     continue;
                 }
                 if b[i] == b'"' {
@@ -670,6 +673,10 @@ mod tests {
         assert_eq!(clean("s = \"a\\\"/*\" t"), ["s = \"a\\\"/*\" t"]);
         assert_eq!(clean("s = \"a\\"), ["s = \"a"], "a continuation, even in a string");
         assert_eq!(clean("p\r\nq"), ["p", "q"]);
+        // characters of several bytes in a comment and after a backslash in a string
+        assert_eq!(clean("a /* あ */ b"), ["a   b"]);
+        assert_eq!(clean("a /* 色\n調整 */ b // 終"), ["a   b ", ""]);
+        assert_eq!(clean("s = \"\\あ\" t"), ["s = \"\\あ\" t"]);
         assert_eq!(clean("/**/x/*"), [" x"]);
         assert_eq!(clean("é/* */ü"), ["é ü"]);
         assert_eq!(clean("tail /* open"), ["tail "]);

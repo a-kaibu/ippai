@@ -132,7 +132,9 @@ extern "C" fn glCreateShaderObject(ty: u32) -> u32 {
     glCreateShader(ty)
 }
 unsafe extern "C" fn glShaderSource(sh: u32, count: i32, strings: *const *const c_char, lengths: *const i32) {
-    if let Some(e) = kind_err(gl().as_ref().unwrap(), sh, true).or((count < 0).then_some(GL_INVALID_VALUE)) {
+    // (a statement of its own: the lock must be let go before `fail` takes it)
+    let e = kind_err(gl().as_ref().unwrap(), sh, true).or((count < 0).then_some(GL_INVALID_VALUE));
+    if let Some(e) = e {
         return fail(e);
     }
     let mut s = String::new();
@@ -262,7 +264,8 @@ extern "C" fn glDetachShader(p: u32, sh: u32) {
     g2.collect_programs();
 }
 unsafe extern "C" fn glGetAttachedShaders(p: u32, max: i32, count: *mut i32, out: *mut u32) {
-    if let Some(e) = kind_err(gl().as_ref().unwrap(), p, false).or((max < 0).then_some(GL_INVALID_VALUE)) {
+    let e = kind_err(gl().as_ref().unwrap(), p, false).or((max < 0).then_some(GL_INVALID_VALUE));
+    if let Some(e) = e {
         return fail(e);
     }
     let v = gl().as_ref().unwrap().programs.get(&p).map(|x| x.shaders.clone()).unwrap_or_default();

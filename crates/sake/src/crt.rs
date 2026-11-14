@@ -3706,6 +3706,12 @@ fn ecvt_digits(v: f64, n: usize) -> (Vec<u8>, i32) {
     if v == 0.0 {
         return (vec![b'0'; n], 0);
     }
+    if !v.is_finite() {
+        // (msvcrt's "1#INF", "1#QNAN" with the point after the 1; no rounding of these here)
+        let mut d = if v.is_nan() { b"1#QNAN".to_vec() } else { b"1#INF".to_vec() };
+        d.resize(n, b'0');
+        return (d, 1);
+    }
     let s = format!("{:.*e}", n - 1, v.abs());
     let (m, e) = s.split_once('e').unwrap();
     (m.bytes().filter(|b| b.is_ascii_digit()).collect(), e.parse::<i32>().unwrap() + 1)
@@ -4172,6 +4178,25 @@ pub fn init() {
 
 #[cfg(test)]
 mod tests {
+    /// _ecvt of an infinity or a NaN (a panic once: `format!` gives them no exponent)
+    #[test]
+    fn ecvt_digits_of_inf_and_nan() {
+        use super::ecvt_digits;
+        assert_eq!(ecvt_digits(f64::INFINITY, 8), (b"1#INF000".to_vec(), 1));
+        assert_eq!(ecvt_digits(f64::NEG_INFINITY, 5), (b"1#INF".to_vec(), 1));
+        assert_eq!(ecvt_digits(f64::NAN, 8), (b"1#QNAN00".to_vec(), 1));
+        assert_eq!(ecvt_digits(1234.5, 6), (b"123450".to_vec(), 4));
+        // every bit pattern gives `n` digits (1..=340) and does not panic
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for k in 0..20000usize {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let n = k % 400;
+            let (d, _) = ecvt_digits(f64::from_bits(x), n);
+            assert_eq!(d.len(), n.clamp(1, 340), "{x:#x} {n}");
+        }
+    }
 
     /// _mbctype as _setmbcp(_MB_CP_ANSI) makes it (#58; the probe crtlocale finds a locale's
     /// mbctype on Windows by the _SBUP / _SBLOW of 'A' / 'a')

@@ -58,7 +58,7 @@ pub fn tree_files(tsv: &str) -> Vec<String> {
 pub fn engine_entry(game: &serde_json::Value, tree: impl Fn(&str) -> Option<std::sync::Arc<Vec<String>>>) -> Option<serde_json::Value> {
     const ROOT: &str = "Z:\\ippai\\game\\";
     let run = game["run"].as_str()?;
-    if run.len() <= ROOT.len() || !run[..ROOT.len()].eq_ignore_ascii_case(ROOT) {
+    if run.len() <= ROOT.len() || !run.get(..ROOT.len()).is_some_and(|r| r.eq_ignore_ascii_case(ROOT)) {
         return None;
     }
     let name = game["mounts"].as_array()?.iter().filter_map(|m| m.as_str()?.strip_prefix("/ippai/game=")).next()?;
@@ -156,6 +156,16 @@ mod tests {
         assert!(engine_entry(&entry("Z:\\ippai\\game\\Start.exe", &[]), trees).is_none());
         assert!(engine_entry(&entry("C:\\windows\\notepad.exe", &["/ippai/game=anemoi"]), trees).is_none());
         assert!(engine_entry(&serde_json::json!({ "id": "x" }), trees).is_none());
+        // (the root's length falls inside a character)
+        assert!(engine_entry(&entry("C:\\Games\\さくら\\x.exe", &["/ippai/game=anemoi"]), trees).is_none());
+    }
+
+    proptest! {
+        #[test]
+        fn any_run_is_answered(run in "\\PC{0,24}", cut in 0usize..20) {
+            let root: String = "Z:\\ippai\\game\\".chars().take(cut).collect();
+            engine_entry(&entry(&(root + &run), &["/ippai/game=anemoi"]), trees);
+        }
     }
 
     #[test]

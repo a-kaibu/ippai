@@ -67,6 +67,12 @@ fn info() -> Info {
     }
 }
 
+/// `n` bytes of `v` at `pos`, as many as it has (none past its end: mmioSeek goes there).
+fn part(v: &[u8], pos: u32, n: u32) -> &[u8] {
+    let at = (pos as usize).min(v.len());
+    &v[at..at.saturating_add(n as usize).min(v.len())]
+}
+
 impl Mmio {
     /// The I/O buffer, made at first use (`want` bytes, 0: MMIO_DEFAULTBUFFER).
     fn buffer(&mut self, want: u32) -> (u32, u32) {
@@ -111,7 +117,7 @@ impl Mmio {
     fn read(&mut self, dst: u32, n: u32) -> u32 {
         let n = n.min(self.len().saturating_sub(self.pos));
         match &self.data {
-            Data::File(v) => mem::write(dst, &v[self.pos as usize..(self.pos + n) as usize]),
+            Data::File(v) => mem::write(dst, part(v, self.pos, n)),
             Data::Mem(a, _) => mem::copy(dst, a + self.pos, n),
             Data::Handle(f, base, _, _) => {
                 let got = f.seek(std::io::SeekFrom::Start(base + self.pos as u64)).map_or(0, |_| f.read_into(dst, n));
@@ -643,7 +649,22 @@ mod tests {
         assert_eq!(handle_len(b"RGSSAD\0\x03", 300 << 20), 300 << 20);
     }
 
+    #[test]
+    fn part_past_the_end_is_empty() {
+        assert_eq!(part(b"abcd", 1, 2), b"bc");
+        assert_eq!(part(b"abcd", 3, 9), b"d");
+        assert_eq!(part(b"abcd", 4, 1), b"");
+        assert_eq!(part(b"abcd", 100, 0), b"");
+        assert_eq!(part(b"abcd", u32::MAX, u32::MAX), b"");
+    }
+
     proptest! {
+        #[test]
+        fn part_is_the_clamped_range(v in proptest::collection::vec(any::<u8>(), 0..64), pos in any::<u32>(), n in any::<u32>()) {
+            let want: Vec<u8> = v.iter().copied().skip(pos as usize).take(n as usize).collect();
+            prop_assert_eq!(part(&v, pos, n), &want[..]);
+        }
+
         #[test]
         fn handle_len_never_passes_the_file(head in proptest::collection::vec(any::<u8>(), 0..12), rest in any::<u64>()) {
             let n = handle_len(&head, rest);
