@@ -437,6 +437,26 @@ fn lock() -> std::sync::MutexGuard<'static, Option<Gl>> {
     g
 }
 
+/// Where the program's memory ends: client arrays and indices past it are not read.
+const GUEST_END: u64 = 1 << 31;
+/// The most vertices (and indices) one draw takes.
+const MAX_VERTICES: usize = 1 << 24;
+
+#[cfg(test)]
+mod range_tests {
+    use proptest::prelude::*;
+    proptest! {
+        /// As many vertices as GL says from `first`, never past u32 or MAX_VERTICES.
+        #[test]
+        fn draw_range_is_firsts_count(first in any::<i32>(), count in any::<i32>()) {
+            let r = super::draw_range(first, count);
+            let want_lo = first.max(0) as i64;
+            let want_hi = (first as i64 + count.max(0) as i64).max(want_lo).min(u32::MAX as i64).min(want_lo + super::MAX_VERTICES as i64);
+            prop_assert_eq!((r.start as i64, r.end as i64), (want_lo, want_hi.max(want_lo)));
+        }
+    }
+}
+
 /// GL_MAX_TEXTURE_SIZE: what glGet answers and glTexImage2D, glCopyTexImage2D, glReadPixels take.
 const MAX_TEXTURE: u32 = 8192;
 
@@ -1165,17 +1185,20 @@ pub(crate) fn fetch(g: &Gl, a: &Array, i: u32, def: [f32; 4]) -> [f32; 4] {
     // (size GL_BGRA: four components)
     let n = if a.size == 0x80E1 { 4 } else { a.size.clamp(1, 4) as usize };
     let stride = if a.stride > 0 { a.stride as usize } else { ts * n };
-    let off = a.ptr as usize + stride * i as usize;
+    // (summed wide: on a 32-bit usize it wrapped and read anywhere, the host's memory too)
+    let off = a.ptr as u64 + stride as u64 * i as u64;
+    let end = off + (ts * n) as u64;
     let base: *const u8 = if a.buffer != 0 {
         match g.buffers.get(&a.buffer) {
-            Some(b) if off + ts * n <= b.data.len() => unsafe { b.data.as_ptr().add(off) },
+            Some(b) if end <= b.data.len() as u64 => unsafe { b.data.as_ptr().add(off as usize) },
             _ => return def,
         }
     } else {
-        if a.ptr == 0 {
+        // (the program's own memory: below GUEST_END)
+        if a.ptr == 0 || end > GUEST_END {
             return def;
         }
-        off as *const u8
+        off as usize as *const u8
     };
     let mut v = def;
     for k in 0..n {
@@ -1223,15 +1246,18 @@ fn array_vertex(g: &Gl, c: &Ctx, i: u32) -> [f32; 16] {
 
 /// The indices of glDrawElements (from the element buffer or client memory).
 pub(crate) fn indices(g: &Gl, c: &Ctx, count: i32, ty: u32, ptr: u32) -> Vec<u32> {
-    let n = count.max(0) as usize;
+    let n = (count.max(0) as usize).min(MAX_VERTICES);
     let ts = type_size(ty);
+    let end = ptr as u64 + (n * ts) as u64;
     let src: *const u8 = if c.element_buffer != 0 {
         match g.buffers.get(&c.element_buffer) {
-            Some(b) if ptr as usize + n * ts <= b.data.len() => unsafe { b.data.as_ptr().add(ptr as usize) },
+            Some(b) if end <= b.data.len() as u64 => unsafe { b.data.as_ptr().add(ptr as usize) },
             _ => return Vec::new(),
         }
+    } else if end > GUEST_END {
+        return Vec::new();
     } else {
-        ptr as *const u8
+        ptr as usize as *const u8
     };
     if src.is_null() {
         return Vec::new();
@@ -1247,14 +1273,22 @@ pub(crate) fn indices(g: &Gl, c: &Ctx, count: i32, ty: u32, ptr: u32) -> Vec<u32
         .collect()
 }
 
+/// The vertices of `first` and `count` that a draw takes: the ends saturate, at most
+/// MAX_VERTICES of them (a count of garbage asked for count * 64 bytes and aborted).
+fn draw_range(first: i32, count: i32) -> std::ops::Range<u32> {
+    let lo = first.max(0) as u32;
+    let hi = (first as i64 + count.max(0) as i64).clamp(0, u32::MAX as i64) as u32;
+    lo..hi.max(lo).min(lo.saturating_add(MAX_VERTICES as u32))
+}
+
 extern "C" fn glDrawArrays(mode: u32, first: i32, count: i32) {
     with(|g, c| {
         sync_mapped(g);
         if c.program != 0 {
-            let idx: Vec<u32> = (first.max(0) as u32..(first + count).max(0) as u32).collect();
+            let idx: Vec<u32> = draw_range(first, count).collect();
             return glsl::draw(g, c, mode, &idx);
         }
-        let v = (first.max(0)..(first + count).max(0)).map(|i| array_vertex(g, c, i as u32)).collect();
+        let v = draw_range(first, count).map(|i| array_vertex(g, c, i)).collect();
         draw(g, c, mode, v);
     })
 }

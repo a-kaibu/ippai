@@ -324,3 +324,36 @@ fn mapped_buffers_live_in_guest_memory() {
     }
     *GUEST.lock().unwrap() = None;
 }
+
+/// Client arrays whose element would end past the program's memory (a pointer near 2 GB, a
+/// stride that wraps 32 bits) read the default instead of anywhere; random pointers, strides,
+/// sizes and vertex numbers around the end, and no read at all past it (the reads would fault
+/// in this test: nothing is mapped there).
+#[test]
+fn client_arrays_stay_in_guest_memory() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    fresh();
+    let g = GL.lock().unwrap();
+    let g = g.as_ref().unwrap();
+    let mut r = Rng(0xa11a_57e5);
+    let def = [9.0, 8.0, 7.0, 6.0];
+    for _ in 0..20000 {
+        let a = Array {
+            on: true,
+            size: [1, 2, 3, 4, 0x80E1][r.below(5)],
+            ty: [0x1400, 0x1401, 0x1402, 0x1403, 0x1404, 0x1405, 0x1406][r.below(7)],
+            stride: [0, 4, 16, 0x1000, i32::MAX][r.below(5)],
+            ptr: (1u32 << 31) - r.below(64) as u32,
+            ..Array::default()
+        };
+        let i = [0, 1, 1000, u32::MAX][r.below(4)];
+        // (those that end inside are not this test's: nothing is mapped there to read)
+        let ts = [1, 1, 2, 2, 4, 4, 4][[0x1400, 0x1401, 0x1402, 0x1403, 0x1404, 0x1405, 0x1406].iter().position(|&t| t == a.ty).unwrap()];
+        let n = if a.size == 0x80E1 { 4 } else { a.size as u64 };
+        let stride = if a.stride > 0 { a.stride as u64 } else { ts * n };
+        if a.ptr as u64 + stride * i as u64 + ts * n <= 1 << 31 {
+            continue;
+        }
+        assert_eq!(fetch(g, &a, i, def), def, "{:?} {} {:#x} vertex {i}", a.size, a.stride, a.ptr);
+    }
+}
