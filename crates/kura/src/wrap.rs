@@ -350,10 +350,44 @@ pub unsafe extern "C" fn vnhost_mem_info(out: *mut f64) {
     }
     let top = sbrk(0) as usize;
     let base = std::ptr::addr_of!(__heap_base) as usize;
-    let m = mallinfo();
+    // (mallinfo walks every chunk of the heap with malloc's lock held, every thread's malloc
+    // waiting: the page's meter asks each second, the profile of the scenario had it at ~4 ms
+    // a call on the page's thread; once per MALLINFO_MS is enough for the logs that show it)
+    let used = MALLINFO.get(crate::render::d3d::now(), || mallinfo().uordblks as u32 as f64);
     let out = std::slice::from_raw_parts_mut(out, 2);
     out[0] = top.saturating_sub(base) as f64;
-    out[1] = m.uordblks as u32 as f64;
+    out[1] = used;
+}
+
+/// How often vnhost_mem_info walks the heap again (ms); between, the last answer.
+pub const MALLINFO_MS: f64 = 5000.0;
+static MALLINFO: Every = Every::new(MALLINFO_MS);
+
+/// A value worked out again at most once per `ms` (whoever asks, from any thread): the last one
+/// otherwise. Under its lock, so two threads asking at once work it out once.
+pub struct Every {
+    ms: f64,
+    last: std::sync::Mutex<Option<(f64, f64)>>,
+}
+
+impl Every {
+    pub const fn new(ms: f64) -> Self {
+        Every { ms, last: std::sync::Mutex::new(None) }
+    }
+
+    /// The value at time `now` (ms, any clock that does not go back): `f()` when the last was
+    /// worked out `ms` or more ago (or never, or the clock went back), else the last.
+    pub fn get(&self, now: f64, f: impl FnOnce() -> f64) -> f64 {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        match *last {
+            Some((at, v)) if now >= at && now - at < self.ms => v,
+            _ => {
+                let v = f();
+                *last = Some((now, v));
+                v
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -392,6 +426,54 @@ mod tests {
         });
         assert_eq!(missed.load(Ordering::Relaxed), 0);
         assert_eq!(n.load(Ordering::Relaxed), N);
+    }
+
+    proptest::proptest! {
+        /// `Every` against a model: over any times asked (going back now and then, as threads'
+        /// clocks differ), the value is worked out again exactly when the last one is `ms` or
+        /// more old or from the future, and what comes back is always the last worked out.
+        #[test]
+        fn every_as_the_model(steps in proptest::collection::vec(-300i32..4000, 1..300)) {
+            let e = Every::new(1000.0);
+            let mut t = 0.0f64;
+            let mut model: Option<(f64, f64)> = None;
+            let mut made = 0.0;
+            for d in steps {
+                t += d as f64;
+                let mut called = false;
+                let v = e.get(t, || {
+                    called = true;
+                    made += 1.0;
+                    made
+                });
+                let want = !matches!(model, Some((at, _)) if t >= at && t - at < 1000.0);
+                proptest::prop_assert_eq!(called, want);
+                if want {
+                    model = Some((t, made));
+                }
+                proptest::prop_assert_eq!(v, model.unwrap().1);
+            }
+        }
+    }
+
+    /// Many threads asking at once in one period: worked out once.
+    #[test]
+    fn every_once_for_many_threads() {
+        let e = Every::new(1e9);
+        let n = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..1000 {
+                        e.get(5.0, || {
+                            n.fetch_add(1, Ordering::Relaxed);
+                            1.0
+                        });
+                    }
+                });
+            }
+        });
+        assert_eq!(n.load(Ordering::Relaxed), 1);
     }
 
     proptest::proptest! {
