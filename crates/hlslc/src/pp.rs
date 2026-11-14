@@ -851,4 +851,24 @@ mod tests {
         assert_eq!(pp(&chain(64)), "M64");
         assert!(pp_err(&chain(65)).contains("too deep"));
     }
+
+    /// Non-ASCII text in comments and after a string's backslash (Japanese comments in a game's
+    /// shaders): fuzz/fuzz_targets/hlsl.rs found byte indexing inside a character panicked.
+    #[test]
+    fn non_ascii_comments_and_escapes() {
+        assert_eq!(pp("/* 頂点シェーダ */ a /* 影\n*/ b // 注釈\nc"), "a b c");
+        assert_eq!(pp("/*\n日本語\n*/ x"), "x");
+        assert_eq!(pp("\"\\あ\" y").split(' ').last(), Some("y"));
+        let mut inc = |_: &str, _: bool| None;
+        assert!(preprocess("\"\\", &[], &mut inc).is_ok());
+    }
+
+    proptest::proptest! {
+        /// Any text: preprocessing gives tokens or an error, never a panic.
+        #[test]
+        fn any_text(s in "(\\PC|/\\*|\\*/|//|\"|\\\\|\n|#define A|#if|#endif)*") {
+            let mut inc = |_: &str, _: bool| None;
+            let _ = preprocess(&s, &[], &mut inc);
+        }
+    }
 }

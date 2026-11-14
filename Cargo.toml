@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/apitrace", "crates/foresee", "crates/crt", "crates/dxwgsl", "crates/vorbis", "crates/hlslc", "crates/glwgsl", "crates/kura", "crates/ippai", "crates/koji", "crates/sake", "crates/msidb", "crates/tls-client", "crates/shaderconf", "crates/waits", "crates/mpeg1", "crates/asf", "crates/wmcodec", "crates/decbench"]
-exclude = ["fuzz", "vendor/ring"]
+exclude = ["fuzz", "vendor/ring", "vendor/naga"]
 
 [workspace.package]
 edition = "2021"
@@ -23,3 +23,4 @@ overflow-checks = false
 
 [patch.crates-io]
 ring = { path = "vendor/ring" }
+naga = { path = "vendor/naga" }  # (vendor/naga/IPPAI-PATCH.md: GLSL front end panics a game's shader can reach)

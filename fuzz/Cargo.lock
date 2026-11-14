@@ -953,6 +953,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "foresee"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1358,6 +1365,7 @@ dependencies = [
  "asf",
  "dxwgsl",
  "glwgsl",
+ "hlslc",
  "koji",
  "libfuzzer-sys",
  "mpeg1",
@@ -1444,6 +1452,7 @@ version = "0.1.0"
 dependencies = [
  "bcdec_rs",
  "dxwgsl",
+ "foresee",
  "glwgsl",
  "koji",
  "libc",
@@ -1622,8 +1631,6 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
 dependencies = [
  "arrayvec",
  "bit-set",

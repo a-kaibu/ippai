@@ -487,10 +487,10 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
 /// GLSL 450 -> (WGSL, module)
 fn compile(src: &str, pixel: bool) -> Result<(String, naga::Module), String> {
     let stage = if pixel { naga::ShaderStage::Fragment } else { naga::ShaderStage::Vertex };
-    // (naga's GLSL front end panics on some malformed sources: an error where unwinding exists)
-    let m = std::panic::catch_unwind(|| naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(stage), src))
-        .map_err(|_| "naga's GLSL front end panicked".to_string())?
-        .map_err(|e| format!("{e:?}"))?;
+    // (no catch_unwind: sake is built with panic=abort, so a panic here ends the game. naga's
+    // GLSL front end panics that game shaders reach are fixed in vendor/naga, found by
+    // fuzz/fuzz_targets/glsl.rs; regressions in tests::malformed_sources_are_errors)
+    let m = naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(stage), src).map_err(|e| format!("{e:?}"))?;
     let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
         .validate(&m)
         .map_err(|e| format!("naga validation: {e:?}"))?;
@@ -961,6 +961,17 @@ mod tests {
         assert_eq!((m("m32").cols, m("m32").rows), (3, 2));
         assert_eq!((p.sizes["r"], p.sizes["v3"], p.sizes["fa"], p.sizes["m32"]), (4, 3, 1, 6));
         assert_eq!(p.attribs, [("v".to_string(), 0)]);
+    }
+
+    /// Sources that made naga's GLSL front end panic (fuzz/fuzz_targets/glsl.rs): errors now.
+    #[test]
+    fn malformed_sources_are_errors() {
+        // an array size that is itself indexed: naga looked its index up in the function's
+        // expressions instead of the constant ones (vendor/naga/IPPAI-PATCH.md)
+        for src in ["uniform B { float a[2[2]]; };\nvoid main() { gl_FragColor = vec4(1.0); }", "float a[3[1]];\nvoid main() { gl_FragColor = vec4(a[0]); }"] {
+            assert!(check(src, true).is_err(), "{src}");
+            assert!(check(&src.replace("gl_FragColor", "gl_Position"), false).is_err(), "{src}");
+        }
     }
 
     #[test]

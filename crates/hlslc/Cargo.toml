@@ -10,3 +10,4 @@ description = "HLSL compiler: source to DXBC (shader model 4/5), Direct3D 9 byte
 [dev-dependencies]
 dxwgsl = { path = "../dxwgsl" }
 naga = { version = "30", features = ["wgsl-in"] }
+proptest = "1"

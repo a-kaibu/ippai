@@ -15,6 +15,7 @@ sake = { path = "../crates/sake" }
 vorbis = { path = "../crates/vorbis" }
 glwgsl = { path = "../crates/glwgsl" }
 dxwgsl = { path = "../crates/dxwgsl" }
+hlslc = { path = "../crates/hlslc" }
 apitrace = { path = "../crates/apitrace" }
 msidb = { path = "../crates/msidb" }
 mpeg1 = { path = "../crates/mpeg1" }
@@ -28,6 +29,9 @@ wasmtime = { version = "50.0.1", default-features = false, features = ["cranelif
 path = "src/lib.rs"
 
 [workspace]
+
+[patch.crates-io]
+naga = { path = "../vendor/naga" }
 
 [profile.release]
 debug = 1
@@ -266,6 +270,27 @@ bench = false
 [[bin]]
 name = "ws2name"
 path = "fuzz_targets/ws2name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hlsl"
+path = "fuzz_targets/hlsl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "effect"
+path = "fuzz_targets/effect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "undname"
+path = "fuzz_targets/undname.rs"
 test = false
 doc = false
 bench = false

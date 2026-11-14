@@ -16,7 +16,10 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `sid` | sake::security::parse_sid (ConvertStringSidToSid) on any text | 15 sub-authorities and 48-bit authority at most; the printed SID parses back the same |
 | `wsprintf` | sake::user::wsprintf_format (wsprintf's dialect) on any UTF-16 text | no more `%` than given, text without `%` unchanged, idempotent |
 | `rtf` | sake::rtf::to_text (a rich edit's EM_STREAMIN with SF_RTF) on any bytes | no panic; the text written back as RTF (from_text) reads as the same text |
-| `glsl` | glwgsl::check / link (OpenGL GLSL -> WGSL, preprocessor first) on any text (vertex NUL fragment) | no panic; a linked program's uniform blocks have members and hold them |
+| `glsl` | glwgsl::check / link (OpenGL GLSL -> WGSL, preprocessor first) on any text (vertex NUL fragment) | no panic (sake is panic=abort: naga's front end panics are fixed in vendor/naga); a linked program's uniform blocks have members and hold them |
+| `hlsl` | hlslc (D3DXCompileShader / D3DCompile / D3DXCreateEffect HLSL text, D3DXAssembleShader assembly) on any text, sm2-5 targets, then dxwgsl on what it compiles | no panic; its sm2/3 bytecode parses as a D3D9 shader, its effects read back in sake::d3dx9fx |
+| `effect` | sake::d3dx9fx::check (D3DXCreateEffect reading a compiled fx_2_0 effect) on any bytes, with and without the effect tag | no panic, no allocation beyond the file's size; every parameter inside its top-level value |
+| `undname` | sake::undname (__unDName, UnDecorateSymbolName, type_info::name) on any text and flags | no panic, also on its own output |
 | `image` | sake::ole::decode (BMP, PNG, JPEG: OleLoadPicture, WIC) | no panic, w x h BGRA out |
 | `dds` | sake::dds::parse (DDS headers D3DX reads: 2D, cube maps, DXTn) | no panic, every face's levels inside the data, back to back |
 | `acm` | sake::acm IMA / MS ADPCM blocks | no panic, all of a block's samples or none |

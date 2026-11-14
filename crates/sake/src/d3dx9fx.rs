@@ -192,12 +192,12 @@ impl<'a> Parser<'a> {
                     PC_VECTOR => {
                         p.cols = r.u32()?;
                         p.rows = r.u32()?;
-                        p.bytes = 4 * p.rows * p.cols;
+                        p.bytes = self.numeric_bytes(p.rows, p.cols)?;
                     }
                     PC_SCALAR | PC_MATRIX_ROWS | PC_MATRIX_COLUMNS => {
                         p.rows = r.u32()?;
                         p.cols = r.u32()?;
-                        p.bytes = 4 * p.rows * p.cols;
+                        p.bytes = self.numeric_bytes(p.rows, p.cols)?;
                     }
                     PC_STRUCT => {
                         // (the member count, kept as children.len() once read)
@@ -211,7 +211,13 @@ impl<'a> Parser<'a> {
                 let q = &self.params[q];
                 p = Param { name: q.name.clone(), semantic: q.semantic.clone(), class: q.class, ty: q.ty, rows: q.rows, cols: q.cols, flags, ..Default::default() };
                 p.bytes = if q.class == PC_OBJECT && !is_sampler(q.ty) { 4 } else { 4 * q.rows * q.cols };
+                // (q's own size was checked against the file)
             }
+        }
+        // (every value takes at least 4 bytes of the file, a struct's at least 4 per member: more
+        // parameters than bytes is a damaged file, not a reason to run out of memory)
+        if self.params.len() >= self.base.len() {
+            return Err("more parameters than the effect has bytes".into());
         }
         let idx = self.params.len();
         self.params.push(p);
@@ -222,7 +228,7 @@ impl<'a> Parser<'a> {
             for _ in 0..elements {
                 r.at = save;
                 let e = self.typedef(r, Some(idx), flags)?;
-                bytes += self.params[e].bytes;
+                bytes = self.sum_bytes(bytes, self.params[e].bytes)?;
                 self.params[idx].children.push(e);
             }
             self.params[idx].bytes = bytes;
@@ -230,12 +236,28 @@ impl<'a> Parser<'a> {
             let mut bytes = 0;
             for _ in 0..members {
                 let m = self.typedef(r, None, flags)?;
-                bytes += self.params[m].bytes;
+                bytes = self.sum_bytes(bytes, self.params[m].bytes)?;
                 self.params[idx].children.push(m);
             }
             self.params[idx].bytes = bytes;
         }
         Ok(idx)
+    }
+    /// A numeric value's size (rows x cols floats), at most the file's size (a value is read
+    /// from it).
+    fn numeric_bytes(&self, rows: u32, cols: u32) -> Result<u32, String> {
+        let n = 4 * rows as u64 * cols as u64;
+        if n > self.base.len() as u64 {
+            return Err(format!("a {rows}x{cols} parameter is larger than the effect"));
+        }
+        Ok(n as u32)
+    }
+    fn sum_bytes(&self, a: u32, b: u32) -> Result<u32, String> {
+        let n = a as u64 + b as u64;
+        if n > self.base.len() as u64 {
+            return Err("a parameter is larger than the effect".into());
+        }
+        Ok(n as u32)
     }
     /// Places parameter `i` at `off` of top-level `top`'s value and reads its object ids /
     /// sampler states from `r`.
@@ -351,6 +373,10 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
         }
         techniques.push(Technique { name, annotations, passes });
     }
+    // (each object is named by at least one 4-byte id in the file)
+    if nobjects as usize > data.len() / 4 {
+        return Err(format!("{nobjects} objects in {} bytes", data.len()));
+    }
     let mut objects: Vec<Object> = (0..nobjects).map(|_| Object::default()).collect();
     let nstrings = r.u32()?;
     let nres = r.u32()?;
@@ -375,7 +401,7 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
         let sampler_of = if ti == u32::MAX {
             let mut q = *top.get(index as usize).ok_or("bad resource parameter")?;
             if elem != u32::MAX && !p.params[q].children.is_empty() {
-                q = p.params[q].children[elem as usize];
+                q = *p.params[q].children.get(elem as usize).ok_or("bad resource element")?;
             }
             Some(q)
         } else {
@@ -434,6 +460,19 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
         values.insert(i, v);
     }
     Ok((p.params, top, values, techniques, objects))
+}
+
+/// Reads a compiled effect as D3DXCreateEffect does, without a device (the fuzz target): the
+/// parameter count, or why it does not read. Every parameter's value lies inside its top-level
+/// parameter's bytes.
+pub fn check(data: &[u8]) -> Result<usize, String> {
+    let (params, _top, values, _techniques, _objects) = parse(data)?;
+    for p in &params {
+        if let Some(v) = values.get(&p.top) {
+            assert!(p.off as u64 + p.bytes as u64 <= v.len() as u64, "parameter {} at {}+{} outside its {} bytes", p.name, p.off, p.bytes, v.len());
+        }
+    }
+    Ok(params.len())
 }
 
 /// The comment blocks of shader-style bytecode (after its version token): (fourcc, body).
