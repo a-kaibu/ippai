@@ -2,6 +2,11 @@
 //! sake's wmvcore readers and decoder DMOs use them (crates/sake/src/wmdec.rs).
 
 pub mod bits;
+pub mod hpel;
+pub mod idct;
+pub mod msmpeg4;
+#[allow(clippy::all)]
+pub mod msmpeg4_tables;
 pub mod mdct;
 pub mod vlc;
 pub mod wma;
@@ -10,3 +15,5 @@ pub mod wma_tables;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod video_tests;

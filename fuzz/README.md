@@ -30,6 +30,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `mpeg1` | crates/mpeg1: MPEG-1 system stream demuxer, video and layer II audio decoders (the DirectShow MPEG-1 splitter) | no panic; the same packets, pictures and samples however the stream is cut; pictures the size of their sequence header |
 | `asf` | crates/asf: the ASF demuxer of sake's Windows Media readers (wmvcore) on any bytes as a file and as a packet; seeking | no panic; no object over asf::MAX_OBJECT |
 | `wma` | crates/wmcodec::wma: WMA 1 / 2 (FFmpeg's decoder ported) with any stream parameters and packets | no panic; every packet gives whole frames, as many per channel |
+| `wmv` | crates/wmcodec::msmpeg4: MS-MPEG4 v3 / WMV 1 / WMV 2 (FFmpeg's decoders ported) with any size, extradata and pictures | no panic; pictures of the stream's size |
 | `audiofile` | sake::audiofile (WAVE, MP4/M4A, Ogg) | no panic |
 | `formats` | .lnk, event log records and .evt files, PE resource trees, type libraries, CryptStringToBinary / CryptBinaryToString | no panic; what decodes encodes back to the same (links, .evt, resource trees, base64 forms) |
 | `printf` (crates/crt) | crt::fmt::format, every mode (UCRT option bits, legacy msvcrt), narrow and wide | no panic, output within MAX_OUT, text without % unchanged |

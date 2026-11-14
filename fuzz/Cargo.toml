@@ -241,3 +241,10 @@ path = "fuzz_targets/wma.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wmv"
+path = "fuzz_targets/wmv.rs"
+test = false
+doc = false
+bench = false

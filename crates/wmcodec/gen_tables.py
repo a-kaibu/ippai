@@ -33,12 +33,12 @@ def array(text, name):
     body = text[m.end():i - 1]
     dims = [d.strip() for d in re.findall(r'\[([^\]]*)\]', m.group(2))]
     num = r'-?(?:0x[0-9a-fA-F]+|\d+\.?\d*(?:e[-+]?\d+)?)[fFuUlL]*'
-    if len(dims) == 2 and '{' in body:
+    if len(dims) >= 2 and '{' in body:
         # (rows shorter than the row size: padded with zeros, as C does)
         toks = []
         for row in re.findall(r'\{([^{}]*)\}', body):
             r = re.findall(num, row)
-            n = int(dims[1], 0) if dims[1] else len(r)
+            n = int(dims[-1], 0) if dims[-1] else len(r)
             toks += r + ['0'] * (n - len(r))
     else:
         toks = re.findall(num, body)
@@ -80,3 +80,19 @@ wma = [('libavcodec/wmadata.h', n, n.upper()) for n in [
 wma += [('libavcodec/aactab.c', 'ff_aac_scalefactor_code', 'AAC_SCALEFACTOR_CODE'), ('libavcodec/aactab.c', 'ff_aac_scalefactor_bits', 'AAC_SCALEFACTOR_BITS'),
         ('libavcodec/wma_freqs.c', 'ff_wma_critical_freqs', 'WMA_CRITICAL_FREQS')]
 gen('wma_tables.rs', wma, 'WMA')
+
+m4 = [('libavcodec/msmpeg4data.c', n, n.upper().replace('FF_', '')) for n in [
+    'ff_table_mb_non_intra', 'table_mb_non_intra2', 'table_mb_non_intra3', 'table_mb_non_intra4',
+    'table0_vlc', 'table0_level', 'table0_run', 'table1_vlc', 'table1_level', 'table1_run',
+    'table2_vlc', 'table2_level', 'table2_run', 'table4_vlc', 'table4_level', 'table4_run',
+    'table0_mv_code', 'table0_mv_bits', 'table0_mvx', 'table0_mvy',
+    'table1_mv_code', 'table1_mv_bits', 'table1_mvx', 'table1_mvy',
+    'ff_wmv1_y_dc_scale_table', 'ff_wmv1_c_dc_scale_table', 'ff_old_ff_y_dc_scale_table', 'ff_table_inter_intra']]
+m4 += [('libavcodec/msmpeg4_vc1_data.c', n, n.upper().replace('FF_', '')) for n in ['ff_msmp4_mb_i_table', 'ff_msmp4_dc_tables', 'ff_wmv1_scantable']]
+m4 += [('libavcodec/h263data.c', n, n.upper().replace('FF_', '')) for n in ['ff_inter_vlc', 'ff_inter_level', 'ff_inter_run']]
+m4 += [('libavcodec/mpeg4data.h', n, n.upper().replace('FF_', '')) for n in ['ff_mpeg4_intra_vlc', 'ff_mpeg4_intra_level', 'ff_mpeg4_intra_run', 'ff_mpeg4_y_dc_scale_table', 'ff_mpeg4_c_dc_scale_table']]
+m4 += [('libavcodec/h263dsp.c', 'ff_h263_loop_filter_strength', 'H263_LOOP_FILTER_STRENGTH')]
+m4 += [('libavcodec/wmv2data.c', n, n.upper().replace('FF_', '')) for n in ['ff_wmv2_scantableA', 'ff_wmv2_scantableB']]
+m4 += [('libavcodec/mathtables.c', 'ff_zigzag_direct', 'ZIGZAG_DIRECT')]
+m4 += [('libavcodec/mpegvideodata.c', n, n.upper().replace('FF_', '')) for n in ['ff_alternate_horizontal_scan', 'ff_alternate_vertical_scan']]
+gen('msmpeg4_tables.rs', m4, 'MSMPEG4')
