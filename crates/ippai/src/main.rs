@@ -161,6 +161,17 @@ enum StorageCmd {
         #[arg(long, default_value_t = storage::PACK_BYTES >> 20)]
         mib: usize,
     },
+    /// What the bucket holds, largest first: by kind, then each game's chunks (those only it
+    /// has: what deleting it frees; those it shares) and its packs.
+    Usage,
+    /// Drop delivery packs (they are retired: `storage gc` deletes them); the chunks stay.
+    Unpack {
+        /// Games whose packs to drop ("?": packs made before they were marked)
+        games: Vec<String>,
+        /// Every pack
+        #[arg(long, conflicts_with = "games")]
+        all: bool,
+    },
     /// Delete objects no longer named (replaced, old save revisions, save states' files no
     /// state index names) that no kept backup refers to, once retired for the grace period.
     Gc {
@@ -198,7 +209,7 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
                     let list = pack::read_order_list(store, &jit, &id);
                     let order = pack::read_order(store, &id, &list)?;
                     // (one game failing leaves the others: run again to retry, what was packed stays)
-                    match storage.pack_objects(&order, mib << 20).await {
+                    match storage.pack_objects(&id, &order, mib << 20).await {
                         Ok(p) => println!("{id}: {} packs, {} objects, {} MiB ({} chunks in read order first; {} in a pack already)", p.packs, p.objects, p.bytes >> 20, list.len() / 16, p.skipped),
                         Err(e) => {
                             eprintln!("{id}: {e:#}");
@@ -207,6 +218,31 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
                     }
                 }
                 anyhow::ensure!(failed == 0, "{failed} games not packed");
+                Ok(())
+            }
+            StorageCmd::Usage => {
+                let ids = pack::game_ids(store)?;
+                let mut games = Vec::new();
+                for id in ids {
+                    let order = pack::read_order(store, &id, &[])?;
+                    games.push((id, order));
+                }
+                let u = storage.usage(&games)?;
+                let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
+                println!("kind\tobjects\tGiB");
+                for (k, n, b) in &u.kinds {
+                    println!("{k}\t{n}\t{:.2}", gib(*b));
+                }
+                println!("\ngame\town GiB\tshared GiB\tpacks GiB");
+                for g in &u.games {
+                    println!("{}\t{:.2}\t{:.2}\t{:.2}", g.game, gib(g.own), gib(g.shared), gib(g.packs));
+                }
+                Ok(())
+            }
+            StorageCmd::Unpack { games, all } => {
+                anyhow::ensure!(all || !games.is_empty(), "name games, or --all");
+                let (n, b) = storage.unpack(if all { None } else { Some(&games) })?;
+                println!("dropped {n} packs, {} MiB (deleted by `ippai storage gc`)", b >> 20);
                 Ok(())
             }
             StorageCmd::Gc { grace_days, keep_backups } => {

@@ -384,7 +384,7 @@ pub(crate) mod gc_tests {
                 q.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
             };
             let before = packs_now(&s);
-            let p = s.pack_objects(&order, target).await.unwrap();
+            let p = s.pack_objects("g", &order, target).await.unwrap();
             let made: Vec<String> = packs_now(&s).difference(&before).cloned().collect();
             assert_eq!(made.len(), p.packs);
             // (each of those not in a pack yet went into one, in this order)
@@ -415,7 +415,7 @@ pub(crate) mod gc_tests {
             assert!(short <= 1, "round {round}: {short} packs short of the target");
             assert_eq!(total, p.bytes);
             // again: nothing new
-            assert_eq!(s.pack_objects(&order, target).await.unwrap().packs, 0);
+            assert_eq!(s.pack_objects("g", &order, target).await.unwrap().packs, 0);
             check_packs(&f, &s);
             // a direct answer's span is the object's, for each named object
             let l = &order[rnd(30) as usize];
@@ -445,14 +445,97 @@ pub(crate) mod gc_tests {
         for l in &three {
             s.put(l, &[7u8; 100]).await.unwrap();
         }
-        let p = s.pack_objects(&three, 2 * (100 + 28)).await.unwrap();
+        let p = s.pack_objects("g", &three, 2 * (100 + 28)).await.unwrap();
         assert_eq!((p.packs, p.objects, p.bytes), (2, 3, 3 * 128));
         // a replaced object: no span until packed again
         let l = "chunks/ab/00000000000000000000000000000001".to_string();
         s.put(&l, b"new").await.unwrap();
         assert!(s.direct(&l, 60).await.unwrap().unwrap().pack.is_none());
-        assert_eq!(s.pack_objects(&[l.clone()], target).await.unwrap().objects, 1);
+        assert_eq!(s.pack_objects("g", &[l.clone()], target).await.unwrap().objects, 1);
         assert!(s.direct(&l, 60).await.unwrap().unwrap().pack.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Usage by kind and by game against a model (random games sharing random chunks, packed
+    /// game by game), and dropping a game's packs: its objects are read alone again, its packs
+    /// leave the bucket at gc, the other games' packs stay.
+    #[tokio::test]
+    async fn usage_and_unpack_by_game() {
+        let (f, s, dir) = serve(0).await;
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let chunk = |i: u64| format!("chunks/ab/{i:032x}");
+        let mut size = BTreeMap::new();
+        for i in 0..40 {
+            let n = rnd(900) + 1;
+            s.put(&chunk(i), &vec![i as u8; n as usize]).await.unwrap();
+            size.insert(chunk(i), n);
+        }
+        s.put("saves/x/1", b"save").await.unwrap();
+        let games: Vec<(String, Vec<String>)> = (0..5).map(|g| (format!("g{g}"), (0..rnd(15) + 1).map(|_| chunk(rnd(40))).collect())).collect();
+        for (id, ls) in &games {
+            s.pack_objects(id, ls, 2000).await.unwrap();
+        }
+        // (a pack from before packs were marked)
+        s.db.connect().unwrap().execute("DELETE FROM pack_games WHERE pack=(SELECT pack FROM packs WHERE logical=?)", [&games[0].1[0]]).unwrap();
+        let pack_bytes = |game: Option<&str>| -> u64 {
+            let c = s.db.connect().unwrap();
+            let q = match game {
+                Some(_) => "SELECT COALESCE(SUM(p.len),0) FROM packs p JOIN pack_games g USING(pack) WHERE g.game=?1",
+                None => "SELECT COALESCE(SUM(len),0) FROM packs WHERE pack NOT IN (SELECT pack FROM pack_games) AND ?1 IS NULL",
+            };
+            c.query_row(q, [game], |r| r.get::<_, i64>(0)).unwrap() as u64
+        };
+        let u = s.usage(&games).unwrap();
+        let kind = |k: &str| u.kinds.iter().find(|x| x.0 == k).map(|x| (x.1, x.2));
+        assert_eq!(kind("chunks"), Some((40, size.values().sum())));
+        assert_eq!(kind("saves"), Some((1, 4)));
+        let all_packs: u64 = s.db.connect().unwrap().query_row("SELECT SUM(len) FROM packs", [], |r| r.get::<_, i64>(0)).unwrap() as u64;
+        assert_eq!(kind("packs").unwrap().1, all_packs);
+        assert!(u.kinds.windows(2).all(|w| w[0].2 >= w[1].2), "largest first");
+        for (id, ls) in &games {
+            let mine: std::collections::BTreeSet<&String> = ls.iter().collect();
+            let (mut own, mut shared) = (0, 0);
+            for l in mine {
+                if games.iter().filter(|g| g.1.contains(l)).count() == 1 { own += size[l] } else { shared += size[l] }
+            }
+            let g = u.games.iter().find(|g| g.game == *id).unwrap();
+            assert_eq!((g.own, g.shared, g.packs), (own, shared, pack_bytes(Some(id))), "{id}");
+        }
+        assert_eq!(u.games.iter().find(|g| g.game == "?").map_or(0, |g| g.packs), pack_bytes(None));
+        assert_eq!(u.games.iter().map(|g| g.packs).sum::<u64>(), all_packs);
+        // (drop one game's packs)
+        let gone = games[1].0.clone();
+        let had = pack_bytes(Some(&gone));
+        let (_, b) = s.unpack(Some(&[gone.clone()])).unwrap();
+        assert_eq!(b, had);
+        assert_eq!(pack_bytes(Some(&gone)), 0);
+        for (id, _) in games.iter().filter(|g| g.0 != gone) {
+            assert_eq!(s.usage(&games).unwrap().games.iter().find(|g| g.game == *id).unwrap().packs, pack_bytes(Some(id)));
+        }
+        age_retired(&s, 7_200_000);
+        s.gc(std::time::Duration::from_secs(3600), None).await.unwrap();
+        check_packs(&f, &s);
+        let packs: std::collections::BTreeSet<String> = {
+            let c = s.db.connect().unwrap();
+            let mut q = c.prepare("SELECT DISTINCT pack FROM packs").unwrap();
+            q.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        };
+        let mut want = named(&s);
+        want.extend(packs);
+        assert_eq!(names(&f), want);
+        // (every pack, the unmarked too; the chunks read as before)
+        s.unpack(None).unwrap();
+        assert_eq!(s.usage(&games).unwrap().games.iter().map(|g| g.packs).sum::<u64>(), 0);
+        for l in size.keys() {
+            assert!(s.direct(l, 60).await.unwrap().unwrap().pack.is_none());
+            assert_eq!(s.get(l).await.unwrap().unwrap().len() as u64, size[l]);
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1285,6 +1368,22 @@ pub struct Packed {
     pub skipped: usize,
 }
 
+/// See [`Storage::usage`]: (kind, objects, bytes) and each game's.
+#[derive(Default, Debug)]
+pub struct Usage {
+    pub kinds: Vec<(String, u64, u64)>,
+    pub games: Vec<GameUsage>,
+}
+
+#[derive(Default, Debug, PartialEq)]
+pub struct GameUsage {
+    pub game: String,
+    /// its chunks no other game has
+    pub own: u64,
+    pub shared: u64,
+    pub packs: u64,
+}
+
 /// Decrypted objects of at most 1 MiB, 64 MiB of them, the oldest put dropped first.
 #[derive(Default)]
 struct Cache {
@@ -1759,7 +1858,8 @@ impl Storage {
     /// for an object paid once for them all. Those in a pack already are left out, so packing a
     /// game again packs only what was added. A pack whose objects all went to newer packs is
     /// retired ([`Storage::gc`] deletes it).
-    pub async fn pack_objects(&self, logicals: &[String], target: usize) -> Result<Packed> {
+    /// Each pack is marked as `game`'s ([`Storage::usage`], [`Storage::unpack`]).
+    pub async fn pack_objects(&self, game: &str, logicals: &[String], target: usize) -> Result<Packed> {
         use futures_util::StreamExt;
         let mut out = Packed::default();
         let mut todo: Vec<(String, Uuid)> = Vec::new();
@@ -1820,7 +1920,7 @@ impl Storage {
                 out.packs += 1;
                 out.objects += rows.len();
                 out.bytes += buf.len() as u64;
-                self.record_pack(std::mem::take(&mut buf), std::mem::take(&mut rows)).await?;
+                self.record_pack(game, std::mem::take(&mut buf), std::mem::take(&mut rows)).await?;
             }
             if end {
                 return Ok(out);
@@ -1829,11 +1929,12 @@ impl Storage {
     }
 
     /// Uploads one pack and names where it holds each object.
-    async fn record_pack(&self, bytes: Vec<u8>, rows: Vec<(String, Uuid, u64, u64)>) -> Result<()> {
+    async fn record_pack(&self, game: &str, bytes: Vec<u8>, rows: Vec<(String, Uuid, u64, u64)>) -> Result<()> {
         let pack = Uuid::new_v4();
         self.upload(pack, &bytes).await?;
         let mut c = self.db.connect()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("INSERT INTO pack_games(pack,game,made_ms) VALUES(?,?,?)", rusqlite::params![pack.to_string(), game, now_ms()])?;
         let mut old = std::collections::HashSet::new();
         for (l, object, offset, len) in &rows {
             if let Some(p) = tx.query_row("SELECT pack FROM packs WHERE logical=?", [l], |r| r.get::<_, String>(0)).optional()? {
@@ -1847,11 +1948,86 @@ impl Storage {
         for p in old {
             let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM packs WHERE pack=?)", [&p], |r| r.get(0))?;
             if !used {
+                tx.execute("DELETE FROM pack_games WHERE pack=?", [&p])?;
                 retire(&tx, Uuid::parse_str(&p)?)?;
             }
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// What the bucket holds, to see what could go: the named objects by kind (the first part
+    /// of their names: chunks, trees, games, saves, states, ...; bytes as stored before
+    /// encryption), the delivery packs, and for each of `games` (id, its chunks' names) the
+    /// bytes of its chunks no other of them has (what deleting it alone frees), of those it
+    /// shares, and of its packs. Packs made before they were marked are game "?". Largest first.
+    pub fn usage(&self, games: &[(String, Vec<String>)]) -> Result<Usage> {
+        let c = self.db.connect()?;
+        let mut out = Usage::default();
+        {
+            let mut q = c.prepare("SELECT substr(logical,1,instr(logical||'/','/')-1) k, COUNT(*), SUM(size) FROM objects GROUP BY k")?;
+            let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64)))?;
+            out.kinds = rows.collect::<rusqlite::Result<_>>()?;
+        }
+        let packs: Vec<(String, u64, u64)> = {
+            let mut q = c.prepare("SELECT COALESCE(g.game,'?'), COUNT(DISTINCT p.pack), SUM(p.len) FROM packs p LEFT JOIN pack_games g USING(pack) GROUP BY 1")?;
+            let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let (n, b) = packs.iter().fold((0, 0), |a, p| (a.0 + p.1, a.1 + p.2));
+        if n > 0 {
+            out.kinds.push(("packs".into(), n, b));
+        }
+        let mut size = c.prepare("SELECT size FROM objects WHERE logical=?")?;
+        let mut owners: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (_, ls) in games {
+            for l in ls.iter().collect::<std::collections::HashSet<_>>() {
+                *owners.entry(l.as_str()).or_default() += 1;
+            }
+        }
+        for (id, ls) in games {
+            let mut g = GameUsage { game: id.clone(), ..Default::default() };
+            for l in ls.iter().collect::<std::collections::HashSet<_>>() {
+                let Some(n) = size.query_row([l], |r| r.get::<_, i64>(0)).optional()? else { continue };
+                if owners[l.as_str()] == 1 { g.own += n as u64 } else { g.shared += n as u64 }
+            }
+            g.packs = packs.iter().find(|p| p.0 == *id).map_or(0, |p| p.2);
+            out.games.push(g);
+        }
+        for (id, _, b) in &packs {
+            if !games.iter().any(|g| g.0 == *id) {
+                out.games.push(GameUsage { game: id.clone(), packs: *b, ..Default::default() });
+            }
+        }
+        out.kinds.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+        out.games.sort_by(|a, b| (b.own + b.packs).cmp(&(a.own + a.packs)).then(a.game.cmp(&b.game)));
+        Ok(out)
+    }
+
+    /// Drops the delivery packs of `games` (every pack: None; "?" names those made before packs
+    /// were marked): their objects are read alone again, the packs are retired for [`Storage::gc`]
+    /// to delete. The packs and bytes dropped.
+    pub fn unpack(&self, games: Option<&[String]>) -> Result<(usize, u64)> {
+        let mut c = self.db.connect()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let all: Vec<(String, String, i64)> = {
+            let mut q = tx.prepare("SELECT p.pack, COALESCE(g.game,'?'), SUM(p.len) FROM packs p LEFT JOIN pack_games g USING(pack) GROUP BY p.pack")?;
+            let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let (mut n, mut bytes) = (0, 0);
+        for (pack, game, len) in all {
+            if games.is_some_and(|gs| !gs.contains(&game)) {
+                continue;
+            }
+            tx.execute("DELETE FROM packs WHERE pack=?", [&pack])?;
+            tx.execute("DELETE FROM pack_games WHERE pack=?", [&pack])?;
+            retire(&tx, Uuid::parse_str(&pack)?)?;
+            n += 1;
+            bytes += len as u64;
+        }
+        tx.commit()?;
+        Ok((n, bytes))
     }
 
     /// Puts object `logical` on the disk unless it is there (fetched ahead: a game's start).

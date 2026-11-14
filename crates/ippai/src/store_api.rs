@@ -607,7 +607,7 @@ mod tests {
             names.push(format!("chunks/{}/{h}", &h[..2]));
         }
         // (the first three in a delivery pack: the answers say where, the rest do not)
-        assert_eq!(remote.pack_objects(&names[..3], 1 << 20).await.unwrap().packs, 1);
+        assert_eq!(remote.pack_objects("g", &names[..3], 1 << 20).await.unwrap().packs, 1);
         let state = Store { local: dir.clone(), remote: Arc::new(Some(remote)), decoded: Default::default(), ahead: Default::default() };
         let app = Router::new().route("/store-direct/{*path}", get(direct)).route("/store-direct", axum::routing::post(direct_many)).with_state(state);
         let post = |body: String| {

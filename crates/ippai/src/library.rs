@@ -55,6 +55,7 @@ impl Library {
             CREATE TABLE IF NOT EXISTS game_settings(game TEXT PRIMARY KEY, config TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS retired(object TEXT PRIMARY KEY, retired_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS packs(logical TEXT PRIMARY KEY, object TEXT NOT NULL, pack TEXT NOT NULL, offset INTEGER NOT NULL, len INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS pack_games(pack TEXT PRIMARY KEY, game TEXT NOT NULL, made_ms INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS packs_pack ON packs(pack);
             CREATE TABLE IF NOT EXISTS backups(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, created_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS egs_games(id INTEGER PRIMARY KEY, name TEXT NOT NULL, votes INTEGER NOT NULL DEFAULT 0);

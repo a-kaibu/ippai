@@ -90,6 +90,18 @@ differently; a pack is only a quicker way to the same bytes.
 - Hugging Face's CDN answers a ranged GET with 206 and exposes `Content-Range` to every origin
   (checked 2026-11-13, through the 302 from huggingface.co).
 
+- Each pack is marked as the game's it was made for (table `pack_games`), so what it costs can
+  be seen and dropped game by game. The chunk objects stay either way: dropping a pack only
+  makes its chunks read alone again.
+
+```sh
+ippai storage usage                 # by kind (chunks, packs, saves, ...), then each game:
+                                    # its own chunks (freed if it goes), shared ones, its packs
+ippai storage unpack saga_planets-2 # drop a game's packs ("?": packs from before marking)
+ippai storage unpack --all
+ippai storage gc --grace-days 0     # then delete them from the bucket
+```
+
 The user uploads the packs (this needs the bucket's write credentials):
 
 ```sh
