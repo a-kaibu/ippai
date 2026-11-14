@@ -229,6 +229,13 @@ const SYSTEM_KEYS: [&str; 7] = [
     "hkcu\\Control Panel\\Desktop",
 ];
 
+/// RPG Maker RTPs: (registry key, value, folder). RGSS3 (VX Ace) reads the folder of the RTP its
+/// Game.ini names (RTP=RPGVXAce) from the key and stops with "RTP が必要です" without it. The
+/// folders are where ippai puts them (crates/ippai/src/pack.rs RTPS) and the official installer
+/// would on a 32-bit Windows.
+pub(crate) const RTPS: &[(&str, &str, &str)] =
+    &[("hklm\\software\\enterbrain\\rgss3\\rtp", "RPGVXAce", "C:\\Program Files\\Common Files\\Enterbrain\\RGSS3\\RPGVXAce")];
+
 /// A ShiinaRio game's installed state (shiina.rs), once the game's exe is loaded: the values its
 /// SETUP.exe writes, where its INI's key has no InstPath yet.
 fn shiina_installed() {
@@ -290,6 +297,13 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
             for f in files.iter().filter(|f| [".ttf", ".ttc", ".otf"].iter().any(|x| f.to_ascii_lowercase().ends_with(x))) {
                 let stem = f.rsplit_once('.').map_or(f.as_str(), |x| x.0);
                 set("hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f);
+            }
+        }
+        // the RPG Maker RTPs in C:\ (ippai's own, tools/ci/sake-rtp.py), as their installers
+        // register them: the engine finds the RTP folder by this value
+        for (key, name, dir) in RTPS {
+            if crate::files::resolve(&format!("{dir}\\")).is_some() {
+                set(key, name, dir);
             }
         }
         m.entry("hkcu\\software".into()).or_default();

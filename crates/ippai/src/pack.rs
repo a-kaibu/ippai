@@ -90,6 +90,10 @@ pub enum Cmd {
         #[arg(long, default_value_t = DEFAULT_CHUNK_KIB)]
         chunk_kib: u64,
     },
+    /// Make sake's C:\ (the tree prefix32) from a release's fonts/ and its RTPs (fonts/rtp), as
+    /// `serve` does when it starts (ensure_prefix).
+    #[command(hide = true)]
+    Prefix { fonts: PathBuf },
     /// Add a game (its files packed with `ippai pack`) to the launcher's list, or replace it.
     #[command(hide = true)]
     AddGame {
@@ -551,6 +555,11 @@ fn add_game(
 pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Pack { dir, name, follow, chunk_kib } => tree(store, &dir, &name, follow, chunking(chunk_kib))?,
+        Cmd::Prefix { fonts } => {
+            if !ensure_prefix(store, &fonts)? {
+                eprintln!("{PREFIX_TREE}: unchanged");
+            }
+        }
         Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta } => {
             add_game(store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta, None, vec![])?
         }
@@ -770,37 +779,164 @@ pub fn migrate_guest_paths(store: &Path, jit: &Path) -> Result<usize> {
 
 /// Makes the tree [`PREFIX_TREE`] from the fonts in `fonts` (a release's fonts/, put in place by
 /// install.sh; tools/ci/sake-fonts.py) when the store has none: C:\windows\Fonts with those
-/// fonts and an empty C:\windows\temp, which is all of sake's C:\. True when it made one; a
-/// store that has the tree (made by hand with `ippai pack`, or earlier) keeps it.
+/// fonts and an empty C:\windows\temp, which is all of sake's C:\ but for the RPG Maker RTPs
+/// (below). True when it made or changed one; a store that has the tree (made by hand with
+/// `ippai pack`, or earlier) keeps it, fonts and all.
+///
+/// RTPs: ippai's own stand-ins for RPG Maker's run time packages (tools/ci/sake-rtp.py, in the
+/// release's fonts/rtp/<rtp>/; docs/rtp.md) go to their folders under C:\Program Files\Common
+/// Files ([`RTPS`]), where sake tells the games (registry, misc.rs). They change with releases:
+/// the tree carries a stamp of them ([`RTP_STAMP`]-<hash>), and a tree whose stamp differs gets
+/// its RTP part replaced, the rest of it kept.
 pub fn ensure_prefix(store: &Path, fonts: &Path) -> Result<bool> {
-    if store.join("trees").join(format!("{PREFIX_TREE}.tsv")).exists() {
-        return Ok(false);
+    let tsv = store.join("trees").join(format!("{PREFIX_TREE}.tsv"));
+    let rtps = rtp_sources(fonts);
+    let stamp = rtp_stamp(&rtps)?;
+    let have = fs::read_to_string(&tsv).ok();
+    if let Some(list) = &have {
+        if stamp.as_ref().is_none_or(|s| list.lines().any(|l| l.split('\t').nth(3) == Some(&esc(&stamp_path(s))))) {
+            return Ok(false);
+        }
     }
-    let Ok(entries) = fs::read_dir(fonts) else { return Ok(false) };
-    let files: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .map(|e| e.path())
-        .collect();
+    let files: Vec<PathBuf> = match fs::read_dir(fonts) {
+        Ok(entries) => entries.filter_map(|e| e.ok()).filter(|e| e.file_type().is_ok_and(|t| t.is_file())).map(|e| e.path()).collect(),
+        Err(_) => vec![],
+    };
     let font = |p: &PathBuf| p.extension().and_then(|e| e.to_str()).is_some_and(|e| ["ttf", "ttc", "otf"].contains(&e.to_ascii_lowercase().as_str()));
-    if !files.iter().any(font) {
+    if have.is_none() && !files.iter().any(font) {
         return Ok(false);
     }
     fs::create_dir_all(store)?;
     let root = store.join(format!(".{PREFIX_TREE}.{}.tmp", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     let made = (|| {
-        let dir = root.join("drive_c/windows/Fonts");
-        fs::create_dir_all(&dir)?;
-        fs::create_dir_all(root.join("drive_c/windows/temp"))?;
-        // (the license goes along with the fonts)
-        for f in &files {
-            fs::copy(f, dir.join(f.file_name().unwrap()))?;
+        if have.is_none() {
+            let dir = root.join("drive_c/windows/Fonts");
+            fs::create_dir_all(&dir)?;
+            fs::create_dir_all(root.join("drive_c/windows/temp"))?;
+            // (the license goes along with the fonts)
+            for f in &files {
+                fs::copy(f, dir.join(f.file_name().unwrap()))?;
+            }
         }
-        tree(store, &root, PREFIX_TREE, false, chunking(DEFAULT_CHUNK_KIB))
+        for (src, to) in &rtps {
+            copy_dir(src, &root.join(COMMON_FILES).join(to))?;
+        }
+        if let Some(s) = &stamp {
+            let p = root.join(stamp_path(s));
+            fs::create_dir_all(p.parent().unwrap())?;
+            fs::write(p, b"")?;
+        }
+        let list = pack_tree(store, &root, PREFIX_TREE, false, chunking(DEFAULT_CHUNK_KIB))?;
+        let list = match &have {
+            Some(old) => merge_rtp(old, &list),
+            None => list,
+        };
+        publish_tree(store, PREFIX_TREE, &list)
     })();
     let _ = fs::remove_dir_all(&root);
     made.map(|()| true)
+}
+
+/// Where in the prefix tree C:\Program Files\Common Files is.
+const COMMON_FILES: &str = "drive_c/Program Files/Common Files";
+
+/// The RTPs sake knows: (folder in the release's fonts/rtp/, folder under Common Files). The
+/// official installers put them there (on a 32-bit Windows, as sake is) and write the folder
+/// into the registry (crates/sake/src/misc.rs RTPS).
+pub const RTPS: &[(&str, &str)] = &[("rpgvxace", "Enterbrain/RGSS3/RPGVXAce")];
+
+/// The stamp's name in the tree: `<COMMON_FILES>/Enterbrain/<RTP_STAMP>-<hash>` (an empty file).
+pub const RTP_STAMP: &str = "ippai-rtp";
+
+fn stamp_path(hash: &str) -> String {
+    format!("{COMMON_FILES}/Enterbrain/{RTP_STAMP}-{hash}")
+}
+
+/// The RTPs in `fonts`/rtp: (folder on disk, folder under Common Files).
+fn rtp_sources(fonts: &Path) -> Vec<(PathBuf, &'static str)> {
+    RTPS.iter().map(|(name, to)| (fonts.join("rtp").join(name), *to)).filter(|(p, _)| p.is_dir()).collect()
+}
+
+/// A hash of the RTPs' files (their paths and contents): None without RTPs.
+fn rtp_stamp(rtps: &[(PathBuf, &str)]) -> Result<Option<String>> {
+    if rtps.is_empty() {
+        return Ok(None);
+    }
+    let mut h = blake3::Hasher::new();
+    for (src, to) in rtps {
+        let mut todo = vec![(src.clone(), to.to_string())];
+        let mut all = Vec::new();
+        while let Some((dir, rel)) = todo.pop() {
+            for e in fs::read_dir(&dir)? {
+                let e = e?;
+                let r = format!("{rel}/{}", e.file_name().to_string_lossy());
+                if e.file_type()?.is_dir() {
+                    todo.push((e.path(), r));
+                } else {
+                    all.push((r, e.path()));
+                }
+            }
+        }
+        all.sort();
+        for (r, p) in all {
+            h.update(r.as_bytes());
+            h.update(&[0]);
+            let data = fs::read(&p)?;
+            h.update(&(data.len() as u64).to_le_bytes());
+            h.update(&data);
+        }
+    }
+    Ok(Some(h.finalize().to_hex()[..16].to_string()))
+}
+
+/// Whether a tree path is in the RTP part of the prefix: the RTP folders and what is in them,
+/// and the stamps.
+fn in_rtp_part(path: &str) -> bool {
+    let under = |dir: &str| path == dir || path.starts_with(&format!("{dir}/"));
+    RTPS.iter().any(|(_, to)| under(&esc(&format!("{COMMON_FILES}/{to}"))))
+        || path.starts_with(&esc(&format!("{COMMON_FILES}/Enterbrain/{RTP_STAMP}-")))
+}
+
+/// The prefix tree `old` with its RTP part replaced by `new`'s (a list of the RTPs and their
+/// folders only): `old`'s other lines as they were, then `new`'s lines that `old` lacks (the
+/// folders above the RTPs once).
+fn merge_rtp(old: &str, new: &str) -> String {
+    let mut lines = old.lines();
+    let mut out = format!("{}\n", lines.next().unwrap_or("vnvm-tree\t2\t0"));
+    let mut seen = std::collections::HashSet::new();
+    for l in lines {
+        let path = l.split('\t').nth(3).unwrap_or("");
+        if l.is_empty() || in_rtp_part(path) {
+            continue;
+        }
+        seen.insert(path.to_string());
+        out.push_str(l);
+        out.push('\n');
+    }
+    for l in new.lines().skip(1) {
+        let path = l.split('\t').nth(3).unwrap_or("");
+        if !l.is_empty() && seen.insert(path.to_string()) {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// `from` copied into `to` (made), folders and files.
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to)?;
+    for e in fs::read_dir(from)? {
+        let e = e?;
+        let t = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir(&e.path(), &t)?;
+        } else {
+            fs::copy(e.path(), t)?;
+        }
+    }
+    Ok(())
 }
 
 /// Reads `buf.len()` bytes at `off` (pread; on Windows seek_read, which takes the offset too).
@@ -1357,6 +1493,109 @@ mod tests {
         assert!(!ensure_prefix(&store, &fonts).unwrap());
         assert_eq!(fs::read_to_string(&tsv).unwrap(), list);
         let _ = fs::remove_dir_all(&t);
+    }
+
+    /// The RTPs in fonts/rtp go to their folders under C:\Program Files\Common Files with a
+    /// stamp; the same RTPs leave the tree alone; changed RTPs replace the RTP part only (a file
+    /// gone from them is gone from the tree, the fonts and what else the tree has stay); a store
+    /// made before RTPs (fonts only, or by hand) gets them added.
+    #[test]
+    fn prefix_with_rtps() {
+        let t = std::env::temp_dir().join(format!("ippai-prefix-rtp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, fonts) = (t.join("store"), t.join("fonts"));
+        fs::create_dir_all(&fonts).unwrap();
+        fs::write(fonts.join("msgothic.ttf"), b"font").unwrap();
+        // a store from before: fonts only, and a file put in by hand
+        let hand = t.join("hand");
+        fs::create_dir_all(hand.join("drive_c/windows/Fonts")).unwrap();
+        fs::write(hand.join("drive_c/windows/Fonts/msgothic.ttf"), b"font").unwrap();
+        fs::write(hand.join("drive_c/windows/win.ini"), b"[x]").unwrap();
+        tree(&store, &hand, PREFIX_TREE, false, chunking(DEFAULT_CHUNK_KIB)).unwrap();
+        let tsv = store.join(format!("trees/{PREFIX_TREE}.tsv"));
+        let paths = || -> Vec<String> { fs::read_to_string(&tsv).unwrap().lines().skip(1).map(|l| l.split('\t').nth(3).unwrap().to_string()).collect() };
+        let before = paths();
+        assert!(!ensure_prefix(&store, &fonts).unwrap(), "no RTPs: the store keeps its tree");
+        let ace = fonts.join("rtp/rpgvxace");
+        fs::create_dir_all(ace.join("Graphics/System")).unwrap();
+        fs::write(ace.join("Graphics/System/Window.png"), b"window").unwrap();
+        fs::write(ace.join("Graphics/System/IconSet.png"), b"icons").unwrap();
+        assert!(ensure_prefix(&store, &fonts).unwrap());
+        let after = paths();
+        let dir = "drive_c/Program Files/Common Files/Enterbrain/RGSS3/RPGVXAce";
+        for p in &before {
+            assert!(after.contains(p), "{p} kept");
+        }
+        for p in [format!("{dir}/Graphics/System/Window.png"), format!("{dir}/Graphics/System/IconSet.png"), "drive_c/Program Files".into()] {
+            assert!(after.contains(&p), "{p} in {after:?}");
+        }
+        let stamps = |v: &[String]| v.iter().filter(|p| p.contains("/Enterbrain/ippai-rtp-")).count();
+        assert_eq!(stamps(&after), 1);
+        let mut uniq = after.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), after.len(), "a path once");
+        assert!(!ensure_prefix(&store, &fonts).unwrap(), "the same RTPs");
+        assert_eq!(paths(), after);
+        // a newer release: one picture changed, one gone
+        fs::write(ace.join("Graphics/System/Window.png"), b"window 2").unwrap();
+        fs::remove_file(ace.join("Graphics/System/IconSet.png")).unwrap();
+        assert!(ensure_prefix(&store, &fonts).unwrap());
+        let third = paths();
+        assert!(!third.contains(&format!("{dir}/Graphics/System/IconSet.png")));
+        assert!(third.contains(&format!("{dir}/Graphics/System/Window.png")));
+        assert!(third.contains(&"drive_c/windows/win.ini".to_string()));
+        assert_eq!(stamps(&third), 1);
+        assert_ne!(third.iter().find(|p| p.contains("ippai-rtp-")), after.iter().find(|p| p.contains("ippai-rtp-")));
+        // a new store: fonts and RTPs in one tree
+        let store2 = t.join("store2");
+        assert!(ensure_prefix(&store2, &fonts).unwrap());
+        let list = fs::read_to_string(store2.join(format!("trees/{PREFIX_TREE}.tsv"))).unwrap();
+        for f in ["drive_c/windows/Fonts/msgothic.ttf", "drive_c/windows/temp", &format!("{dir}/Graphics/System/Window.png")] {
+            assert!(list.lines().any(|l| l.split('\t').nth(3) == Some(f)), "{f} in\n{list}");
+        }
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    proptest::proptest! {
+        /// merge_rtp keeps the old tree's lines that are not RTP ones, in order, drops its RTP
+        /// lines and stamps, and adds the new list's lines whose paths it lacks: every path once.
+        #[test]
+        fn merge_rtp_replaces_the_rtp_part(
+            old in proptest::collection::vec((0usize..3, 0usize..6, "[a-c]{1,2}"), 0..30),
+            new in proptest::collection::vec((0usize..3, 0usize..6, "[a-c]{1,2}"), 0..30),
+        ) {
+            let dirs = ["drive_c/windows", "drive_c/Program Files/Common Files/Enterbrain/RGSS3/RPGVXAce", "drive_c/Program Files/Common Files/Enterbrain"];
+            let line = |(k, d, n): &(usize, usize, String)| {
+                let path = match d { 3 => format!("{}/ippai-rtp-{n}", dirs[2]), 4 => dirs[1].to_string(), 5 => format!("{}/x/{n}", dirs[1]), _ => format!("{}/{n}", dirs[*d]) };
+                match k { 0 => format!("d\t755\t0\t{path}"), 1 => format!("f\t644\t0\t{path}\t1\th:1"), _ => format!("l\t777\t0\t{path}\tt") }
+            };
+            let dedup = |v: &[(usize, usize, String)]| {
+                let mut seen = std::collections::HashSet::new();
+                v.iter().map(line).filter(|l| seen.insert(l.split('\t').nth(3).unwrap().to_string())).collect::<Vec<_>>()
+            };
+            let (o, n) = (dedup(&old), dedup(&new));
+            let text = |v: &[String]| format!("vnvm-tree\t2\t4194304\n{}", v.iter().map(|l| format!("{l}\n")).collect::<String>());
+            let out = merge_rtp(&text(&o), &text(&n));
+            let lines: Vec<&str> = out.lines().collect();
+            proptest::prop_assert_eq!(lines[0], "vnvm-tree\t2\t4194304");
+            let path = |l: &str| l.split('\t').nth(3).unwrap().to_string();
+            let kept: Vec<&String> = o.iter().filter(|l| !in_rtp_part(&path(l))).collect();
+            proptest::prop_assert_eq!(lines[1..=kept.len()].iter().map(|l| l.to_string()).collect::<Vec<_>>(), kept.iter().map(|l| l.to_string()).collect::<Vec<_>>());
+            let mut all: Vec<String> = lines[1..].iter().map(|l| path(l)).collect();
+            for l in &n {
+                proptest::prop_assert!(all.contains(&path(l)));
+            }
+            for l in &o {
+                if in_rtp_part(&path(l)) && !n.iter().any(|x| path(x) == path(l)) {
+                    proptest::prop_assert!(!all.contains(&path(l)), "old RTP line {} dropped", l);
+                }
+            }
+            let len = all.len();
+            all.sort();
+            all.dedup();
+            proptest::prop_assert_eq!(all.len(), len);
+        }
     }
 
     /// Random files of many chunks (zero runs, repeated parts), packed with a file's chunks in

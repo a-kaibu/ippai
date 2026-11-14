@@ -93,18 +93,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: tools/ci/cache-keys.sh
-      # (sake's C:\ is fonts only: the IPA fonts under the Windows names, in the archives as fonts/)
+      # (sake's C:\ is fonts only: the IPA fonts under the Windows names, in the archives as fonts/;
+      # and ippai's own RPG Maker RTPs, fonts/rtp/: tools/ci/sake-rtp.py, docs/rtp.md)
       - id: cache-apt
         uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-fonts-ipafont-gothic-fonts-ipafont-mincho-python3-fonttools
+          key: apt-${{ env.CI_IMAGE }}-fonts-ipafont-gothic-fonts-ipafont-mincho-python3-fonttools-fonts-vlgothic-vorbis-tools
       - name: sake's fonts
         id: fonts
         background: true
         run: |
-          tools/ci/apt.sh fonts-ipafont-gothic fonts-ipafont-mincho python3-fonttools
+          tools/ci/apt.sh fonts-ipafont-gothic fonts-ipafont-mincho python3-fonttools fonts-vlgothic vorbis-tools
           python3 tools/ci/sake-fonts.py fonts
+          python3 tools/ci/sake-rtp.py fonts/rtp
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 26
@@ -189,7 +191,7 @@ jobs:
         uses: actions/cache/save@v6.1.0
         with:
           path: ~/.apt-cache
-          key: apt-${{ env.CI_IMAGE }}-fonts-ipafont-gothic-fonts-ipafont-mincho-python3-fonttools
+          key: apt-${{ env.CI_IMAGE }}-fonts-ipafont-gothic-fonts-ipafont-mincho-python3-fonttools-fonts-vlgothic-vorbis-tools
 
   bin:
     # (not web: its artifacts are waited for in the job)

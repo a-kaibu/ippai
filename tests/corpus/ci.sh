@@ -8,7 +8,8 @@
 #
 #   tests/corpus/ci.sh DIST FONTS OUT
 #     DIST: an unpacked release (ippai, web/: tools/ci/build.sh)
-#     FONTS: sake's C:\windows\Fonts (tools/ci/sake-fonts.py). That is all of C:\: no Wine
+#     FONTS: sake's C:\windows\Fonts (tools/ci/sake-fonts.py), and in FONTS/rtp ippai's own RPG
+#     Maker RTPs (tools/ci/sake-rtp.py), as a release's fonts/. That is all of C:\: no Wine
 #     DLLs, so a title that needs a DLL sake does not implement yet fails here, and
 #     check.py lists the DLLs each title missed.
 #   env: SET=smoke|full (default smoke: rows with smoke=1), SCREEN (sake's screen, default
@@ -31,10 +32,9 @@ OUT=$(realpath "$OUT")
 BASE=$WORK/base-store
 if [ ! -d "$BASE" ]; then
   set -e
-  rm -rf "$WORK/prefix" "$BASE.part" && mkdir -p "$WORK/prefix/drive_c/windows/temp"
-  cp -r "$FONTS" "$WORK/prefix/drive_c/windows/Fonts"
-  "$DIST/ippai" --store "$BASE.part" pack "$WORK/prefix" prefix32 >/dev/null
-  rm -rf "$WORK/prefix"
+  rm -rf "$BASE.part"
+  # (as `ippai serve` makes it from a release's fonts/: the fonts, and the RTPs in fonts/rtp)
+  "$DIST/ippai" --store "$BASE.part" prefix "$FONTS" >/dev/null
   mv "$BASE.part" "$BASE"
   set +e
 fi
