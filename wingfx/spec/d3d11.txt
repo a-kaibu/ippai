@@ -1,0 +1,33 @@
+# Direct3D 11 state object clauses (wingfx/spec/README.md): <id> <status> | <source> | <what it says>
+D3D11.DEVICE doc | D3D11CreateDevice | a feature level 11_0 device (hardware, else WARP)
+D3D11.BLEND.ENUM doc | D3D11_RENDER_TARGET_BLEND_DESC, D3D11_BLEND, D3D11_BLEND_OP | an enabled target's blends are D3D11_BLEND values (1..11, 14..19) and its ops D3D11_BLEND_OP values (1..5); anything else is E_INVALIDARG
+D3D11.BLEND.ALPHA doc | D3D11_BLEND ("blend options that end in _COLOR are not allowed" for alpha) | SrcBlendAlpha / DestBlendAlpha refuse SRC_COLOR, INV_SRC_COLOR, DEST_COLOR, INV_DEST_COLOR, SRC1_COLOR, INV_SRC1_COLOR
+D3D11.BLEND.MASK measured | D3D11_COLOR_WRITE_ENABLE | a used target's write mask over 0xf is refused, even with blending disabled (d3d11desc golden)
+D3D11.BLEND.BOOL measured | (none) | AlphaToCoverageEnable, IndependentBlendEnable, BlendEnable: any nonzero value is TRUE and GetDesc gives 1 (d3d11desc golden)
+D3D11.BLEND.DISABLED measured | (none) | a target with blending disabled: its blends and ops are not checked and GetDesc gives ONE ZERO ADD ONE ZERO ADD, the write mask as given (d3d11desc golden)
+D3D11.BLEND.SHARED doc | D3D11_BLEND_DESC (IndependentBlendEnable FALSE: only RenderTarget[0] is used) | the other targets are not checked; GetDesc gives RenderTarget[0] in all eight (measured, d3d11desc golden)
+D3D11.DEPTH.ENUM doc | D3D11_DEPTH_STENCIL_DESC, D3D11_DEPTH_WRITE_MASK, D3D11_COMPARISON_FUNC, D3D11_STENCIL_OP | write mask 0..1, comparison funcs 1..8, stencil ops 1..8
+D3D11.DEPTH.BOOL measured | (none) | DepthEnable, StencilEnable: nonzero is TRUE, GetDesc gives 1 (d3d11desc golden)
+D3D11.DEPTH.OFF measured | (none) | depth disabled: the write mask is still checked, DepthFunc is not; GetDesc gives write mask ALL, func LESS (d3d11desc golden)
+D3D11.STENCIL.OFF measured | (none) | stencil disabled: nothing of it is checked; GetDesc gives masks 0xff 0xff and both faces KEEP KEEP KEEP ALWAYS (d3d11desc golden)
+D3D11.PAD assumed | D3D11_RENDER_TARGET_BLEND_DESC, D3D11_DEPTH_STENCIL_DESC (UINT8 fields) | the padding bytes after the UINT8 write mask and stencil masks are not read
+D3D11.RASTER.ENUM doc | D3D11_FILL_MODE, D3D11_CULL_MODE | fill 2..3, cull 1..3
+D3D11.RASTER.BOOL measured | (none) | FrontCounterClockwise, DepthClipEnable, ScissorEnable, MultisampleEnable, AntialiasedLineEnable: nonzero is 1 (d3d11desc golden)
+D3D11.RASTER.CLAMP measured | (none) | a NaN DepthBiasClamp is refused (d3d11desc golden)
+D3D11.RASTER.SLOPE measured | (none) | an infinite SlopeScaledDepthBias is accepted as given (d3d11desc golden)
+D3D11.RASTER.SLOPENAN assumed | (none) | a NaN SlopeScaledDepthBias is accepted as given
+D3D11.SAMPLER.FILTER doc | D3D11_FILTER | the filter is one of the enumeration's values (the minimum / maximum reductions included: measured accepted at feature level 11_0)
+D3D11.SAMPLER.ADDRESS doc | D3D11_TEXTURE_ADDRESS_MODE | each address mode 1..5
+D3D11.SAMPLER.ANISO measured | D3D11_SAMPLER_DESC (says 1..16) | MaxAnisotropy over 16 is refused whatever the filter, 0 is accepted; GetDesc gives 0 unless the filter is anisotropic (d3d11desc golden)
+D3D11.SAMPLER.CMP measured | D3D11_SAMPLER_DESC (ComparisonFunc used with comparison filters) | checked (1..8) only for comparison filters; otherwise GetDesc gives NEVER (d3d11desc golden)
+D3D11.SAMPLER.BIAS doc | D3D11_SAMPLER_DESC, D3D11_MIP_LOD_BIAS_MIN / MAX | MipLODBias within -16.0 .. 15.99 (out of range: measured refused)
+D3D11.SAMPLER.BIASEDGE assumed | D3D11_MIP_LOD_BIAS_MAX (15.99f) | the bounds compared as floats: 15.99f and -16.0 accepted, the next floats out refused
+D3D11.SAMPLER.BIASNAN assumed | (none) | a NaN MipLODBias is refused
+D3D11.SAMPLER.LOD measured | (none) | a NaN MinLOD is refused (d3d11desc golden); MinLOD over MaxLOD is accepted as given
+D3D11.SAMPLER.MAXLODNAN assumed | (none) | a NaN MaxLOD is refused
+D3D11.SAMPLER.BORDER measured | D3D11_SAMPLER_DESC (BorderColor used with ADDRESS_BORDER) | no address mode BORDER: GetDesc gives a zero border color (d3d11desc golden)
+D3D11.SAMPLER.BORDERKEEP assumed | D3D11_SAMPLER_DESC | some address mode BORDER: the border color as given, any float
+D3D11.DEDUP doc | ID3D11Device::CreateBlendState and the others (the same state gives the same interface) | the same object for descriptions equal as GetDesc gives them (measured: after the normalization above, d3d11desc golden)
+D3D11.DEDUP.FLOAT open | (none) | descriptions differing only in floats that compare equal (0.0 and -0.0): the same object or not
+D3D11.CHECK doc | ID3D11Device::CreateBlendState and the others (ppState NULL: S_FALSE if the description passes) | ppState NULL gives S_FALSE for an accepted description, E_INVALIDARG (assumed) for a refused one
+D3D11.NODESC measured | (none) | pDesc NULL gives E_INVALIDARG (d3d11desc golden)

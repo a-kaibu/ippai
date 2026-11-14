@@ -52,6 +52,15 @@ x ^= x << 5`, the byte is the low 8 bits of x.
 Without a device the state lines print `nodev`. (Not asked by the generators: stages past 7,
 samplers past 15 other than 256..260, sampler state types past 13: Windows reads past its arrays.)
 
+## Direct3D 11
+
+| line | calls | prints |
+|---|---|---|
+| `device11` | D3D11CreateDevice (d3d11.dll loaded when first needed), hardware (WARP if refused), feature level 11_0 only | `device11 ok`, `device11 none`, `device11 failed <hr>` |
+| `blend\|depth\|raster\|sampler [check\|nodesc] <words>` | Create{Blend,DepthStencil,Rasterizer,Sampler}State of the description given as its 32-bit words (66, 13, 10, 13; missing trailing words 0; UINT8 fields with their padding in one word), then GetDesc; `check`: ppState NULL; `nodesc`: pDesc NULL and no words | `<kind> hr <hr>` on failure and for `check` / `nodesc`, else `<kind> = <GetDesc's words> same <n\|->` (hex, the UINT8 fields without padding; n: the case's earlier state line, counted from 0, that gave the same object) |
+
+Without a device these lines print `nodev`. A case holds at most 64 state lines.
+
 ## Models
 
 `wingfx model <suite>` prints what Windows prints, case by case. A case whose behavior the

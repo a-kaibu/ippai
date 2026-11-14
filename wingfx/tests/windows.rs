@@ -95,3 +95,59 @@ fn d3d9_groups_match_the_d3d9sb_probe() {
     }
     assert!(n > 150);
 }
+
+/// the Direct3D 11 model against masu's d3d11desc probe: its tables of descriptions (read from
+/// the probe's source) through the model, each line as Windows printed it
+#[test]
+fn d3d11_matches_the_d3d11desc_probe() {
+    let Ok(src) = std::fs::read_to_string(root().join("../tests/winref/probes/d3d11desc.c")) else { return };
+    let Ok(g) = std::fs::read_to_string(root().join("../tests/winref/golden/d3d11desc-32/stdout.txt")) else { return };
+    use wingfx::model::d3d11::{normalize, Kind};
+    let num = |t: &str| -> u32 {
+        let t = t.trim();
+        if let Some(v) = t.strip_prefix("(DWORD)-") {
+            return (v.parse::<i64>().unwrap() as u32).wrapping_neg();
+        }
+        if let Some(h) = t.strip_prefix("0x") {
+            return u32::from_str_radix(h, 16).unwrap();
+        }
+        t.parse().unwrap()
+    };
+    let at = |t: &str| -> usize {
+        let t = t.trim();
+        if let Some(a) = t.strip_prefix("RT(") {
+            let (i, f) = a.trim_end_matches(')').split_once(',').unwrap();
+            return 2 + 8 * i.trim().parse::<usize>().unwrap() + f.trim().parse::<usize>().unwrap();
+        }
+        t.parse().unwrap()
+    };
+    let mut n = 0;
+    for (k, table) in [(Kind::Blend, "blends[]"), (Kind::Depth, "depths[]"), (Kind::Raster, "rasters[]"), (Kind::Sampler, "samplers[]")] {
+        let body = &src[src.find(table).unwrap()..];
+        let body = &body[..body.find("};").unwrap()];
+        let mut made: Vec<(String, Vec<u32>)> = Vec::new();
+        for l in body.lines().filter(|l| l.trim_start().starts_with("{ \"")) {
+            let name = l.split('"').nth(1).unwrap().to_string();
+            let mut d = wingfx::gen::d3d11_base(k);
+            // { "name", { { at, v }, ... END } }, at maybe RT(i, f)
+            for c in l.split("{ ").skip(3) {
+                let c = c.split(" }").next().unwrap();
+                if let Some((a, v)) = c.rsplit_once(", ") {
+                    d[at(a)] = num(v);
+                }
+            }
+            let want = match normalize(k, &d) {
+                None => format!("{} {name} 0x80070057 same -", k.name()),
+                Some(nd) => {
+                    let same = made.iter().find(|(_, o)| *o == nd).map_or("-".to_string(), |(n, _)| n.clone());
+                    let words: Vec<String> = nd.iter().map(|w| format!("{w:x}")).collect();
+                    made.push((name.clone(), nd));
+                    format!("{} {name} 0 {} same {same}", k.name(), words.join(" "))
+                }
+            };
+            assert!(g.lines().any(|l| l == want), "Windows does not say {want:?}");
+            n += 1;
+        }
+    }
+    assert!(n > 100, "{n}");
+}

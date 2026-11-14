@@ -2,6 +2,7 @@
 //! the model cannot answer prints "unmodeled <why>" in place of its lines (and is then compared
 //! with Windows only).
 
+pub mod d3d11;
 pub mod d3d9;
 pub mod gdi;
 
@@ -30,11 +31,15 @@ fn run_ops(case: &Case) -> Res<Vec<String>> {
     let mut out = Vec::new();
     let mut g = gdi::Gdi::new();
     let mut d = d3d9::D3d9::default();
+    let mut d11 = d3d11::D3d11::default();
     for op in &case.ops {
         if g.op(op, &mut out)? {
             continue;
         }
         if d.op(op, &mut out)? {
+            continue;
+        }
+        if d11.op(op, &mut out)? {
             continue;
         }
         return Err(Fail::Bad);

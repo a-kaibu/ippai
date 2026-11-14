@@ -1,7 +1,7 @@
 # wingfx
 
-Conformance tests for the Windows graphics APIs: GDI first, Direct3D 9 next, then the rest
-(GDI+, DirectDraw, Direct3D 8/11, Direct2D, DirectWrite, WIC). Written to check any
+Conformance tests for the Windows graphics APIs: GDI, Direct3D 9 and 11 first, then the rest
+(GDI+, DirectDraw, Direct3D 8, Direct2D, DirectWrite, WIC). Written to check any
 implementation of them (Wine, an emulator, a translation layer) against real Windows, and to
 be usable without a Windows machine.
 
@@ -72,5 +72,12 @@ sake `node sake.js` (tests/winref/run.sh) and its browser runner for the GPU sui
   pair of formats.
 * `d3d9`: Direct3D 9 render, texture stage and sampler states (defaults, Set/Get of every
   state), state blocks (D3DSBT_ALL / PIXELSTATE / VERTEXSTATE, recording, Capture, Apply).
+* `d3d11`: Direct3D 11 blend, depth stencil, rasterizer and sampler state objects: every word of
+  each description through its values of interest (every filter value below 0x400), with the
+  parts that switch others off on and off; which descriptions are refused, what GetDesc gives
+  back, when the runtime hands back the same object; ppState / pDesc NULL.
+
+Each suite's behavior is written down as numbered clauses in `spec/<api>.txt` (documented,
+measured on Windows, assumed, open), and `cargo test` checks every clause is reached.
 
 License: MIT OR Apache-2.0.

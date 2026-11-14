@@ -14,7 +14,7 @@ pub struct Clause {
     pub file: &'static str,
 }
 
-pub const FILES: &[(&str, &str)] = &[("gdi", include_str!("../spec/gdi.txt")), ("d3d9", include_str!("../spec/d3d9.txt"))];
+pub const FILES: &[(&str, &str)] = &[("gdi", include_str!("../spec/gdi.txt")), ("d3d9", include_str!("../spec/d3d9.txt")), ("d3d11", include_str!("../spec/d3d11.txt"))];
 
 /// (excluded: deliberately not asked, e.g. calls that read past Windows' own arrays)
 pub const STATUSES: &[&str] = &["doc", "measured", "assumed", "open", "excluded"];

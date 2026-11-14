@@ -170,7 +170,7 @@ proptest! {
 
     /// whatever text comes in, parsing and the models never panic
     #[test]
-    fn never_panics(text in "(case [a-z]{1,3}\n|end\n|(dib|fill|poke|dump|brush|patblt|bitblt|text|bk|org|clip|noclip|device|rs|tss|ss|sb)( (-?[0-9]{1,4}|0x[0-9a-f]{1,8}|#[0-9a-f]{6}|solid|dib|hatch|null|get|set|begin|end|create|apply|capture|release|td|bu|565)){0,9}\n){0,40}") {
+    fn never_panics(text in "(case [a-z]{1,3}\n|end\n|(dib|fill|poke|dump|brush|patblt|bitblt|text|bk|org|clip|noclip|device|rs|tss|ss|sb|device11|blend|depth|raster|sampler)( (-?[0-9]{1,4}|0x[0-9a-f]{1,8}|#[0-9a-f]{6}|solid|dib|hatch|null|get|set|begin|end|create|apply|capture|release|td|bu|565|check|nodesc)){0,9}\n){0,40}") {
         let cases = parse_cases(&text);
         for c in &cases {
             let _ = run_case(c);
@@ -239,5 +239,82 @@ fn state_blocks_restore() {
         let b: Case = after[0].clone();
         let (x, y) = (run_case(&a).unwrap(), run_case(&b).unwrap());
         assert_eq!(x[1..], y[1..]);
+    }
+}
+
+// Direct3D 11 state objects
+
+use wingfx::model::d3d11::{normalize, Kind};
+
+/// a description near the valid ones: the base with some words from the generators' pools, or
+/// any word
+fn arb_desc(k: Kind) -> impl Strategy<Value = Vec<u32>> {
+    let n = k.words();
+    proptest::collection::vec((0..n, prop_oneof![0u32..24, any::<u32>(), prop::sample::select(wingfx::gen::d3d11_floats())]), 0..6).prop_map(move |ch| {
+        let mut d = wingfx::gen::d3d11_base(k);
+        for (at, v) in ch {
+            d[at] = v;
+        }
+        d
+    })
+}
+
+fn arb_kind() -> impl Strategy<Value = Kind> {
+    prop::sample::select(Kind::ALL.to_vec())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    /// what GetDesc gives is a description the runtime accepts as it is
+    #[test]
+    fn normalization_is_idempotent((k, d) in arb_kind().prop_flat_map(|k| (Just(k), arb_desc(k)))) {
+        if let Some(n) = normalize(k, &d) {
+            prop_assert_eq!(normalize(k, &n), Some(n.clone()));
+        }
+    }
+
+    /// the parts the documentation says are not used do not change anything: targets past 0
+    /// without IndependentBlendEnable, a disabled target's blends, a disabled stencil, the
+    /// comparison function of a non-comparison filter, the border color without BORDER
+    #[test]
+    fn unused_parts_are_ignored((k, d) in arb_kind().prop_flat_map(|k| (Just(k), arb_desc(k))), junk in proptest::collection::vec(any::<u32>(), 66)) {
+        let mut e = d.clone();
+        match k {
+            Kind::Blend if d[1] == 0 => e[10..66].copy_from_slice(&junk[10..66]),
+            Kind::Blend if d[2] == 0 => e[3..9].copy_from_slice(&junk[3..9]),
+            Kind::Depth if d[3] == 0 => e[4..13].copy_from_slice(&junk[4..13]),
+            Kind::Depth if d[0] == 0 => e[2] = junk[2],
+            Kind::Sampler if d[0] & 0x180 != 0x80 && !d[1..4].contains(&4) => {
+                e[6] = junk[6];
+                e[7..11].copy_from_slice(&junk[7..11]);
+            }
+            _ => return Ok(()),
+        }
+        prop_assert_eq!(normalize(k, &d), normalize(k, &e));
+    }
+
+    /// validation only (ppState NULL) answers as creation does; equal descriptions give the
+    /// same object, and an object is never the same as one of another kind
+    #[test]
+    fn check_create_and_same_agree((k, d) in arb_kind().prop_flat_map(|k| (Just(k), arb_desc(k)))) {
+        let line = |check: bool| {
+            let w: Vec<String> = d.iter().map(|w| format!("{w:#x}")).collect();
+            format!("{}{} {}\n", k.name(), if check { " check" } else { "" }, w.join(" "))
+        };
+        let other = Kind::ALL[(k as usize + 1) % 4];
+        let ow: Vec<String> = wingfx::gen::d3d11_base(other).iter().map(|w| format!("{w:#x}")).collect();
+        let text = format!("case p\ndevice11\n{}{}{} {}\n{}end\n", line(true), line(false), other.name(), ow.join(" "), line(false));
+        let c = &parse_cases(&text)[0];
+        let out = run_case(c).unwrap();
+        let ok = normalize(k, &d).is_some();
+        prop_assert_eq!(&out[1], &format!("{} hr {:08x}", k.name(), if ok { 1u32 } else { 0x8007_0057 }));
+        if ok {
+            prop_assert!(out[2].ends_with(" same -"));
+            prop_assert!(out[3].ends_with(" same -"));
+            prop_assert!(out[4].ends_with(" same 1"), "{}", out[4]);
+        } else {
+            prop_assert!(out[4].contains(" hr 80070057"));
+        }
     }
 }
