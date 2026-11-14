@@ -107,8 +107,20 @@ pub fn by_path(path: &str) -> Option<u32> {
 }
 
 pub fn by_name(name: &str) -> Option<u32> {
-    let n = base_name(name);
-    MODULES.read().unwrap().iter().find(|m| !m.redirected && (m.name == n || m.name.trim_end_matches(".dll") == n)).map(|m| m.base)
+    let n = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    MODULES.read().unwrap().iter().find(|m| !m.redirected && name_matches(&m.name, n)).map(|m| m.base)
+}
+/// Whether module name `m` (lower case) is base name `n` in any case, or `n` is it without ".dll"
+/// (by_name without a lower-cased copy per call: nt.rs and every thread start ask it).
+fn name_matches(m: &str, n: &str) -> bool {
+    m.eq_ignore_ascii_case(n) || m.strip_suffix(".dll").is_some_and(|s| s.eq_ignore_ascii_case(n))
+}
+
+/// `f` on module `base`, looked up and changed under one write lock (an index taken under a
+/// read lock may name another module by the time the write lock is had: a data file freed
+/// on another thread shifts the list).
+fn with_mut<R>(base: u32, f: impl FnOnce(&mut Module) -> R) -> Option<R> {
+    MODULES.write().unwrap().iter_mut().find(|m| m.base == base & !3).map(f)
 }
 
 /// The module a bare DLL name stands for in the active activation context: Some(the
@@ -200,9 +212,9 @@ pub fn free_datafile(base: u32) {
 /// LoadLibrary mapped too). Ours, the process's exe and a pinned DLL stay.
 pub fn free_library(cpu: &mut Cpu, base: u32) -> bool {
     let _g = loader_lock();
-    let Some(i) = by_base(base) else { return false };
     let gone = {
         let mut v = MODULES.write().unwrap();
+        let Some(i) = v.iter().position(|m| m.base == base & !3) else { return false };
         // (the process's exe is the first image that is no DLL; another exe LoadLibrary
         // mapped goes like a DLL)
         let main = v.iter().position(|m| !m.dll && !m.hle);
@@ -305,11 +317,11 @@ pub fn free_hle(base: u32) {
     }
 }
 /// A module counted as unloaded (free_hle) is loaded again
-fn reload_if_freed(i: usize) {
-    let mut v = MODULES.write().unwrap();
-    v[i].refs += 1;
-    let (again, base) = (v[i].refs == 1 && v[i].hle, v[i].base);
-    drop(v);
+fn reload_if_freed(base: u32) {
+    let Some((again, base)) = with_mut(base, |m| {
+        m.refs += 1;
+        (m.refs == 1 && m.hle, m.base)
+    }) else { return };
     if again {
         crate::dbg::dll_loaded(base);
     }
@@ -327,11 +339,22 @@ pub enum Import<'a> {
     Ordinal(u32),
 }
 
-/// Whether the file at host path `path` is a 64-bit (x86-64) PE.
+/// Whether the file at host path `path` is a 64-bit (x86-64) PE: from its headers alone (the
+/// loader asks for each DLL file it looks at, a game's bundled runtime is megabytes).
 pub fn is_64bit_file(path: &str) -> bool {
-    let Ok(d) = kura::fs::read(path) else { return false };
-    let pe = d.get(0x3c..0x40).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
-    d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
+    let Ok(mut f) = kura::fs::File::open(path) else { return false };
+    machine_is_x64(&mut f)
+}
+/// IMAGE_FILE_HEADER.Machine == AMD64, reading e_lfanew and the 2 bytes it points past.
+fn machine_is_x64(f: &mut (impl std::io::Read + std::io::Seek)) -> bool {
+    use std::io::SeekFrom;
+    let mut b = [0u8; 4];
+    if f.seek(SeekFrom::Start(0x3c)).is_err() || f.read_exact(&mut b).is_err() {
+        return false;
+    }
+    let pe = u32::from_le_bytes(b) as u64;
+    let mut m = [0u8; 2];
+    f.seek(SeekFrom::Start(pe + 4)).is_ok() && f.read_exact(&mut m).is_ok() && m == [0x64, 0x86]
 }
 
 /// The image's SizeOfStackReserve (the size of each thread's stack unless CreateThread asks for
@@ -436,7 +459,41 @@ pub fn file_resource(data: &[u8], ty: u32) -> Option<&[u8]> {
 }
 
 /// Maps the image in `data`; `resolve(dll, import)` gives import addresses.
-pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u32) -> Result<u32, String> {
+/// The bytes of an image of SizeOfImage `size` from RVA `va` on.
+fn image_room(size: u32, va: u32) -> u32 {
+    size.saturating_sub(va)
+}
+
+/// The fixups of the base relocation table at RVA `start` (`n` bytes) of an image of `size`
+/// bytes: `out(RVA, 64-bit)` for each HIGHLOW / DIR64 entry whose bytes lie inside the image. A
+/// block whose length runs past the table ends it (as a 0x7fff_fff8 length looped for ever).
+fn reloc_targets(start: u32, n: u32, size: u32, rd32: impl Fn(u32) -> u32, rd16: impl Fn(u32) -> u32, mut out: impl FnMut(u32, bool)) {
+    let (mut at, end) = (start as u64, start as u64 + n as u64);
+    while at + 8 <= end {
+        let page = rd32(at as u32) as u64;
+        let len = rd32(at as u32 + 4) as u64;
+        if len < 8 || at + len > end {
+            break;
+        }
+        for k in 0..(len - 8) / 2 {
+            let e = rd16((at + 8 + 2 * k) as u32);
+            let off = page + (e & 0xfff) as u64;
+            let w = match e >> 12 {
+                3 => 4,
+                10 => 8,
+                _ => continue,
+            };
+            if off + w <= size as u64 {
+                out(off as u32, w == 8);
+            }
+        }
+        at += len;
+    }
+}
+
+/// Maps the PE file `data` (taken: it goes once its sections are copied, before the imports
+/// load their DLLs, so an import chain never holds every file at once besides the images).
+pub fn load(data: Vec<u8>, path: &str, resolve: &mut dyn FnMut(&str, Import) -> u32) -> Result<u32, String> {
     let rd16 = |o: usize| -> u32 { data.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u32) };
     let rd32 = |o: usize| -> u32 { data.get(o..o + 4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) };
     if rd16(0) != 0x5a4d {
@@ -492,15 +549,20 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         None => return Err(format!("cannot map at {pref:#x} (no relocations)")),
     };
     mem::commit(base, 0x40);
-    mem::write(base, &data[..(hdr_size as usize).min(data.len())]);
+    mem::write(base, &data[..(hdr_size as usize).min(data.len()).min(size as usize)]);
     let secs = opt + optsize;
+    // (vsize, va, raw size, characteristics) of each section, for the protections below
+    let mut sections = Vec::with_capacity(nsec.min(96));
     for i in 0..nsec {
         let s = secs + 40 * i;
         let vsize = rd32(s + 8);
         let va = rd32(s + 12);
         let raw = rd32(s + 16) as usize;
         let ptr = rd32(s + 20) as usize;
-        let n = section_file_bytes(vsize, raw as u32, ptr as u32, data.len());
+        sections.push((vsize, va, raw as u32, rd32(s + 36)));
+        // (what lies past SizeOfImage is not the image's: a packer stub's section claiming more
+        // is cut there rather than written over the allocation after the image)
+        let n = section_file_bytes(vsize, raw as u32, ptr as u32, data.len()).min(image_room(size, va) as usize);
         if n > 0 {
             mem::write(base + va, &data[ptr..ptr + n]);
         }
@@ -513,25 +575,20 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     // relocations
     let delta = (widen_base(base, pref)).wrapping_sub(pref);
     if delta != 0 && relocs.0 != 0 {
-        let (mut at, end) = (base + relocs.0, base + relocs.0 + relocs.1);
-        while at + 8 <= end {
-            let page = r32(at);
-            let len = r32(at + 4);
-            if len < 8 {
-                break;
+        let (start, n) = (relocs.0.min(size), relocs.1.min(image_room(size, relocs.0)));
+        reloc_targets(start, n, size, |o| r32(base + o), |o| r16(base + o) as u32, |off, wide| {
+            let a = base + off;
+            if wide {
+                mem::w64(a, mem::r64(a).wrapping_add(delta));
+            } else {
+                w32(a, r32(a).wrapping_add(delta as u32));
             }
-            for k in 0..(len - 8) / 2 {
-                let e = r16(at + 8 + 2 * k);
-                let a = base + page + (e & 0xfff) as u32;
-                match e >> 12 {
-                    3 => w32(a, r32(a).wrapping_add(delta as u32)),
-                    10 => mem::w64(a, mem::r64(a).wrapping_add(delta)),
-                    _ => {}
-                }
-            }
-            at += len;
-        }
+        });
     }
+    // (the data directories, from the file: it goes now)
+    let dirs: [(u32, u32); 16] = std::array::from_fn(dir);
+    drop(data);
+    let dir = |i: usize| dirs[i];
     let name = base_name(path);
     // exports
     let mut exports = HashMap::default();
@@ -661,11 +718,9 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     }
     // each section's protection from its characteristics (the image was mapped read-write-execute
     // to be written): the JIT translates only pages that are not both writable and executable
-    mem::protect(base, hdr_size.max(1), 0x02);
-    for i in 0..nsec {
-        let s = secs + 40 * i;
-        let (vsize, va, ch) = (rd32(s + 8), rd32(s + 12), rd32(s + 36));
-        let n = if vsize != 0 { vsize } else { rd32(s + 16) };
+    mem::protect(base, hdr_size.max(1).min(size), 0x02);
+    for (vsize, va, raw, ch) in sections {
+        let n = (if vsize != 0 { vsize } else { raw }).min(image_room(size, va));
         let (x, w) = (ch & 0x2000_0000 != 0, ch & 0x8000_0000 != 0);
         let prot = match (x, w) {
             (true, true) => 0x40,
@@ -916,7 +971,15 @@ pub fn top_seh_handler() -> u32 {
 /// the headers finds an image).
 pub fn hle_module(dll: &str) -> u32 {
     let name = format!("{}.dll", crate::api::dll_key(dll));
-    if let Some(b) = MODULES.read().unwrap().iter().find(|m| m.name == name).map(|m| m.base) {
+    let find = || MODULES.read().unwrap().iter().find(|m| m.name == name).map(|m| m.base);
+    if let Some(b) = find() {
+        return b;
+    }
+    // (made by one thread at a time, looked for again under it: two threads starting at once
+    // made two images of one DLL; called without the loader lock from every thread's start)
+    static MAKING: Mutex<()> = Mutex::new(());
+    let _making = MAKING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(b) = find() {
         return b;
     }
     // (32-bit) an export directory of every function the DLL has, each a jump to its trap:
@@ -934,7 +997,11 @@ pub fn hle_module(dll: &str) -> u32 {
     // (then the DLL's resources, if it has any: crate::sysres)
     let res = crate::sysres::tree(&key).map(|t| crate::resupdate::build(&t, code_end));
     let size = code_end + res.as_ref().map_or(0, |r| (r.len() as u32 + 0xfff) & !0xfff);
-    let base = mem::reserve(0, size, 2, 0x100_0000, true).expect("module");
+    // (no room left in the address space: the DLL is not there, as a failed LoadLibrary)
+    let Some(base) = mem::reserve(0, size, 2, 0x100_0000, true) else {
+        eprintln!("sake: no room for {name}");
+        return 0;
+    };
     mem::commit_range(base, size, 0x20);
     // MZ + PE headers with no sections
     w16(base, 0x5a4d);
@@ -1042,6 +1109,7 @@ pub fn hle_module(dll: &str) -> u32 {
         deps: Vec::new(),
         pinned: false,
     });
+    drop(_making);
     ldr_add(base);
     base
 }
@@ -1075,6 +1143,15 @@ fn ldr_data() -> u32 {
         g.0 = d;
     }
     g.0
+}
+
+/// Frees the buffer of the UNICODE_STRING at `at` that ustr_at made (none yet: 0).
+fn ustr_free(at: u32) {
+    let b = mem::rp(at + mem::ps());
+    if b != 0 {
+        mem::heap_free(b);
+        mem::wp(at + mem::ps(), 0);
+    }
 }
 
 fn ustr_at(at: u32, s: &str) {
@@ -1141,6 +1218,10 @@ fn ldr_remove(base: u32) {
         mem::wp(prev, next);
         mem::wp(next + ps, prev);
     }
+    // (the entry's FullDllName and BaseDllName buffers go with it)
+    let (full, basen) = if ps == 8 { (72, 88) } else { (36, 44) };
+    ustr_free(e + full);
+    ustr_free(e + basen);
     mem::heap_free(e);
 }
 
@@ -1150,6 +1231,8 @@ pub fn ldr_update(base: u32) {
     let Some((path, redirected)) = with(base, |m| (m.path.clone(), m.redirected)) else { return };
     let ps = mem::ps();
     let (full, basen, flags) = if ps == 8 { (72, 88, 104) } else { (36, 44, 52) };
+    ustr_free(e + full);
+    ustr_free(e + basen);
     ustr_at(e + full, &path);
     ustr_at(e + basen, path.rsplit('\\').next().unwrap_or(&path));
     let f = r32(e + flags) & !LDR_REDIRECTED;
@@ -1234,8 +1317,32 @@ fn is_system_dir(d: &str) -> bool {
 }
 
 
-fn resolve_import(dll: &str, imp: Import) -> u32 {
-    let hle = api::is_core(dll) || (api::is_system(dll) && find_dll_file(dll).is_none());
+/// Whether imports from `dll` bind to sake's own DLL, the search for a vendor's copy of a
+/// system-named DLL done once per DLL name and image being loaded (it is asked per symbol: an
+/// exe importing 300 functions from its own msvcr100.dll searched the folders 300 times).
+fn imports_hle(seen: &mut HashMap<String, bool>, dll: &str, find: impl FnOnce() -> bool) -> bool {
+    if api::is_core(dll) {
+        return true;
+    }
+    if !api::is_system(dll) {
+        return false;
+    }
+    if let Some(&h) = seen.get(dll) {
+        return h;
+    }
+    let h = !find();
+    seen.insert(dll.to_string(), h);
+    h
+}
+
+/// The import resolver for one image: resolve_import with that image's searches remembered.
+fn image_resolver() -> impl FnMut(&str, Import) -> u32 {
+    let mut seen = HashMap::default();
+    move |dll, imp| resolve_import_with(&mut seen, dll, imp)
+}
+
+fn resolve_import_with(seen: &mut HashMap<String, bool>, dll: &str, imp: Import) -> u32 {
+    let hle = imports_hle(seen, dll, || find_dll_file(dll).is_some());
     if hle {
         let name = match imp {
             Import::Name(n) => n.to_string(),
@@ -1252,9 +1359,7 @@ fn resolve_import(dll: &str, imp: Import) -> u32 {
         None => match load_dll_file(dll) {
             Ok(b) => {
                 // (its one reference is the importer's, counted once the importer is loaded)
-                if let Some(i) = by_base(b) {
-                    MODULES.write().unwrap()[i].refs = 0;
-                }
+                with_mut(b, |m| m.refs = 0);
                 b
             }
             Err(e) => {
@@ -1361,7 +1466,7 @@ fn load_dll_file(dll: &str) -> Result<u32, String> {
     if crate::env_on!("SAKE_TRACE_LOAD") {
         eprintln!("sake: loading {win} ({} bytes)", data.len());
     }
-    let base = load(&data, &win, &mut resolve_import)?;
+    let base = load(data, &win, &mut image_resolver())?;
     crate::vorbis_hook::patch(base, with(base, |m| m.size).unwrap_or(0));
     crate::unity6::patch(&win, base, with(base, |m| m.size).unwrap_or(0));
     tls_module(base);
@@ -1374,13 +1479,11 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
     let _g = loader_lock();
     let key = api::dll_key(name);
     if let Some((b, path)) = sxs_module(name) {
-        if let Some(i) = by_base(b).filter(|_| b != 0) {
-            MODULES.write().unwrap()[i].refs += 1;
+        if b != 0 && with_mut(b, |m| m.refs += 1).is_some() {
             return b;
         }
         if let Ok(b) = load_dll_file(&path) {
-            if let Some(i) = by_base(b) {
-                MODULES.write().unwrap()[i].redirected = true;
+            if with_mut(b, |m| m.redirected = true).is_some() {
                 ldr_update(b);
             }
             init_dlls(cpu);
@@ -1394,9 +1497,7 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
         None => by_name(name),
     };
     if let Some(b) = loaded {
-        if let Some(i) = by_base(b) {
-            reload_if_freed(i);
-        }
+        reload_if_freed(b);
         return b;
     }
     let file = if qualified { at } else { find_dll_file(name) };
@@ -1413,8 +1514,7 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
         let b = hle_module(&key);
         // (a system assembly's DLL, the Visual C++ runtime's: from its WinSxS folder)
         if let Some(p) = crate::actctx::builtin_dll_path(name) {
-            if let Some(i) = by_base(b) {
-                MODULES.write().unwrap()[i].path = p;
+            if with_mut(b, |m| m.path = p).is_some() {
                 ldr_update(b);
             }
         }
@@ -1436,7 +1536,7 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
 
 pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
     let data = kura::fs::read(host).map_err(|e| e.to_string())?;
-    let base = load(&data, win, &mut resolve_import)?;
+    let base = load(data, win, &mut image_resolver())?;
     // the main exe: the JIT translates its writable code too, checking stores into it
     let size = with(base, |m| m.size).unwrap_or(0);
     kura::jit::exe_image(base, size);
@@ -2046,5 +2146,234 @@ mod tls_index_tests {
                 prop_assert_eq!(u.len(), used.len());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+
+    /// A reader that counts the bytes it hands out.
+    struct Counting(Cursor<Vec<u8>>, usize);
+    impl Read for Counting {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.read(b)?;
+            self.1 += n;
+            Ok(n)
+        }
+    }
+    impl Seek for Counting {
+        fn seek(&mut self, p: SeekFrom) -> std::io::Result<u64> {
+            self.0.seek(p)
+        }
+    }
+    /// The whole-file check is_64bit_file made before (review b09: it read every DLL whole).
+    fn whole_file(d: &[u8]) -> bool {
+        let pe = d.get(0x3c..0x40).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
+        d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
+    }
+    fn image(machine: u16, lfanew: u32, len: usize) -> Vec<u8> {
+        let mut d = vec![0u8; len];
+        d[..2].copy_from_slice(b"MZ");
+        d[0x3c..0x40].copy_from_slice(&lfanew.to_le_bytes());
+        let p = lfanew as usize;
+        if p + 6 <= len {
+            d[p..p + 4].copy_from_slice(b"PE\0\0");
+            d[p + 4..p + 6].copy_from_slice(&machine.to_le_bytes());
+        }
+        d
+    }
+
+    /// An 8 MiB 64-bit DLL and a 32-bit one: the answer from 6 bytes of the file.
+    #[test]
+    fn machine_from_the_headers_only() {
+        for (m, x64) in [(0x8664u16, true), (0x14c, false)] {
+            let mut f = Counting(Cursor::new(image(m, 0xf8, 8 << 20)), 0);
+            assert_eq!(machine_is_x64(&mut f), x64);
+            assert_eq!(f.1, 6, "bytes read");
+        }
+        // (e_lfanew past the end, a file shorter than the DOS header)
+        assert!(!machine_is_x64(&mut Cursor::new(image(0x8664, 0x7fff_fff0, 0x100))));
+        assert!(!machine_is_x64(&mut Cursor::new(b"MZ".to_vec())));
+        // through kura's files, as the loader asks
+        let dir = std::env::temp_dir().join(format!("sake-pe-machine-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("x.dll");
+        std::fs::write(&p, image(0x8664, 0x80, 0x400)).unwrap();
+        assert!(is_64bit_file(p.to_str().unwrap()));
+        std::fs::write(&p, image(0x14c, 0x80, 0x400)).unwrap();
+        assert!(!is_64bit_file(p.to_str().unwrap()));
+        assert!(!is_64bit_file(dir.join("none.dll").to_str().unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// One search per DLL name however many symbols the image imports from it; DLLs sake has
+    /// no file for and non-system DLLs never searched.
+    #[test]
+    fn one_search_per_imported_dll() {
+        let mut seen = HashMap::default();
+        let mut searches = 0;
+        for _ in 0..300 {
+            assert!(!imports_hle(&mut seen, "msvcr100.dll", || {
+                searches += 1;
+                true
+            }));
+        }
+        assert_eq!(searches, 1);
+        assert!(imports_hle(&mut seen, "kernel32.dll", || unreachable!("a core DLL is sake's")));
+        assert!(!imports_hle(&mut seen, "gamelib_review.dll", || unreachable!("not a system name")));
+        assert!(imports_hle(&mut seen, "d3dx9_43.dll", || false));
+        assert!(imports_hle(&mut seen, "d3dx9_43.dll", || unreachable!()));
+    }
+
+    /// Base relocations as the loader applied them before, unbounded (the reference).
+    fn relocs_model(t: &[u8], size: u32) -> Vec<(u32, bool)> {
+        let r32 = |o: usize| t.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+        let r16 = |o: usize| t.get(o..o + 2).map_or(0, |b| u16::from_le_bytes(b.try_into().unwrap()));
+        let mut v = Vec::new();
+        let mut at = 0usize;
+        while at + 8 <= t.len() {
+            let (page, len) = (r32(at), r32(at + 4) as usize);
+            if len < 8 || at + len > t.len() {
+                break;
+            }
+            for k in 0..(len - 8) / 2 {
+                let e = r16(at + 8 + 2 * k);
+                let off = page as u64 + (e & 0xfff) as u64;
+                let w = match e >> 12 {
+                    3 => 4,
+                    10 => 8,
+                    _ => continue,
+                };
+                if off + w <= size as u64 {
+                    v.push((off as u32, w == 8));
+                }
+            }
+            at += len;
+        }
+        v
+    }
+    fn relocs(t: &[u8], size: u32) -> Vec<(u32, bool)> {
+        let r32 = |o: u32| t.get(o as usize..o as usize + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+        let r16 = |o: u32| t.get(o as usize..o as usize + 2).map_or(0, |b| u16::from_le_bytes(b.try_into().unwrap()) as u32);
+        let mut v = Vec::new();
+        reloc_targets(0, t.len() as u32, size, r32, r16, |o, w| v.push((o, w)));
+        v
+    }
+
+    /// A block claiming 0x7fff_fff8 bytes ends the table (it was ~2^30 entries over whatever
+    /// followed), and a fixup past SizeOfImage is not written.
+    #[test]
+    fn relocations_stay_in_the_table_and_image() {
+        let mut t = Vec::new();
+        t.extend_from_slice(&0x1000u32.to_le_bytes());
+        t.extend_from_slice(&12u32.to_le_bytes());
+        t.extend_from_slice(&0x3010u16.to_le_bytes());
+        t.extend_from_slice(&0x3ffeu16.to_le_bytes());
+        t.extend_from_slice(&0x2000u32.to_le_bytes());
+        t.extend_from_slice(&0x7fff_fff8u32.to_le_bytes());
+        t.extend_from_slice(&[0x30; 64]);
+        assert_eq!(relocs(&t, 0x2000), vec![(0x1010, false)], "0x1ffe + 4 bytes is past 0x2000");
+    }
+
+    proptest! {
+        /// Any table: the targets are the model's, each inside the image.
+        #[test]
+        fn relocations_match_the_model(t in proptest::collection::vec(any::<u8>(), 0..256), blocks in proptest::collection::vec((0u32..0x4000, 0u32..12, proptest::collection::vec(any::<u16>(), 0..8)), 0..4), size in 0u32..0x6000) {
+            // (well-formed blocks first, then noise)
+            let mut d = Vec::new();
+            for (page, extra, es) in blocks {
+                d.extend_from_slice(&page.to_le_bytes());
+                d.extend_from_slice(&(8 + 2 * es.len() as u32 + (extra & !1)).to_le_bytes());
+                for e in es { d.extend_from_slice(&e.to_le_bytes()); }
+                d.extend(std::iter::repeat(0).take((extra & !1) as usize));
+            }
+            d.extend_from_slice(&t);
+            let got = relocs(&d, size);
+            prop_assert_eq!(&got, &relocs_model(&d, size));
+            for (o, w) in got { let n: u64 = if w { 8 } else { 4 }; prop_assert!(o as u64 + n <= size as u64); }
+        }
+
+        /// The header-only machine check answers as the whole-file one did, for any bytes.
+        #[test]
+        fn machine_check_matches_whole_file(d in proptest::collection::vec(any::<u8>(), 0..0x200), lfanew in prop_oneof![0u32..0x200, any::<u32>()], m in prop_oneof![Just(0x8664u16), Just(0x14c), any::<u16>()]) {
+            let mut d = d;
+            if d.len() >= 0x40 {
+                d[0x3c..0x40].copy_from_slice(&lfanew.to_le_bytes());
+                let p = lfanew as usize;
+                if p + 6 <= d.len() { d[p + 4..p + 6].copy_from_slice(&m.to_le_bytes()); }
+            }
+            prop_assert_eq!(machine_is_x64(&mut Cursor::new(d.clone())), whole_file(&d));
+        }
+
+        /// by_name's case-blind match is the lower-cased copy's (base_name), with or without ".dll".
+        #[test]
+        fn name_match_is_base_names(m in "[a-z0-9_]{1,8}(\\.dll|\\.drv|)", n in "[a-zA-Z0-9_]{1,8}(\\.dll|\\.DLL|\\.drv|)") {
+            let lower = n.to_ascii_lowercase();
+            prop_assert_eq!(name_matches(&m, &n), m == lower || m.trim_end_matches(".dll") == lower);
+            prop_assert!(name_matches(&m, &m.to_ascii_uppercase()));
+        }
+
+        /// Sections and SizeOfProtect: what is written or protected never passes the image.
+        #[test]
+        fn room_is_inside_the_image(size in any::<u32>(), va in any::<u32>()) {
+            let n = image_room(size, va);
+            prop_assert!(va as u64 + n as u64 <= size as u64 || n == 0);
+        }
+    }
+
+    /// The LDR entry's two path strings go with it, and with each rename (ldr_update).
+    #[test]
+    fn loader_entry_strings_are_freed() {
+        let _g = crate::test_guest::enter();
+        let at = mem::heap_alloc(16, true);
+        ustr_at(at, "C:\\game\\plugin_review.dll");
+        let b = mem::rp(at + 4);
+        assert!(mem::heap_owns(b) && mem::heap_size(b) >= 2 * 26);
+        ustr_free(at);
+        assert_eq!(mem::rp(at + 4), 0);
+        assert!(!mem::heap_free(b), "the buffer was freed already");
+        // (none yet: nothing freed)
+        ustr_free(at);
+        mem::heap_free(at);
+    }
+
+    /// Two threads asking for one of sake's DLLs at once (every thread start does) get one image.
+    #[test]
+    fn hle_module_made_once_under_a_race() {
+        let _g = crate::test_guest::enter();
+        let bases: Vec<u32> = (0..8).map(|_| std::thread::spawn(|| hle_module("review_race_dll"))).collect::<Vec<_>>().into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(bases.iter().all(|&b| b == bases[0] && b != 0), "{bases:x?}");
+        assert_eq!(MODULES.read().unwrap().iter().filter(|m| m.name == "review_race_dll.dll").count(), 1);
+    }
+}
+
+/// Kani (formal/kani.sh): for every table of up to 3 blocks over any image size, every fixup
+/// reloc_targets hands out lies inside the image and inside the table's blocks.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn relocation_fixups_stay_in_the_image() {
+        let t: [u8; 24] = kani::any();
+        let size: u32 = kani::any();
+        let n: u32 = kani::any();
+        kani::assume(n <= 24);
+        let r32 = |o: u32| if o as usize + 4 <= n as usize { u32::from_le_bytes(t[o as usize..o as usize + 4].try_into().unwrap()) } else { 0 };
+        let r16 = |o: u32| if o as usize + 2 <= n as usize { u16::from_le_bytes(t[o as usize..o as usize + 2].try_into().unwrap()) as u32 } else { 0 };
+        reloc_targets(0, n, size, r32, r16, |o, w| {
+            assert!(o as u64 + if w { 8 } else { 4 } <= size as u64);
+        });
+    }
+
+    #[kani::proof]
+    fn section_bytes_stay_in_the_image() {
+        let (size, va): (u32, u32) = (kani::any(), kani::any());
+        let n = image_room(size, va);
+        assert!(n == 0 || va as u64 + n as u64 <= size as u64);
     }
 }

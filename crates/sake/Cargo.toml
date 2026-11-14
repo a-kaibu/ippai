@@ -52,3 +52,6 @@ ippai-tls = { path = "../tls-client" }
 naga = { version = "30", features = ["wgsl-in"] }
 proptest = "1"
 idna_ref = { package = "idna", version = "1" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

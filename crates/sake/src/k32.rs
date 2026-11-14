@@ -431,6 +431,9 @@ pub fn exit_thread(code: u32) -> ! {
     crate::apc::forget(t.tid);
     crate::ws2name::thread_exit(t.tid);
     SUSPENDS.forget(t.tid);
+    // (what modules keep by thread id: a later thread with the id starts clean)
+    crate::msvcp_thr::thread_gone(t.tid);
+    crate::nt::thread_gone(t.tid);
     // (out of the running threads and its TLS blocks freed, under the loader lock: a DLL
     // loading meanwhile gives every running thread a block)
     crate::pe::thread_tls_exit(t.teb);
@@ -2283,6 +2286,11 @@ pub(crate) fn srw_try(l: u32, shared: bool) -> bool {
 }
 pub(crate) fn srw_acquire(l: u32, shared: bool) {
     SYNC.srw_acquire(atomic(l), shared, &Pause)
+}
+/// srw_acquire for at most `ms` milliseconds: whether it got the lock.
+pub(crate) fn srw_acquire_for(l: u32, shared: bool, ms: u32) -> bool {
+    let end = std::time::Instant::now() + std::time::Duration::from_millis(ms as u64);
+    SYNC.srw_acquire_until(atomic(l), shared, &Pause, || Some(end.saturating_duration_since(std::time::Instant::now()).as_nanos().div_ceil(1_000_000) as u64))
 }
 pub(crate) fn srw_release(l: u32, shared: bool) {
     SYNC.srw_release(atomic(l), shared)

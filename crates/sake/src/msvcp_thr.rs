@@ -107,18 +107,8 @@ fn mtx_lock(m: u32, wait: Wait) -> u32 {
                 true
             }
             Wait::Try | Wait::Ms(0) => srw_try(m + LOCK(), false),
-            Wait::Ms(ms) => {
-                let end = std::time::Instant::now() + std::time::Duration::from_millis(ms as u64);
-                loop {
-                    if srw_try(m + LOCK(), false) {
-                        break true;
-                    }
-                    if std::time::Instant::now() >= end {
-                        break false;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
+            // (a wait on the lock word with a deadline, woken by the release)
+            Wait::Ms(ms) => crate::k32::srw_acquire_for(m + LOCK(), false, ms),
         };
     if got {
         if me {
@@ -285,6 +275,11 @@ fn _Cnd_unregister_at_thread_exit(c: &mut Ctx) -> u32 {
     AT_EXIT.lock().unwrap().retain(|e| e.2 != m);
     0
 }
+/// A thread ended without its CRT's exit (TerminateThread, ExitThread): its registrations go
+/// without running, as on Windows (they waited for a thread id that a later thread could get).
+pub fn thread_gone(tid: u32) {
+    AT_EXIT.lock().unwrap().retain(|e| e.0 != tid);
+}
 /// At the thread's exit: each registration's flag set, its mutex unlocked, its waiters woken.
 fn _Cnd_do_broadcast_at_thread_exit(_: &mut Ctx) -> u32 {
     let me = tid();
@@ -333,9 +328,11 @@ fn _Thrd_join(c: &mut Ctx) -> u32 {
     }
     if res != 0 {
         let code = mem::heap_alloc(4, true);
-        k32(c, "GetExitCodeThread", &[h, code]);
-        w32(res, r32(code));
-        mem::heap_free(code);
+        if code != 0 {
+            k32(c, "GetExitCodeThread", &[h, code]);
+            w32(res, r32(code));
+            mem::heap_free(code);
+        }
     }
     k32(c, "CloseHandle", &[h]);
     SUCCESS
@@ -496,8 +493,74 @@ fn eptr_create(c: &mut Ctx) -> u32 {
     wp(c.a(0) + ps(), 0);
     0
 }
+// An exception_ptr is {record, its reference count}: the count a word just past sake's
+// records (RECORD() + 4 bytes); the last Destroy frees the record (it was never freed:
+// std::async / promise::set_exception / PPL tasks made one per exception for good).
+
+/// The count word of the exception_ptr at `p` when it holds a record of sake's (0: none).
+fn eptr_count(p: u32) -> u32 {
+    let (rec, cnt) = (rp(p), rp(p + ps()));
+    if rec != 0 && cnt == rec.wrapping_add(RECORD()) { cnt } else { 0 }
+}
+fn eptr_ref(p: u32) {
+    let k = eptr_count(p);
+    if k != 0 {
+        w32(k, r32(k) + 1);
+    }
+}
+fn eptr_unref(p: u32) {
+    let k = eptr_count(p);
+    if k == 0 {
+        return;
+    }
+    let n = r32(k).saturating_sub(1);
+    w32(k, n);
+    if n == 0 {
+        free_record(rp(p));
+    }
+}
+/// `d` holds record `rec` (made with its one reference), or nothing.
+fn eptr_set(d: u32, rec: u32) {
+    wp(d, rec);
+    wp(d + ps(), if rec != 0 { rec + RECORD() } else { 0 });
+}
+#[cfg(test)]
+static LIVE_RECORDS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+fn free_record(rec: u32) {
+    #[cfg(test)]
+    LIVE_RECORDS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    mem::heap_free(rec);
+}
+/// A record block (RECORD() bytes and the count, 1), 0 when the guest heap is full.
+fn alloc_record() -> u32 {
+    let rec = mem::heap_alloc(RECORD() + 4, true);
+    if rec != 0 {
+        w32(rec + RECORD(), 1);
+        #[cfg(test)]
+        LIVE_RECORDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    rec
+}
+/// __ExceptionPtrDestroy
+fn eptr_destroy(c: &mut Ctx) -> u32 {
+    eptr_unref(c.a(0));
+    0
+}
+/// __ExceptionPtrCopy (the copy constructor: `d` holds nothing yet)
 fn eptr_copy(c: &mut Ctx) -> u32 {
     let (d, s) = (c.a(0), c.a(1));
+    mem::copy(d, s, 2 * ps());
+    eptr_ref(d);
+    0
+}
+/// __ExceptionPtrAssign: `d` lets its record go and shares `s`'s
+fn eptr_assign(c: &mut Ctx) -> u32 {
+    let (d, s) = (c.a(0), c.a(1));
+    if d == s {
+        return 0;
+    }
+    eptr_ref(s);
+    eptr_unref(d);
     mem::copy(d, s, 2 * ps());
     0
 }
@@ -514,9 +577,13 @@ fn eptr_swap(c: &mut Ctx) -> u32 {
     mem::write(b, &t);
     0
 }
-/// A C++ exception's record (x64: its image base the fourth parameter).
+/// A C++ exception's record (x64: its image base the fourth parameter); 0 when the guest heap
+/// is full (it wrote the record over address 0 and the exception_ptr said it held one).
 fn new_record(obj: u64, ti: u32) -> u32 {
-    let rec = mem::heap_alloc(RECORD(), true);
+    let rec = alloc_record();
+    if rec == 0 {
+        return 0;
+    }
     w32(rec, 0xe06d_7363);
     w32(rec + 4, 1);
     if x64() {
@@ -539,15 +606,16 @@ fn eptr_current(c: &mut Ctx) -> u32 {
     let copy = if x64() {
         let rec = crate::cxx64::current_record();
         (rec != 0).then(|| {
-            let copy = mem::heap_alloc(RECORD(), true);
-            mem::copy(copy, rec, RECORD());
+            let copy = alloc_record();
+            if copy != 0 {
+                mem::copy(copy, rec, RECORD());
+            }
             copy
         })
     } else {
         crate::cxx::current().map(|(obj, ti)| new_record(obj as u64, ti))
     };
-    wp(d, copy.unwrap_or(0));
-    wp(d + ps(), copy.is_some() as u32);
+    eptr_set(d, copy.unwrap_or(0));
     0
 }
 /// __ExceptionPtrRethrow(src): the C++ exception again (its object and ThrowInfo)
@@ -568,8 +636,7 @@ fn eptr_rethrow(c: &mut Ctx) -> u32 {
 /// __ExceptionPtrCopyException(dst, object, ThrowInfo): make_exception_ptr's
 fn eptr_copy_exception(c: &mut Ctx) -> u32 {
     let (d, obj, ti) = (c.a(0), if x64() { c.a64(1) } else { c.a(1) as u64 }, c.a(2));
-    wp(d, new_record(obj, ti));
-    wp(d + ps(), 1);
+    eptr_set(d, new_record(obj, ti));
     0
 }
 
@@ -745,9 +812,9 @@ pub fn init() {
         ("?ReportUnhandledError@_ExceptionHolder@details@Concurrency@@AEAAXXZ", unhandled),
         ("?_IsNonBlockingThread@_Task_impl_base@details@Concurrency@@SA_NXZ", nothing),
         ("?__ExceptionPtrCreate@@YAXPEAX@Z", eptr_create),
-        ("?__ExceptionPtrDestroy@@YAXPEAX@Z", nothing),
+        ("?__ExceptionPtrDestroy@@YAXPEAX@Z", eptr_destroy),
         ("?__ExceptionPtrCopy@@YAXPEAXPEBX@Z", eptr_copy),
-        ("?__ExceptionPtrAssign@@YAXPEAXPEBX@Z", eptr_copy),
+        ("?__ExceptionPtrAssign@@YAXPEAXPEBX@Z", eptr_assign),
         ("?__ExceptionPtrToBool@@YA_NPEBX@Z", eptr_to_bool),
         ("?__ExceptionPtrCompare@@YA_NPEBX0@Z", eptr_compare),
         ("?__ExceptionPtrSwap@@YAXPEAX0@Z", eptr_swap),
@@ -792,5 +859,78 @@ mod tests {
         for &(e, n) in want {
             assert_eq!(winerror_errno(e), n, "error {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod eptr_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        /// Four exception_ptr variables and the calls msvcp's inline code makes on them
+        /// (make_exception_ptr, the copy constructor into a fresh one, operator=, swap, the
+        /// destructor) in any order, against a model of shared ownership: each holds the
+        /// model's record, and a record is freed exactly when its last holder lets it go.
+        #[test]
+        fn records_live_while_held(ops in proptest::collection::vec((0u8..5, 0usize..4, 0usize..4), 1..60)) {
+            let _g = enter();
+            let start = LIVE_RECORDS.load(Relaxed);
+            let vars = mem::heap_alloc(32, true);
+            let v = |i: usize| vars + 8 * i as u32;
+            // (model: which record each holds, by a number of the model's; None: empty)
+            let mut holds: [Option<u32>; 4] = [None; 4];
+            let mut made = 0u32;
+            let mut ti = 0x1000u32;
+            for (op, a, b) in ops {
+                match op {
+                    0 => {
+                        // (a fresh exception_ptr gets the new one: the old value destroyed first)
+                        call(eptr_destroy, &[v(a)]);
+                        ti += 4;
+                        call(eptr_copy_exception, &[v(a), 0x4000, ti]);
+                        made += 1;
+                        holds[a] = Some(ti);
+                    }
+                    // (a copy constructed from itself is no C++)
+                    1 if a != b => {
+                        call(eptr_destroy, &[v(a)]);
+                        call(eptr_copy, &[v(a), v(b)]);
+                        holds[a] = holds[b];
+                    }
+                    1 => {}
+                    2 => { call(eptr_assign, &[v(a), v(b)]); holds[a] = holds[b]; }
+                    3 => { call(eptr_swap, &[v(a), v(b)]); holds.swap(a, b); }
+                    _ => { call(eptr_destroy, &[v(a)]); call(eptr_create, &[v(a)]); holds[a] = None; }
+                }
+                for i in 0..4 {
+                    let rec = mem::rp(v(i));
+                    prop_assert_eq!(call(eptr_to_bool, &[v(i)]) != 0, holds[i].is_some());
+                    if let Some(t) = holds[i] { prop_assert_eq!(param(rec, 2), t, "var {}", i); }
+                }
+                let mut live: Vec<u32> = holds.iter().flatten().copied().collect();
+                live.sort();
+                live.dedup();
+                prop_assert_eq!(LIVE_RECORDS.load(Relaxed) - start, live.len() as i64, "records alive");
+            }
+            for i in 0..4 { call(eptr_destroy, &[v(i)]); }
+            prop_assert_eq!(LIVE_RECORDS.load(Relaxed), start);
+            prop_assert!(made > 0 || true);
+            mem::heap_free(vars);
+        }
+    }
+
+    /// A registration of a thread that ended without its CRT's exit is dropped, not run.
+    #[test]
+    fn registrations_of_an_ended_thread_go() {
+        AT_EXIT.lock().unwrap().push((0x7777, 1, 2, 3));
+        AT_EXIT.lock().unwrap().push((0x7778, 1, 2, 3));
+        thread_gone(0x7777);
+        let left: Vec<u32> = AT_EXIT.lock().unwrap().iter().map(|e| e.0).filter(|&t| t >= 0x7777 && t <= 0x7778).collect();
+        assert_eq!(left, vec![0x7778]);
+        thread_gone(0x7778);
     }
 }

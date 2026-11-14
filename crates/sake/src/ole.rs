@@ -44,15 +44,35 @@ fn no_locks(_: &mut Ctx) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// IStream: {vtbl, hglobal, size, pos, delete on release, -, -, refs}
+// IStream: {vtbl, memory, -, pos, -, -, -, refs}; its memory, shared with its clones (as
+// Windows' HGLOBAL streams share it: a write through one is seen by the others, the HGLOBAL
+// goes with the last of them): {hglobal, size, delete on release, refs}
+
+const STG_E_MEDIUMFULL: u32 = 0x8003_0070;
+
+fn hg(this: u32) -> u32 {
+    r32(r32(this + 4))
+}
+fn size_of(this: u32) -> u32 {
+    r32(r32(this + 4) + 4)
+}
+fn set_size(this: u32, n: u32) {
+    w32(r32(this + 4) + 4, n)
+}
 
 fn s_release(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let n = r32(this + 28).saturating_sub(1);
     w32(this + 28, n);
     if n == 0 {
-        if r32(this + 16) != 0 && r32(this + 4) != 0 {
-            crate::k32::global_free(r32(this + 4));
+        let m = r32(this + 4);
+        let left = r32(m + 12).saturating_sub(1);
+        w32(m + 12, left);
+        if left == 0 {
+            if r32(m + 8) != 0 && r32(m) != 0 {
+                crate::k32::global_free(r32(m));
+            }
+            mem::heap_free(m);
         }
         mem::heap_free(this);
     }
@@ -60,7 +80,7 @@ fn s_release(c: &mut Ctx) -> u32 {
 }
 fn s_read(c: &mut Ctx) -> u32 {
     let (this, pv, cb, got) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let (h, size, pos) = (r32(this + 4), r32(this + 8), r32(this + 12));
+    let (h, size, pos) = (hg(this), size_of(this), r32(this + 12));
     let n = cb.min(size.saturating_sub(pos));
     if n > 0 {
         mem::copy(pv, crate::k32::global_ptr(h) + pos, n);
@@ -72,17 +92,19 @@ fn s_read(c: &mut Ctx) -> u32 {
 }
 fn s_write(c: &mut Ctx) -> u32 {
     let (this, pv, cb, done) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let (size, pos) = (r32(this + 8), r32(this + 12));
-    let end = pos + cb;
+    let (size, pos) = (size_of(this), r32(this + 12));
+    // (past 4 GiB: a position near the end and a large count wrapped to a small end, and the
+    // copy went past the HGLOBAL)
+    let Some(end) = pos.checked_add(cb) else { return STG_E_MEDIUMFULL };
     if end > size {
         // (room for twice as much: writes in small pieces stay linear)
-        let h = r32(this + 4);
-        if (crate::k32::global_ptr(h) == 0 || end > crate::k32::global_size(h)) && !grow(this, end.saturating_mul(2).max(64)) {
+        let h = hg(this);
+        if (crate::k32::global_ptr(h) == 0 || end > crate::k32::global_size(h)) && !grow(this, end.saturating_mul(2).max(64)) && !grow(this, end) {
             return E_OUTOFMEMORY;
         }
-        w32(this + 8, end);
+        set_size(this, end);
     }
-    mem::copy(crate::k32::global_ptr(r32(this + 4)) + pos, pv, cb);
+    mem::copy(crate::k32::global_ptr(hg(this)) + pos, pv, cb);
     w32(this + 12, end);
     put32(done, cb);
     0
@@ -94,7 +116,7 @@ fn s_seek(c: &mut Ctx) -> u32 {
     let base = match origin {
         0 => 0,
         1 => r32(this + 12) as i64,
-        2 => r32(this + 8) as i64,
+        2 => size_of(this) as i64,
         _ => -1,
     };
     let p = base + mv as i64;
@@ -113,19 +135,19 @@ fn s_set_size(c: &mut Ctx) -> u32 {
     if !grow(this, n) {
         return E_OUTOFMEMORY;
     }
-    w32(this + 8, n);
+    set_size(this, n);
     0
 }
 /// Makes the stream's HGLOBAL hold at least `n` bytes (GlobalReAlloc, GMEM_MOVEABLE: a
 /// moveable handle stays, a fixed block may move); false: no memory
 fn grow(this: u32, n: u32) -> bool {
-    let h = r32(this + 4);
+    let h = hg(this);
     if crate::k32::global_ptr(h) != 0 && n <= crate::k32::global_size(h) {
         return true;
     }
     let g = crate::k32::global_realloc(h, n, 2 | 0x40, true);
     if g != 0 {
-        w32(this + 4, g);
+        w32(r32(this + 4), g);
     }
     g != 0
 }
@@ -135,14 +157,14 @@ fn s_stat(c: &mut Ctx) -> u32 {
     let ps = mem::ps();
     mem::fill(p, 64 + 2 * ps, 0);
     w32(p + ps, 2); // STGTY_STREAM
-    w32(p + 2 * ps, r32(this + 8));
+    w32(p + 2 * ps, size_of(this));
     0
 }
 /// CopyTo(this, dest, ULARGE_INTEGER cb, read*, written*): through the destination's Write
 fn s_copy_to(c: &mut Ctx) -> u32 {
     let (this, dst, cb, rd, wr) =
         if mem::x64() { (c.a(0), c.a(1), c.a64(2), c.a(3), c.a(4)) } else { (c.a(0), c.a(1), (c.a(3) as u64) << 32 | c.a(2) as u64, c.a(4), c.a(5)) };
-    let (h, size, pos) = (r32(this + 4), r32(this + 8), r32(this + 12));
+    let (h, size, pos) = (hg(this), size_of(this), r32(this + 12));
     let n = (cb.min(size.saturating_sub(pos) as u64)) as u32;
     let done = mem::heap_alloc(4, true);
     // (IStream::Write is the 5th method)
@@ -161,8 +183,17 @@ fn s_copy_to(c: &mut Ctx) -> u32 {
 }
 fn s_clone(c: &mut Ctx) -> u32 {
     let (this, out) = (c.a(0), c.a(1));
-    let o = new_stream(r32(this + 4), r32(this + 8), false);
+    let m = r32(this + 4);
+    let o = mem::heap_alloc(32, true);
+    if o == 0 {
+        put32(out, 0);
+        return E_OUTOFMEMORY;
+    }
+    w32(o, stream_vtbl());
+    w32(o + 4, m);
     w32(o + 12, r32(this + 12));
+    w32(o + 28, 1);
+    w32(m + 12, r32(m + 12) + 1);
     put32(out, o);
     0
 }
@@ -192,12 +223,20 @@ fn stream_vtbl() -> u32 {
     })
 }
 
+/// A stream over HGLOBAL `h` holding `size` bytes; 0 when the heap is full.
 fn new_stream(h: u32, size: u32, del: bool) -> u32 {
-    let o = mem::heap_alloc(32, true);
+    let (o, m) = (mem::heap_alloc(32, true), mem::heap_alloc(16, true));
+    if o == 0 || m == 0 {
+        mem::heap_free(o);
+        mem::heap_free(m);
+        return 0;
+    }
+    w32(m, h);
+    w32(m + 4, size);
+    w32(m + 8, del as u32);
+    w32(m + 12, 1);
     w32(o, stream_vtbl());
-    w32(o + 4, h);
-    w32(o + 8, size);
-    w32(o + 16, del as u32);
+    w32(o + 4, m);
     w32(o + 28, 1);
     o
 }
@@ -209,24 +248,39 @@ fn CreateStreamOnHGlobal(c: &mut Ctx) -> u32 {
     }
     // (no HGLOBAL: a new moveable one, empty, as Windows)
     let (h, size) = if h == 0 { (crate::k32::global_alloc(2 | 0x2000, 0), 0) } else { (h, crate::k32::global_size(h)) };
-    mem::wp(out, new_stream(h, size, del != 0 || c.a(0) == 0));
+    let s = if h != 0 { new_stream(h, size, del != 0 || c.a(0) == 0) } else { 0 };
+    mem::wp(out, s);
+    if s == 0 {
+        if c.a(0) == 0 && h != 0 {
+            crate::k32::global_free(h);
+        }
+        return E_OUTOFMEMORY;
+    }
     0
 }
 /// SHCreateMemStream(data, size): an IStream over a copy of the data.
 fn SHCreateMemStream(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
     let h = crate::k32::global_alloc(0x40, n.max(64));
-    if p != 0 && n != 0 {
-        mem::write(h, &mem::slice(p, n));
+    // (no memory: NULL, as Windows; the copy went to address 0 and the stream over handle 0)
+    if h == 0 {
+        return 0;
     }
-    new_stream(h, if p != 0 { n } else { 0 }, true)
+    if p != 0 && n != 0 {
+        mem::copy(h, p, n);
+    }
+    let s = new_stream(h, if p != 0 { n } else { 0 }, true);
+    if s == 0 {
+        crate::k32::global_free(h);
+    }
+    s
 }
 fn GetHGlobalFromStream(c: &mut Ctx) -> u32 {
     let (s, out) = (c.a(0), c.a(1));
     if r32(s) != stream_vtbl() {
         return E_FAIL;
     }
-    mem::wp(out, r32(s + 4));
+    mem::wp(out, hg(s));
     0
 }
 
@@ -327,6 +381,9 @@ pub fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     crate::picture::decode_bgra(data)
 }
 
+/// The most bytes OleLoadPicture reads from a stream of unknown size.
+const PICTURE_BYTES_MAX: usize = 256 << 20;
+
 fn OleLoadPicture(c: &mut Ctx) -> u32 {
     let (stm, size, out) = (c.a(0), c.a(1), c.a(4));
     put32(out, 0);
@@ -342,9 +399,11 @@ fn OleLoadPicture(c: &mut Ctx) -> u32 {
         }
         w32(got, 0);
         c.call(read, &[stm, buf, want, got]);
-        let n = r32(got);
+        // (a Read claiming more than it was asked for read no more than the buffer; a stream
+        // that never ends stops at what a picture can be)
+        let n = r32(got).min(want);
         data.extend_from_slice(mem::slice(buf, n));
-        if n < want {
+        if n < want || data.len() >= PICTURE_BYTES_MAX {
             break;
         }
     }
@@ -473,6 +532,137 @@ mod proptests {
             if let Some((w, h, px)) = decode(&d) {
                 prop_assert_eq!(px.len(), w as usize * h as usize * 4);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    fn create() -> u32 {
+        let out = mem::heap_alloc(4, true);
+        assert_eq!(call(CreateStreamOnHGlobal, &[0, 1, out]), 0);
+        let s = r32(out);
+        mem::heap_free(out);
+        s
+    }
+    fn write(s: u32, data: &[u8]) -> u32 {
+        let (p, done) = (mem::heap_alloc(data.len() as u32 + 1, false), mem::heap_alloc(4, true));
+        mem::write(p, data);
+        let hr = call(s_write, &[s, p, data.len() as u32, done]);
+        mem::heap_free(p);
+        mem::heap_free(done);
+        hr
+    }
+    fn read(s: u32, n: u32) -> Vec<u8> {
+        let (p, got) = (mem::heap_alloc(n + 1, true), mem::heap_alloc(4, true));
+        assert_eq!(call(s_read, &[s, p, n, got]), 0);
+        let v = mem::slice(p, r32(got)).to_vec();
+        mem::heap_free(p);
+        mem::heap_free(got);
+        v
+    }
+    fn seek(s: u32, to: u32) {
+        assert_eq!(call(s_seek, &[s, to, 0, 0, 0]), 0);
+    }
+    fn clone(s: u32) -> u32 {
+        let out = mem::heap_alloc(4, true);
+        assert_eq!(call(s_clone, &[s, out]), 0);
+        let c = r32(out);
+        mem::heap_free(out);
+        c
+    }
+
+    /// A write at a position near 4 GiB is STG_E_MEDIUMFULL: `pos + cb` wrapped below the
+    /// size and the bytes went past the HGLOBAL into the heap.
+    #[test]
+    fn write_past_4g_is_medium_full() {
+        let _g = enter();
+        let s = create();
+        assert_eq!(write(s, b"abcd"), 0);
+        seek(s, 0xffff_fffe);
+        assert_eq!(write(s, b"wxyz"), STG_E_MEDIUMFULL);
+        assert_eq!(size_of(s), 4);
+        assert_eq!(call(s_release, &[s]), 0);
+    }
+
+    /// The original released first (it owns the HGLOBAL): its clone still reads the bytes,
+    /// and a write through the clone that moves the block is seen by... the clone alone left.
+    #[test]
+    fn clone_outlives_its_original() {
+        let _g = enter();
+        let s = create();
+        assert_eq!(write(s, b"hello"), 0);
+        let c = clone(s);
+        assert_eq!(call(s_release, &[s]), 0);
+        seek(c, 0);
+        assert_eq!(read(c, 16), b"hello");
+        assert_eq!(write(c, &[7; 5000]), 0);
+        seek(c, 0);
+        assert_eq!(&read(c, 5)[..], b"hello");
+        assert_eq!(call(s_release, &[c]), 0);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Against a model (one byte vector shared by every clone, a position each): any
+        /// writes, reads, seeks, SetSize, clones and releases, in any order, read back the
+        /// model's bytes and sizes, and the HGLOBAL goes with the last stream.
+        #[test]
+        fn clones_share_one_memory(ops in proptest::collection::vec((0u8..6, 0usize..4, 0u32..300, any::<u8>()), 1..60)) {
+            let _g = enter();
+            crate::test_guest::guest_thread();
+            let first = create();
+            let h = hg(first);
+            let mut streams = vec![(first, 0u32)];
+            let mut model: Vec<u8> = Vec::new();
+            for (op, which, n, b) in ops {
+                if streams.is_empty() { break; }
+                let i = which % streams.len();
+                let (s, pos) = streams[i];
+                match op {
+                    0 => {
+                        let data: Vec<u8> = (0..n).map(|k| b.wrapping_add(k as u8)).collect();
+                        prop_assert_eq!(write(s, &data), 0);
+                        let end = pos as usize + data.len();
+                        if end > model.len() {
+                            // (a gap a write past the end opens holds what the memory held: the
+                            // API leaves it undefined)
+                            let old = model.len();
+                            model.resize(end, 0);
+                            let p = crate::k32::global_ptr(hg(s));
+                            if pos as usize > old { model[old..pos as usize].copy_from_slice(mem::slice(p + old as u32, pos - old as u32)); }
+                        }
+                        model[pos as usize..end].copy_from_slice(&data);
+                        streams[i].1 = end as u32;
+                    }
+                    1 => {
+                        let got = read(s, n);
+                        let lo = (pos as usize).min(model.len());
+                        let want = &model[lo..(lo + n as usize).min(model.len())];
+                        prop_assert_eq!(&got[..], want);
+                        streams[i].1 = pos + want.len() as u32;
+                    }
+                    2 => { seek(s, n); streams[i].1 = n; }
+                    3 => {
+                        prop_assert_eq!(call(s_set_size, &[s, n, 0]), 0);
+                        model.resize(n as usize, 0);
+                        // (the bytes past a shrink are not the model's to say: written as zeros)
+                        let p = crate::k32::global_ptr(hg(s));
+                        mem::write(p, &model);
+                    }
+                    4 => { let c = clone(s); streams.push((c, pos)); }
+                    _ => { call(s_release, &[s]); streams.remove(i); }
+                }
+                for &(s, _) in &streams { prop_assert_eq!(size_of(s) as usize, model.len()); }
+            }
+            for (s, _) in streams { call(s_release, &[s]); }
+            // (the HGLOBAL went with the last stream)
+            prop_assert_eq!(crate::k32::global_free(h), h, "the HGLOBAL is still a handle");
         }
     }
 }

@@ -358,11 +358,21 @@ impl Sync {
 
     /// AcquireSRWLockShared / Exclusive.
     pub fn srw_acquire(&self, a: &AtomicU32, shared: bool, h: &impl Host) {
+        self.srw_acquire_until(a, shared, h, || None);
+    }
+
+    /// srw_acquire giving up once `left` (the milliseconds left, None: no limit) says 0:
+    /// false then, with no mark of it left in the word (_Mtx_timedlock: it polled srw_try with
+    /// 1 ms sleeps, a thousand wakeups a second for each waiting thread).
+    pub fn srw_acquire_until(&self, a: &AtomicU32, shared: bool, h: &impl Host, left: impl Fn() -> Option<u64>) -> bool {
         for _ in 0..SPINS {
             if Self::srw_try(a, shared) {
-                return;
+                return true;
             }
             spin();
+        }
+        if left() == Some(0) {
+            return false;
         }
         let p = self.park(key(a));
         let mut g = relock(&p.lock);
@@ -392,9 +402,21 @@ impl Sync {
                 mark(true);
                 continue;
             }
-            g = nap(&p.cv, g, SAFETY_MS);
+            let ms = match left() {
+                Some(0) => {
+                    // (readers held back by this writer's mark may go now)
+                    mark(false);
+                    p.cv.notify_all();
+                    self.srw_waiters.fetch_sub(1, SeqCst);
+                    return false;
+                }
+                Some(ms) => ms.min(SAFETY_MS),
+                None => SAFETY_MS,
+            };
+            g = nap(&p.cv, g, ms);
         }
         self.srw_waiters.fetch_sub(1, SeqCst);
+        true
     }
 
     /// ReleaseSRWLockShared / Exclusive.

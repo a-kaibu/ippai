@@ -26,12 +26,33 @@ pub fn hooked(name: &str) -> Option<u32> {
     if mem::x64() || IN_NT.with(|d| d.get()) != 0 {
         return None;
     }
-    let base = crate::pe::by_name("ntdll.dll")?;
-    let t = crate::pe::with(base, |m| m.exports.get(name).copied())??;
+    let (t, trap) = thunk(name)?;
     // (the thunk: hot-patch prologue `mov edi, edi; push ebp; mov ebp, esp; pop ebp`, then
     // `push trap; ret`)
-    let same = mem::slice(t, 7) == [0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0x68] && r32(t + 7) == export("ntdll", name) && mem::r8(t + 11) == 0xc3;
+    let same = mem::slice(t, 7) == [0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0x68] && r32(t + 7) == trap && mem::r8(t + 11) == 0xc3;
     (!same).then_some(t)
+}
+
+/// The functions kernel32's file calls look at (hooked), each one's (thunk, trap) once found.
+const HOOKABLE: [&str; 10] = ["NtCreateFile", "NtReadFile", "NtWriteFile", "NtQueryInformationFile", "NtSetInformationFile", "NtClose", "NtQueryAttributesFile", "NtQueryFullAttributesFile", "NtQueryDirectoryFile", "NtOpenFile"];
+static THUNKS: [std::sync::atomic::AtomicU64; 10] = [const { std::sync::atomic::AtomicU64::new(0) }; 10];
+
+/// ntdll's thunk of `name` in its image and the trap it pushes: looked up once (each ReadFile
+/// and SetFilePointer asked the module table and two string-keyed tables for it); sake's
+/// images of its DLLs stay mapped, their thunks where they are.
+fn thunk(name: &str) -> Option<(u32, u32)> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let slot = HOOKABLE.iter().position(|&n| n == name);
+    if let Some(v) = slot.map(|i| THUNKS[i].load(Relaxed)).filter(|&v| v != 0) {
+        return Some(((v >> 32) as u32, v as u32));
+    }
+    let base = crate::pe::by_name("ntdll.dll")?;
+    let t = crate::pe::with(base, |m| m.exports.get(name).copied())??;
+    let trap = export("ntdll", name);
+    if let Some(i) = slot {
+        THUNKS[i].store((t as u64) << 32 | trap as u64, Relaxed);
+    }
+    Some((t, trap))
 }
 
 /// Guest scratch for a call into ntdll: freed when dropped.
@@ -55,7 +76,12 @@ impl Scratch {
             Some((name, h)) => (name, h),
             None => (nt_path(path), 0),
         };
-        let w: Vec<u16> = nt.encode_utf16().collect();
+        let mut w: Vec<u16> = nt.encode_utf16().collect();
+        // (a UNICODE_STRING holds 32767 characters: a longer path is no name at all, the call
+        // fails, where its length wrapped to name a prefix of it)
+        if w.len() > 0x7ffe {
+            w.clear();
+        }
         let buf = self.alloc(2 * w.len() as u32 + 2);
         for (i, &x) in w.iter().enumerate() {
             mem::w16(buf + 2 * i as u32, x);
@@ -940,6 +966,12 @@ static NAMES: std::sync::Mutex<Option<crate::HashMap<u32, Vec<u16>>>> = std::syn
 pub fn thread_name(tid: u32) -> Vec<u16> {
     NAMES.lock().unwrap().get_or_insert_with(Default::default).get(&tid).cloned().unwrap_or_default()
 }
+/// A thread ended: its description goes (a later thread with its id starts without one).
+pub fn thread_gone(tid: u32) {
+    if let Some(m) = NAMES.lock().unwrap().as_mut() {
+        m.remove(&tid);
+    }
+}
 pub fn set_thread_name(tid: u32, name: Vec<u16>) {
     let mut g = NAMES.lock().unwrap();
     let m = g.get_or_insert_with(Default::default);
@@ -1134,6 +1166,70 @@ fn entry_attrs(dir: &str, name: &str, m: &kura::fs::Metadata) -> u32 {
 pub fn nt_match(expr: &[u16], name: &[u16]) -> bool {
     let name = if name == [b'.' as u16, b'.' as u16] { &name[..1] } else { name };
     let (e, n) = (expr.len(), name.len());
+    // (each literal and ? takes one character of the name: a mask with more than the name has
+    // matches nothing, before any table; the mask is a guest string of up to 32767 characters)
+    if expr.iter().filter(|&&c| !matches!(c, 0x2a | 0x3c | 0x3e | 0x22)).count() > n {
+        return false;
+    }
+    let lead = name.iter().take_while(|&&c| c == b'.' as u16).count();
+    let dot = b'.' as u16;
+    // m[i][j]: expr[i..] against name[j..], filled from the last row up (row i needs rows past
+    // i only): no recursion as deep as the mask (it was one frame per character)
+    let w = n + 1;
+    let mut m = vec![false; (e + 1) * w];
+    m[e * w + n] = true;
+    // (true counts of row i + 1 before each column: a range of it is a subtraction)
+    let mut before = vec![0u32; w + 1];
+    for i in (0..e).rev() {
+        let next = (i + 1) * w;
+        for k in 0..w {
+            before[k + 1] = before[k] + m[next + k] as u32;
+        }
+        let any = |a: usize, b: usize| before[b + 1] > before[a];
+        for j in (0..=n).rev() {
+            let r = match expr[i] {
+                0x2a => any(j, n),
+                0x3c => {
+                    // up to just past the last period, or anywhere with none; at the start of a
+                    // name whose periods all lead (".a"), also the whole name
+                    let to = (j..n).rev().find(|&k| name[k] == dot).map_or(n, |k| k + 1);
+                    let whole = j == 0 && !name[lead..].contains(&dot);
+                    any(j, to) || (whole && m[next + n])
+                }
+                0x3f => j < n && m[next + j + 1],
+                0x3e => {
+                    if j == n {
+                        m[next + j]
+                    } else if name[j] == dot {
+                        let mut k = i;
+                        while k < e && expr[k] == 0x3e {
+                            k += 1;
+                        }
+                        if k == e { m[k * w + j + 1] } else { m[k * w + j] }
+                    } else {
+                        m[next + j + 1]
+                    }
+                }
+                0x22 => {
+                    if j == n {
+                        m[next + j]
+                    } else {
+                        name[j] == dot && m[next + j + 1]
+                    }
+                }
+                c => j < n && up(c) == up(name[j]) && m[next + j + 1],
+            };
+            m[i * w + j] = r;
+        }
+    }
+    m[0]
+}
+
+/// nt_match as it was (recursive, memoized): the reference of the tests.
+#[cfg(test)]
+fn nt_match_reference(expr: &[u16], name: &[u16]) -> bool {
+    let name = if name == [b'.' as u16, b'.' as u16] { &name[..1] } else { name };
+    let (e, n) = (expr.len(), name.len());
     let lead = name.iter().take_while(|&&c| c == b'.' as u16).count();
     // memo[i][j]: expr[i..] against name[j..]
     let mut memo = vec![None::<bool>; (e + 1) * (n + 1)];
@@ -1184,6 +1280,7 @@ pub fn nt_match(expr: &[u16], name: &[u16]) -> bool {
     }
     go(0, 0, expr, name, lead, &mut memo)
 }
+
 
 /// The fixed part of each FILE_INFORMATION_CLASS NtQueryDirectoryFile writes: (its size, where
 /// FileNameLength is, where the name goes)
@@ -1393,7 +1490,9 @@ fn nt_query_object(c: &mut Ctx) -> u32 {
     let ps = mem::ps();
     // a UNICODE_STRING (2 lengths, a pointer) and its characters after the structure
     let ustr = |at: u32, s: &str, base: u32| {
-        let w: Vec<u16> = s.encode_utf16().collect();
+        let mut w: Vec<u16> = s.encode_utf16().collect();
+        // (cut at a UNICODE_STRING's 32767 characters, its length no longer wrapping)
+        w.truncate(0x7ffe);
         mem::w16(at, 2 * w.len() as u16);
         mem::w16(at + 2, if w.is_empty() { 0 } else { 2 * w.len() as u16 + 2 });
         mem::wp(at + ps, if w.is_empty() { 0 } else { base });
@@ -1752,6 +1851,88 @@ mod dir_class_tests {
         // not a directory's, or past the classes
         for c in [0, 4, 29, 50, 76, 77, 82, 84, 99] {
             assert_eq!(dir_class(c), None, "class {c}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod match_review_tests {
+    use super::{nt_match, nt_match_reference};
+    use proptest::prelude::*;
+
+    /// A mask of 32767 characters (a UNICODE_STRING's most): no recursion that deep, and the
+    /// answer of a mask of only wildcards; a long literal mask is no match at once.
+    #[test]
+    fn longest_masks() {
+        let name: Vec<u16> = "a.txt".encode_utf16().collect();
+        let stars = vec![b'*' as u16; 32767];
+        assert!(nt_match(&stars, &name));
+        let mut lt = vec![b'<' as u16; 32766];
+        lt.push(b't' as u16);
+        assert!(nt_match(&lt, &name));
+        let q = vec![b'?' as u16; 32767];
+        assert!(!nt_match(&q, &name));
+        // (run on a thread with a small stack, as a wasm worker's: the recursion overflowed it)
+        let t = std::thread::Builder::new().stack_size(256 << 10).spawn(move || {
+            let mut m = vec![b'*' as u16; 20000];
+            m.extend("a.txt".encode_utf16());
+            nt_match(&m, &"a.txt".encode_utf16().collect::<Vec<_>>())
+        });
+        assert!(t.unwrap().join().unwrap());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(4096))]
+        /// Any mask of NT's wildcards and a few letters against any name of those letters and
+        /// periods: the table answers as the recursive matcher did.
+        #[test]
+        fn table_is_the_recursive_matcher(e in proptest::collection::vec(prop::sample::select(vec!['*', '<', '>', '?', '"', '.', 'a', 'B', 'c']), 0..10), n in proptest::collection::vec(prop::sample::select(vec!['.', 'a', 'b', 'C']), 0..10)) {
+            let e: Vec<u16> = e.iter().map(|&c| c as u16).collect();
+            let n: Vec<u16> = n.iter().map(|&c| c as u16).collect();
+            prop_assert_eq!(nt_match(&e, &n), nt_match_reference(&e, &n), "{:?} {:?}", String::from_utf16_lossy(&e), String::from_utf16_lossy(&n));
+        }
+    }
+}
+
+#[cfg(test)]
+mod hooked_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Unpatched: not hooked; the program's bytes over any of the thunk's 12 (Enigma Virtual
+    /// Box's jump): hooked, at the same address as the uncached lookup; put back: not hooked.
+    #[test]
+    fn a_patched_thunk_is_seen_after_it_was_cached() {
+        let _g = crate::test_guest::enter();
+        crate::pe::hle_module("ntdll");
+        let base = crate::pe::by_name("ntdll.dll").unwrap();
+        for name in HOOKABLE {
+            let Some(t) = crate::pe::with(base, |m| m.exports.get(name).copied()).flatten() else { continue };
+            assert_eq!(hooked(name), None, "{name}");
+            let saved = mem::slice(t, 12).to_vec();
+            mem::w8(t, 0xe9);
+            assert_eq!(hooked(name), Some(t), "{name}");
+            mem::write(t, &saved);
+            assert_eq!(hooked(name), None, "{name}");
+        }
+    }
+
+    proptest! {
+        /// Any byte of NtReadFile's thunk changed to any other value: hooked; the thunk as
+        /// made: not, however often asked.
+        #[test]
+        fn any_changed_byte_is_a_hook(at in 0u32..12, v in any::<u8>(), asks in 1usize..4) {
+            let _g = crate::test_guest::enter();
+            crate::pe::hle_module("ntdll");
+            let base = crate::pe::by_name("ntdll.dll").unwrap();
+            let t = crate::pe::with(base, |m| m.exports.get("NtReadFile").copied()).flatten().unwrap();
+            let old = mem::r8(t + at);
+            mem::w8(t + at, v);
+            for _ in 0..asks {
+                prop_assert_eq!(hooked("NtReadFile"), (v != old).then_some(t));
+            }
+            mem::w8(t + at, old);
+            prop_assert_eq!(hooked("NtReadFile"), None);
         }
     }
 }

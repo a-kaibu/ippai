@@ -6,6 +6,6 @@
 # (cargo install --locked kani-verifier && cargo kani setup).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-for c in kura vorbis crt koji mpeg1 waits; do
+for c in kura vorbis crt koji mpeg1 waits sake; do
   (cd "crates/$c" && cargo kani --output-format terse)
 done

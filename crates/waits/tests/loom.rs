@@ -1124,3 +1124,54 @@ mod objects {
         model(|| run(2, vec![(vec![0, 1], true), (vec![0], false)], vec![(0, 2), (1, 1)]));
     }
 }
+
+/// A writer with a deadline behind a reader (_Mtx_timedlock): whether its time runs out
+/// before or after the reader lets go, at any point, it either holds the lock alone or gave
+/// up leaving no mark in the word (a reader after it gets in), and never misses the release.
+#[test]
+fn srw_timed_writer_gets_the_lock_or_leaves_no_mark() {
+    model(|| {
+        let l = Srw::new();
+        let checks = Arc::new(AtomicU32::new(0));
+        l.sync.srw_acquire(&l.word, true, &NoPause);
+        let w = {
+            let (l, checks) = (l.clone(), checks.clone());
+            thread::spawn(move || {
+                // (time runs out at its second look at the clock)
+                let got = l.sync.srw_acquire_until(&l.word, false, &NoPause, || Some(if checks.fetch_add(1, SeqCst) >= 1 { 0 } else { 1 }));
+                if got {
+                    l.data.with_mut(|d| unsafe { *d += 1 });
+                    l.sync.srw_release(&l.word, false);
+                }
+                got
+            })
+        };
+        l.sync.srw_release(&l.word, true);
+        let got = w.join().unwrap();
+        // (a reader afterwards: the word is free whatever happened)
+        assert!(Waits::srw_try(&l.word, true));
+        l.sync.srw_release(&l.word, true);
+        assert_eq!(l.data.with(|d| unsafe { *d }), got as u32);
+        assert_eq!(l.word.load(SeqCst), 0);
+    });
+}
+
+/// A writer with no time left takes a free lock still, and fails on a held one at once.
+#[test]
+fn srw_timed_writer_with_no_time_takes_only_a_free_lock() {
+    model(|| {
+        let l = Srw::new();
+        assert!(l.sync.srw_acquire_until(&l.word, false, &NoPause, || Some(0)));
+        let t = {
+            let l = l.clone();
+            thread::spawn(move || l.sync.srw_acquire_until(&l.word, true, &NoPause, || Some(0)))
+        };
+        let other = t.join().unwrap();
+        l.sync.srw_release(&l.word, false);
+        if other {
+            l.sync.srw_release(&l.word, true);
+        }
+        assert!(!other, "a reader got in while the writer held it");
+        assert_eq!(l.word.load(SeqCst), 0);
+    });
+}

@@ -150,15 +150,22 @@ fn linear_to_srgb(l: f64) -> f64 {
     }
 }
 
+/// srgb_to_linear of every byte, worked out once (three powf a pixel were most of a gray
+/// conversion).
+fn linear(c: u8) -> f64 {
+    static T: std::sync::OnceLock<[f64; 256]> = std::sync::OnceLock::new();
+    T.get_or_init(|| std::array::from_fn(|i| srgb_to_linear(i as u8)))[c as usize]
+}
+
 /// WIC's gray of an sRGB color: Rec. 709 luminance of the linear light, back to sRGB.
 pub fn gray(b: u8, g: u8, r: u8) -> u8 {
-    let y = 0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b);
+    let y = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
     (linear_to_srgb(y) * 255.0 + 0.5).clamp(0.0, 255.0) as u8
 }
 
 /// 16bppGray of an sRGB color: the same luminance, to 16 bits.
 fn gray16(b: u8, g: u8, r: u8) -> u16 {
-    let y = 0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b);
+    let y = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
     (linear_to_srgb(y) * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16
 }
 
@@ -273,7 +280,46 @@ fn pixel_to_bgra(f: Fmt, s: &[u8], v: u32, palette: &[u32]) -> [u8; 4] {
 
 /// `w x h` pixels of `f` in rows of `stride` bytes as straight BGRA (`w * 4` bytes a row).
 pub fn to_bgra(f: Fmt, w: u32, h: u32, stride: u32, data: &[u8], palette: &[u32]) -> Vec<u8> {
-    let mut px = vec![0u8; (w as usize) * (h as usize) * 4];
+    let Some(mut px) = zeroed(w as usize * h as usize * 4) else { return Vec::new() };
+    // (the formats pictures decode to, a row at a time: the per-pixel dispatch below was most
+    // of an image load)
+    let fast = matches!(f, Fmt::Bgra | Fmt::Bgr32 | Fmt::Bgr24 | Fmt::Rgba | Fmt::Gray8 | Fmt::Idx8);
+    if fast {
+        let rb = f.row_bytes(w) as usize;
+        for (y, dst) in px.chunks_exact_mut(w as usize * 4).enumerate() {
+            let start = y * stride as usize;
+            let Some(row) = data.get(start..start + rb) else { break };
+            match f {
+                Fmt::Bgra => dst.copy_from_slice(row),
+                Fmt::Bgr32 => {
+                    for (d, s) in dst.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
+                        d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+                    }
+                }
+                Fmt::Bgr24 => {
+                    for (d, s) in dst.chunks_exact_mut(4).zip(row.chunks_exact(3)) {
+                        d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+                    }
+                }
+                Fmt::Rgba => {
+                    for (d, s) in dst.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
+                        d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
+                    }
+                }
+                Fmt::Gray8 => {
+                    for (d, &g) in dst.chunks_exact_mut(4).zip(row) {
+                        d.copy_from_slice(&[g, g, g, 255]);
+                    }
+                }
+                _ => {
+                    for (d, &v) in dst.chunks_exact_mut(4).zip(row) {
+                        d.copy_from_slice(&palette.get(v as usize).copied().unwrap_or(0xff00_0000).to_le_bytes());
+                    }
+                }
+            }
+        }
+        return px;
+    }
     let bits = f.bits();
     let n = (bits / 8) as usize;
     for y in 0..h as usize {
@@ -323,14 +369,26 @@ fn nearest(palette: &[u32], bits: u32, b: u8, g: u8, r: u8) -> u32 {
 pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32), stride: u32, out: &mut [u8], palette: &[u32]) {
     let bits = f.bits();
     let n = (bits / 8) as usize;
+    // (the last color's entry: runs of one color look the palette up once)
+    let mut last: Option<([u8; 3], u32)> = None;
     for row in 0..h {
-        let s = &src[(((y + row) * sw + x) * 4) as usize..][..(w * 4) as usize];
-        let d = &mut out[(row * stride) as usize..][..f.row_bytes(w) as usize];
+        // (rows outside either buffer are not converted: in 64 bits, as a guest rectangle near
+        // 4 G wrapped the offset back into the buffer)
+        let at = (y as u128 + row as u128) * sw as u128 * 4 + x as u128 * 4;
+        let Some(s) = usize::try_from(at).ok().and_then(|at| src.get(at..)?.get(..w as usize * 4)) else { return };
+        let Some(d) = usize::try_from(row as u64 * stride as u64).ok().and_then(|o| out.get_mut(o..)?.get_mut(..f.row_bytes(w) as usize)) else { return };
         for (i, p) in s.chunks_exact(4).enumerate() {
             let (b, g, r, a) = (p[0], p[1], p[2], p[3]);
             let w16 = |d: &mut [u8], o: usize, v: u16| d[o..o + 2].copy_from_slice(&v.to_le_bytes());
             let v = match f {
-                Fmt::Idx1 | Fmt::Idx2 | Fmt::Idx4 | Fmt::Idx8 => nearest(palette, bits, b, g, r),
+                Fmt::Idx1 | Fmt::Idx2 | Fmt::Idx4 | Fmt::Idx8 => match last {
+                    Some((c, v)) if c == [b, g, r] => v,
+                    _ => {
+                        let v = nearest(palette, bits, b, g, r);
+                        last = Some(([b, g, r], v));
+                        v
+                    }
+                },
                 Fmt::BlackWhite => (gray(b, g, r) >= 128) as u32,
                 Fmt::Gray2 => (gray(b, g, r) as u32 * 3 + 127) / 255,
                 Fmt::Gray4 => gray(b, g, r) as u32 >> 4,
@@ -388,12 +446,16 @@ pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32)
 pub fn copy_rect(f: Fmt, src: &[u8], src_stride: u32, (x, y, w, h): (u32, u32, u32, u32), stride: u32, out: &mut [u8]) {
     let bits = f.bits();
     for row in 0..h {
-        let s = &src[((y + row) * src_stride) as usize..];
-        let d = &mut out[(row * stride) as usize..];
+        let Some(s) = usize::try_from((y as u64 + row as u64) * src_stride as u64).ok().and_then(|o| src.get(o..)) else { return };
+        let Some(d) = usize::try_from(row as u64 * stride as u64).ok().and_then(|o| out.get_mut(o..)) else { return };
         if bits % 8 == 0 {
             let n = (bits / 8) as usize;
-            d[..w as usize * n].copy_from_slice(&s[x as usize * n..(x + w) as usize * n]);
+            let (Some(d), Some(s)) = (d.get_mut(..w as usize * n), s.get(x as usize * n..(x as usize + w as usize) * n)) else { return };
+            d.copy_from_slice(s);
         } else {
+            if (x as u64 + w as u64) * bits as u64 > s.len() as u64 * 8 || w as u64 * bits as u64 > d.len() as u64 * 8 {
+                return;
+            }
             for i in 0..w {
                 put_bits(d, i, bits, get_bits(s, x + i, bits));
             }
@@ -492,7 +554,37 @@ pub fn decode_bgra(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     Some((f.w, f.h, f.bgra()))
 }
 
-const PIXELS_MAX: u64 = 1 << 28;
+/// The most pixels a picture may have: 64 M (256 MiB as BGRA), what sake's heap can still
+/// hand out; a header claiming more is no picture (2^28 asked for 1-2 GiB, and a failed
+/// allocation ends the VM).
+const PIXELS_MAX: u64 = 1 << 26;
+/// The pixels all of a GIF's frames may have together (a small file of many maximal frames).
+const GIF_PIXELS_MAX: u64 = 1 << 27;
+
+/// `n` zero bytes, or None when sake's heap cannot give them (instead of an abort).
+fn zeroed(n: usize) -> Option<Vec<u8>> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).ok()?;
+    v.resize(n, 0);
+    Some(v)
+}
+
+/// The first `rb` bytes of each of `h` rows `line` bytes apart in `buf` (moved when that is
+/// all of it), with `px` applied to each `n`-byte pixel in place.
+fn rows_of(mut buf: Vec<u8>, line: usize, rb: usize, h: usize, n: usize, px: impl Fn(&mut [u8])) -> Vec<u8> {
+    if line != rb {
+        for y in 1..h {
+            buf.copy_within(y * line..y * line + rb, y * rb);
+        }
+    }
+    buf.truncate(rb * h);
+    if n > 0 {
+        for p in buf.chunks_exact_mut(n) {
+            px(p);
+        }
+    }
+    buf
+}
 
 fn png_frame(data: &[u8]) -> Option<Frame> {
     use png::{BitDepth, ColorType};
@@ -503,7 +595,7 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
     if w as u64 * h as u64 > PIXELS_MAX {
         return None;
     }
-    let mut buf = vec![0; r.output_buffer_size()];
+    let mut buf = zeroed(r.output_buffer_size())?;
     let out = r.next_frame(&mut buf).ok()?;
     let line = out.line_size;
     let info = r.info();
@@ -528,10 +620,10 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
                 _ => Fmt::Idx8,
             };
             let rb = f.row_bytes(w) as usize;
-            (f, (0..h as usize).flat_map(|y| rows(y)[..rb].to_vec()).collect())
+            (f, rows_of(buf, line, rb, h as usize, 0, |_| {}))
         }
         (ColorType::Grayscale, _) if trns.is_none() => match out.bit_depth {
-            BitDepth::Sixteen => (Fmt::Gray16, (0..h as usize).flat_map(|y| (0..w as usize).flat_map(move |x| be16(rows(y), x).to_le_bytes())).collect()),
+            BitDepth::Sixteen => (Fmt::Gray16, rows_of(buf, line, w as usize * 2, h as usize, 2, |p| p.swap(0, 1))),
             _ => {
                 let f = match depth {
                     1 => Fmt::BlackWhite,
@@ -540,17 +632,16 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
                     _ => Fmt::Gray8,
                 };
                 let rb = f.row_bytes(w) as usize;
-                (f, (0..h as usize).flat_map(|y| rows(y)[..rb].to_vec()).collect())
+                (f, rows_of(buf, line, rb, h as usize, 0, |_| {}))
             }
         },
-        (ColorType::Rgb, BitDepth::Eight) if trns.is_none() => {
-            (Fmt::Bgr24, (0..h as usize).flat_map(|y| rows(y)[..w as usize * 3].chunks_exact(3).flat_map(|p| [p[2], p[1], p[0]]).collect::<Vec<_>>()).collect())
-        }
-        (ColorType::Rgb, BitDepth::Sixteen) if trns.is_none() => (Fmt::Rgb48, (0..h as usize).flat_map(|y| (0..w as usize * 3).flat_map(move |i| be16(rows(y), i).to_le_bytes())).collect()),
+        (ColorType::Rgb, BitDepth::Eight) if trns.is_none() => (Fmt::Bgr24, rows_of(buf, line, w as usize * 3, h as usize, 3, |p| p.swap(0, 2))),
+        (ColorType::Rgb, BitDepth::Sixteen) if trns.is_none() => (Fmt::Rgb48, rows_of(buf, line, w as usize * 6, h as usize, 2, |p| p.swap(0, 1))),
         (ct, BitDepth::Sixteen) => {
             // gray+alpha, RGBA, or gray/RGB with a tRNS color: 64bppRGBA
             let key: Option<Vec<u16>> = trns.as_ref().map(|t| t.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect());
-            let mut v = Vec::with_capacity((w * h * 8) as usize);
+            let mut v = Vec::new();
+            v.try_reserve_exact(w as usize * h as usize * 8).ok()?;
             for y in 0..h as usize {
                 let r = rows(y);
                 for x in 0..w as usize {
@@ -578,7 +669,8 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
         }
         (ct, _) => {
             // gray+alpha, RGBA, gray/RGB with tRNS (any depth below 16): 32bppBGRA
-            let mut v = Vec::with_capacity((w * h * 4) as usize);
+            let mut v = Vec::new();
+            v.try_reserve_exact(w as usize * h as usize * 4).ok()?;
             let max = (1u32 << depth) - 1;
             for y in 0..h as usize {
                 let r = rows(y);
@@ -628,7 +720,13 @@ fn jpeg_frame(data: &[u8]) -> Option<Frame> {
     let (fmt, bits) = match info.pixel_format {
         PixelFormat::L8 => (Fmt::Gray8, px),
         PixelFormat::L16 => (Fmt::Gray8, px.chunks_exact(2).map(|c| c[0]).collect()),
-        PixelFormat::RGB24 => (Fmt::Bgr24, px.chunks_exact(3).flat_map(|p| [p[2], p[1], p[0]]).collect()),
+        PixelFormat::RGB24 => {
+            let mut px = px;
+            for p in px.chunks_exact_mut(3) {
+                p.swap(0, 2);
+            }
+            (Fmt::Bgr24, px)
+        }
         PixelFormat::CMYK32 => (Fmt::Cmyk, px),
     };
     Some(Frame { w, h, fmt, bits, palette: Vec::new(), dpi: jfif_dpi(data) })
@@ -758,13 +856,15 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
         .collect();
     if comp == 1 || comp == 2 {
         // RLE8 / RLE4: decoded to 32bppBGR
-        let bits = rle(data.get(off..)?, w, h, if comp == 1 { 8 } else { 4 }, &palette, top_down);
+        let bits = rle(data.get(off..)?, w, h, if comp == 1 { 8 } else { 4 }, &palette, top_down)?;
         return Some(Frame { w, h, fmt: Fmt::Bgr32, bits, palette, dpi });
     }
-    let stride = (w as usize * bpp as usize).div_ceil(32) * 4;
-    if off as u64 + stride as u64 * h as u64 > data.len() as u64 {
+    // (in 64 bits: 2^27 pixels of 32 bits wrapped a 32-bit usize to a stride of 0)
+    let stride = (w as u64 * bpp as u64).div_ceil(32) * 4;
+    if off as u64 + stride * h as u64 > data.len() as u64 {
         return None;
     }
+    let stride = stride as usize;
     let row = |y: u32| {
         let sy = if top_down { y } else { h - 1 - y } as usize;
         &data[off + sy * stride..off + sy * stride + stride]
@@ -781,7 +881,8 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
         (32, Some([0xff0000, 0xff00, 0xff, 0xff00_0000])) => Fmt::Bgra,
         (16 | 32, Some(m)) => {
             // other masks: each channel scaled to 8 bits
-            let mut bits = Vec::with_capacity((w * h * 4) as usize);
+            let mut bits = Vec::new();
+            bits.try_reserve_exact(w as usize * h as usize * 4).ok()?;
             for y in 0..h {
                 let r = row(y);
                 for x in 0..w as usize {
@@ -802,13 +903,17 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
         _ => return None,
     };
     let rb = fmt.row_bytes(w) as usize;
-    let bits = (0..h).flat_map(|y| row(y)[..rb].to_vec()).collect();
+    let mut bits = Vec::new();
+    bits.try_reserve_exact(rb * h as usize).ok()?;
+    for y in 0..h {
+        bits.extend_from_slice(&row(y)[..rb]);
+    }
     Some(Frame { w, h, fmt, bits, palette, dpi })
 }
 
 /// RLE8/RLE4 rows as 32bppBGR (pixels the runs skip stay black).
-fn rle(src: &[u8], w: u32, h: u32, bits: u32, palette: &[u32], top_down: bool) -> Vec<u8> {
-    let mut out = vec![0u8; (w * h * 4) as usize];
+fn rle(src: &[u8], w: u32, h: u32, bits: u32, palette: &[u32], top_down: bool) -> Option<Vec<u8>> {
+    let mut out = zeroed(w as usize * h as usize * 4)?;
     let (mut x, mut y, mut i) = (0u32, 0u32, 0usize);
     let mut put = |x: u32, y: u32, v: u8| {
         if x < w && y < h {
@@ -868,7 +973,7 @@ fn rle(src: &[u8], w: u32, h: u32, bits: u32, palette: &[u32], top_down: bool) -
             }
         }
     }
-    out
+    Some(out)
 }
 
 /// A GIF's frames (8bppIndexed, each its descriptor's size, deinterlaced, the transparent
@@ -891,6 +996,7 @@ fn gif(data: &[u8]) -> Option<(Vec<Frame>, Vec<u32>)> {
     };
     let mut frames = Vec::new();
     let mut transparent: Option<u8> = None;
+    let mut pixels = 0u64;
     let sub_blocks = |mut i: usize| -> (Vec<u8>, usize) {
         let mut v = Vec::new();
         while let Some(&n) = data.get(i) {
@@ -915,6 +1021,11 @@ fn gif(data: &[u8]) -> Option<(Vec<Frame>, Vec<u32>)> {
             }
             0x2c => {
                 let (w, h) = (u16le(i + 5)? as u32, u16le(i + 7)? as u32);
+                // (a 30-byte file can claim 65535 x 65535: 4 GiB asked for each frame)
+                pixels += w as u64 * h as u64;
+                if w as u64 * h as u64 > PIXELS_MAX || pixels > GIF_PIXELS_MAX {
+                    break;
+                }
                 let f = *data.get(i + 9)?;
                 i += 10;
                 let mut palette = if f & 0x80 != 0 {
@@ -1363,6 +1474,170 @@ mod proptests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// to_bgra without its row fast paths: every pixel through pixel_to_bgra (as it was).
+    fn generic(f: Fmt, w: u32, h: u32, stride: u32, data: &[u8], palette: &[u32]) -> Vec<u8> {
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        let bits = f.bits();
+        let n = (bits / 8) as usize;
+        for y in 0..h as usize {
+            let start = y * stride as usize;
+            let Some(row) = data.get(start..start + f.row_bytes(w) as usize) else { break };
+            for x in 0..w as usize {
+                let v = if bits < 8 { get_bits(row, x as u32, bits) } else if bits == 8 { row[x] as u32 } else { 0 };
+                let s = if bits >= 8 { &row[x * n..x * n + n] } else { &row[..0] };
+                px[(y * w as usize + x) * 4..][..4].copy_from_slice(&pixel_to_bgra(f, s, v, palette));
+            }
+        }
+        px
+    }
+
+    fn png(ct: png::ColorType, depth: png::BitDepth, w: u32, h: u32, data: &[u8], palette: Option<&[u8]>) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut out, w, h);
+            e.set_color(ct);
+            e.set_depth(depth);
+            if let Some(p) = palette {
+                e.set_palette(p.to_vec());
+            }
+            e.write_header().unwrap().write_image_data(data).unwrap();
+        }
+        out
+    }
+
+    /// srgb_to_linear's table is the function, for every byte (so gray and gray16 are too).
+    #[test]
+    fn linear_table_is_exact() {
+        for c in 0..=255u8 {
+            assert_eq!(linear(c).to_bits(), srgb_to_linear(c).to_bits(), "{c}");
+        }
+    }
+
+    /// Headers claiming pictures sake's heap cannot hold are no pictures, without asking for
+    /// the memory (each was an allocation of 1-4 GiB, a failure ending the VM): a 30-byte GIF
+    /// of 65535 x 65535, an RLE8 BMP of 16384 x 16384, a 32-bit BMP 2^27 pixels wide (its
+    /// stride wrapped to 0 in 32 bits).
+    #[test]
+    fn huge_headers_are_refused() {
+        let mut gif = b"GIF89a\x01\x00\x01\x00\x00\x00\x00".to_vec();
+        gif.extend([0x2c, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 2, 2, 0x4c, 0x01, 0, 0x3b]);
+        assert!(gif.len() <= 30);
+        assert!(decode(&gif).is_none());
+        // (one frame of 4096 x 4096 is fine; 9 such frames are past the file's budget)
+        let mut gif = b"GIF89a\x01\x00\x01\x00\x00\x00\x00".to_vec();
+        for _ in 0..9 {
+            gif.extend([0x2c, 0, 0, 0, 0, 0, 0x10, 0, 0x10, 0, 2, 2, 0x4c, 0x01, 0]);
+        }
+        let p = decode(&gif).unwrap();
+        assert_eq!(p.frames.len(), 8);
+        let bmp = |w: i32, h: i32, bpp: u16, comp: u32| {
+            let mut b = b"BM".to_vec();
+            b.extend(0u32.to_le_bytes());
+            b.extend([0; 4]);
+            b.extend(54u32.to_le_bytes());
+            b.extend(40u32.to_le_bytes());
+            b.extend(w.to_le_bytes());
+            b.extend(h.to_le_bytes());
+            b.extend(1u16.to_le_bytes());
+            b.extend(bpp.to_le_bytes());
+            b.extend(comp.to_le_bytes());
+            b.extend([0; 20]);
+            b.extend([0, 1]);
+            b
+        };
+        assert!(decode(&bmp(16384, 16384, 8, 1)).is_none());
+        assert!(decode(&bmp(1 << 27, 1, 32, 0)).is_none());
+        assert!(decode(&bmp(1 << 26, 1, 32, 0)).is_none(), "(no pixels in the file)");
+        // the largest RLE picture still decodes
+        let (_, _, px) = decode_bgra(&bmp(8192, 8192, 8, 1)).unwrap();
+        assert_eq!(px.len(), 8192 * 8192 * 4);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Every format, any bytes, rows padded or cut short: the row fast paths give what the
+        /// per-pixel conversion gives.
+        #[test]
+        fn fast_paths_match_the_per_pixel_conversion(w in 1u32..24, h in 1u32..8, pad in 0u32..9, cut in 0usize..64, seed in any::<u64>(), npal in 0usize..300) {
+            let palette: Vec<u32> = (0..npal as u64).map(|i| (i.wrapping_mul(seed | 1) >> 7) as u32).collect();
+            for f in ALL {
+                let stride = f.row_bytes(w) + pad;
+                let len = (stride * h) as usize - cut.min((stride * h) as usize);
+                let data: Vec<u8> = (0..len as u64).map(|i| (i.wrapping_mul(seed | 3) >> 11) as u8).collect();
+                prop_assert_eq!(to_bgra(f, w, h, stride, &data, &palette), generic(f, w, h, stride, &data, &palette), "{:?}", f);
+            }
+        }
+
+        /// PNG files of every kind the moved-row paths take (RGB, gray, 16-bit, indexed): the
+        /// frame's BGRA is the source pixels'.
+        #[test]
+        fn png_rows_are_the_source_pixels(w in 1u32..40, h in 1u32..12, seed in any::<u64>()) {
+            use png::{BitDepth as D, ColorType as C};
+            let bytes = |n: u32| -> Vec<u8> { (0..n as u64).map(|i| (i.wrapping_mul(seed | 5) >> 13) as u8).collect() };
+            let (wn, hn) = (w as usize, h as usize);
+            // RGB 8: BGR24 then BGRA
+            let src = bytes(w * h * 3);
+            let (_, _, px) = decode_bgra(&png(C::Rgb, D::Eight, w, h, &src, None)).unwrap();
+            for i in 0..wn * hn { prop_assert_eq!(&px[4 * i..4 * i + 4], &[src[3 * i + 2], src[3 * i + 1], src[3 * i], 255][..]); }
+            let f = &decode(&png(C::Rgb, D::Eight, w, h, &src, None)).unwrap().frames[0];
+            prop_assert_eq!((f.fmt, f.bits.len()), (Fmt::Bgr24, wn * hn * 3));
+            // RGB 16: RGB48 little-endian
+            let src = bytes(w * h * 6);
+            let f = &decode(&png(C::Rgb, D::Sixteen, w, h, &src, None)).unwrap().frames[0];
+            prop_assert_eq!(f.fmt, Fmt::Rgb48);
+            for i in 0..wn * hn * 3 { prop_assert_eq!(&f.bits[2 * i..2 * i + 2], &[src[2 * i + 1], src[2 * i]][..]); }
+            // gray 16 and 8, 1-bit gray (rows of whole bytes, the padding bits kept)
+            let src = bytes(w * h * 2);
+            let f = &decode(&png(C::Grayscale, D::Sixteen, w, h, &src, None)).unwrap().frames[0];
+            prop_assert_eq!(f.fmt, Fmt::Gray16);
+            for i in 0..wn * hn { prop_assert_eq!(&f.bits[2 * i..2 * i + 2], &[src[2 * i + 1], src[2 * i]][..]); }
+            let src = bytes(w * h);
+            let (_, _, px) = decode_bgra(&png(C::Grayscale, D::Eight, w, h, &src, None)).unwrap();
+            for i in 0..wn * hn { prop_assert_eq!(&px[4 * i..4 * i + 4], &[src[i], src[i], src[i], 255][..]); }
+            let rb = wn.div_ceil(8);
+            let src = bytes((rb * hn) as u32);
+            let f = &decode(&png(C::Grayscale, D::One, w, h, &src, None)).unwrap().frames[0];
+            prop_assert_eq!((f.fmt, f.stride() as usize), (Fmt::BlackWhite, rb));
+            for y in 0..hn { for x in 0..wn { prop_assert_eq!(get_bits(&f.bits[y * rb..], x as u32, 1), get_bits(&src[y * rb..], x as u32, 1)); } }
+            // indexed 8 with a 256-color palette
+            let pal = bytes(256 * 3);
+            let src = bytes(w * h);
+            let (_, _, px) = decode_bgra(&png(C::Indexed, D::Eight, w, h, &src, Some(&pal))).unwrap();
+            for i in 0..wn * hn {
+                let c = &pal[3 * src[i] as usize..][..3];
+                prop_assert_eq!(&px[4 * i..4 * i + 4], &[c[2], c[1], c[0], 255][..]);
+            }
+        }
+
+        /// Any rectangle, stride and buffer sizes (a guest's, near 4 G too): no panic.
+        #[test]
+        fn rect_copies_never_index_out(src_len in 0usize..600, out_len in 0usize..600, sw in any::<u32>(), stride in prop_oneof![0u32..80, any::<u32>()], rect in (prop_oneof![0u32..16, any::<u32>()], prop_oneof![0u32..16, any::<u32>()], 0u32..20, 0u32..6), fi in 0usize..23) {
+            let f = ALL[fi];
+            let src = vec![7u8; src_len];
+            let mut out = vec![0u8; out_len];
+            from_bgra(&src, sw, f, rect, stride, &mut out, &[0xff00_0000, 0xffff_ffff]);
+            copy_rect(f, &src, sw, rect, stride, &mut out);
+        }
+
+        /// Indexed output: the one-entry cache picks what the palette search picks.
+        #[test]
+        fn nearest_cache_is_the_search(px in proptest::collection::vec(prop_oneof![Just([1u8, 2, 3, 255]), Just([200, 9, 9, 0]), any::<[u8; 4]>()], 1..64), pal in proptest::collection::vec(any::<u32>(), 1..20)) {
+            let pal: Vec<u32> = pal.into_iter().map(|c| c | 0xff00_0000).collect();
+            let w = px.len() as u32;
+            let src: Vec<u8> = px.concat();
+            let mut out = vec![0u8; w as usize];
+            from_bgra(&src, w, Fmt::Idx8, (0, 0, w, 1), w, &mut out, &pal);
+            for (i, p) in px.iter().enumerate() { prop_assert_eq!(out[i] as u32, nearest(&pal, 8, p[0], p[1], p[2])); }
         }
     }
 }

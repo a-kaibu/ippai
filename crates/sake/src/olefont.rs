@@ -216,12 +216,26 @@ fn hfont(c: &mut Ctx) -> u32 {
     if h == 0 {
         return 0x8007000e;
     }
-    with(this, |f| {
-        f.current = h;
-        f.handles.insert(h, 0);
-    });
+    let stale = with(this, |f| keep_font(f, h)).unwrap_or_default();
+    for old in stale {
+        c.call(api::export("gdi32", "DeleteObject"), &[old]);
+    }
     wp(out, h);
     0
+}
+
+/// `h` becomes the font's HFONT; the ones made before it that nobody holds (no AddRefHfont
+/// count) go, as get_hFont's handle is good only until a property changes: a control that
+/// changes its font's size or weight per paint made one more HFONT each time, kept until the
+/// font's last Release. The handles to delete.
+fn keep_font(f: &mut Font, h: u32) -> Vec<u32> {
+    let stale: Vec<u32> = f.handles.iter().filter(|&(&k, &n)| n == 0 && k != h).map(|(&k, _)| k).collect();
+    for k in &stale {
+        f.handles.remove(k);
+    }
+    f.current = h;
+    f.handles.insert(h, 0);
+    stale
 }
 fn clone_font(c: &mut Ctx) -> u32 {
     let out = c.a(1);
@@ -231,8 +245,10 @@ fn clone_font(c: &mut Ctx) -> u32 {
     let Some((p, r)) = with(c.a(0), |f| (f.props.clone(), f.ratio)) else {
         return INVALID;
     };
-    wp(out, make(p, r));
-    0
+    let f = make(p, r);
+    wp(out, f);
+    // (the guest heap full: E_OUTOFMEMORY, not S_OK with a NULL font)
+    if f == 0 { 0x8007_000e } else { 0 }
 }
 fn equal(c: &mut Ctx) -> u32 {
     let other = c.a(1);
@@ -543,4 +559,61 @@ fn OleCreateFontIndirect(c: &mut Ctx) -> u32 {
 pub fn init() {
     api::implement("oleaut32", "OleCreateFontIndirect", OleCreateFontIndirect);
     api::implement("olepro32", "OleCreateFontIndirect", OleCreateFontIndirect);
+}
+
+#[cfg(test)]
+mod hfont_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn font() -> Font {
+        Font { props: Properties::default(), refs: 1, current: 0, handles: HashMap::new(), ratio: (1, 1), hdc: 0 }
+    }
+
+    proptest! {
+        /// Against a model of what the program may still use (the current HFONT, and each one
+        /// it AddRefHfont'ed until as many ReleaseHfont): get_hFont after a change, AddRefHfont,
+        /// ReleaseHfont in any order. No handle in use is ever deleted, a handle is deleted at
+        /// most once, and the font keeps no more than the ones in use.
+        #[test]
+        fn only_unheld_fonts_go(ops in proptest::collection::vec((0u8..3, 0usize..8), 1..80)) {
+            let mut f = font();
+            let mut next = 0x100u32;
+            let mut held: HashMap<u32, u32> = HashMap::new();
+            let mut deleted = std::collections::HashSet::new();
+            for (op, k) in ops {
+                match op {
+                    // a property changed, then get_hFont: a new HFONT
+                    0 => {
+                        next += 4;
+                        for d in keep_font(&mut f, next) {
+                            prop_assert!(held.get(&d).copied().unwrap_or(0) == 0, "deleted {:#x} while held", d);
+                            prop_assert!(deleted.insert(d), "deleted {:#x} twice", d);
+                        }
+                    }
+                    1 if f.current != 0 => {
+                        let mut hs: Vec<u32> = f.handles.keys().copied().collect();
+                        hs.sort();
+                        let h = hs[k % hs.len()];
+                        *f.handles.get_mut(&h).unwrap() += 1;
+                        *held.entry(h).or_default() += 1;
+                    }
+                    _ => {
+                        let mut hs: Vec<u32> = held.iter().filter(|(_, &n)| n > 0).map(|(&h, _)| h).collect();
+                        hs.sort();
+                        if let Some(&h) = hs.get(k % hs.len().max(1)) {
+                            *f.handles.get_mut(&h).unwrap() -= 1;
+                            *held.get_mut(&h).unwrap() -= 1;
+                        }
+                    }
+                }
+                // (right after a new HFONT: the font keeps it and the held ones only)
+                if op == 0 {
+                    let held_others = held.iter().filter(|&(&h, &n)| n > 0 && h != f.current).count();
+                    prop_assert_eq!(f.handles.len(), 1 + held_others);
+                }
+                if f.current != 0 { prop_assert!(f.handles.contains_key(&f.current)); }
+            }
+        }
+    }
 }
