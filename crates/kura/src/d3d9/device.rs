@@ -4119,10 +4119,16 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     // (one of another size too: the page draws with one of the target's size, render/d3d.rs depth_for)
     let dsg = surface_gpu(d, ds);
     // render targets 1-3 (in a row from 1, of the size of 0)
-    let more: Vec<(u32, (u32, u32, u32, u32, u32))> = match target {
-        Some(target) => rts[1..].iter().map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g))).collect(),
-        None => Vec::new(),
-    };
+    // (on the stack: at most 3)
+    let mut more_at = [(0u32, (0u32, 0u32, 0u32, 0u32, 0u32)); 3];
+    let mut nmore = 0;
+    if let Some(target) = target {
+        for (slot, m) in more_at.iter_mut().zip(rts[1..].iter().map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g)))) {
+            *slot = m;
+            nmore += 1;
+        }
+    }
+    let more = &more_at[..nmore];
     let topo = PRIM_TOPOLOGY[prim as usize];
     // (WebGPU restarts an indexed strip at an index of all ones, Direct3D 9 never does: 16-bit
     // strips with a 0xffff go out as 32-bit indices)
@@ -4130,7 +4136,7 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     // What the draw prepares from the state (#118): the last draw's, when no call since may have
     // changed it (`stale`) and this draw is of the same kind
     let mut more_fmts = [u32::MAX; 3];
-    for (m, (_, g)) in more_fmts.iter_mut().zip(&more) {
+    for (m, (_, g)) in more_fmts.iter_mut().zip(more) {
         *m = g.4;
     }
     let pkey = PrepKey {
@@ -4762,8 +4768,8 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     let hash = h.finish();
     let ext = rect_draw(d, &elems, &streams, first, count, prim, index.is_none() && vs.is_none() && ps.is_none(), &samplers, wmask, ds);
 
-    let more_rts: Vec<u32> = more.iter().map(|m| m.0).collect();
-    ensure_targets(d, rt, &more_rts, ds);
+    let more_rts: [u32; 3] = std::array::from_fn(|k| more.get(k).map_or(0, |m| m.0));
+    ensure_targets(d, rt, &more_rts[..more.len()], ds);
     let dev = d.dev.as_mut().unwrap();
     // (uniforms of the last draw can be reused only from the same batch's data: a Clear or a
     // target change since a flush does not write them again)
@@ -4807,18 +4813,23 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
         let (ifmt, ioff, icount, base) = match (&index, prim) {
             (Some((iptr, isz, min)), 6) => {
                 // fan, indexed
-                let mut ix: Vec<u32> = Vec::new();
+                // (straight into one buffer of bytes)
                 let get = |i: u32| -> u32 {
                     if *isz == 4 { *((iptr + i * 4) as *const u32) } else { *((iptr + i * 2) as *const u16) as u32 }
                 };
+                let mut bytes = Vec::with_capacity(prims as usize * 12);
                 for t in 0..prims {
-                    ix.extend_from_slice(&[get(0), get(t + 1), get(t + 2)]);
+                    for v in [get(0), get(t + 1), get(t + 2)] {
+                        bytes.extend_from_slice(&v.to_le_bytes());
+                    }
                 }
-                let bytes: Vec<u8> = ix.iter().flat_map(|v| v.to_le_bytes()).collect();
-                (4, b.data(&bytes, 4), ix.len() as u32, -(*min as i32))
+                (4, b.data(&bytes, 4), prims * 3, -(*min as i32))
             }
             (Some((iptr, _, min)), _) if widen => {
-                let bytes: Vec<u8> = (0..nverts).flat_map(|k| (*((iptr + 2 * k) as *const u16) as u32).to_le_bytes()).collect();
+                let mut bytes = Vec::with_capacity(nverts as usize * 4);
+                for k in 0..nverts {
+                    bytes.extend_from_slice(&(*((iptr + 2 * k) as *const u16) as u32).to_le_bytes());
+                }
                 (4, b.data(&bytes, 4), nverts, -(*min as i32))
             }
             (Some((_, isz, min)), _) if index_buf.is_some() => {
@@ -4833,12 +4844,13 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
                 (*isz, b.data(std::slice::from_raw_parts(*iptr as *const u8, len), 4), nverts, -(*min as i32))
             }
             (None, 6) => {
-                let mut ix: Vec<u16> = Vec::new();
+                let mut bytes = Vec::with_capacity(prims as usize * 6);
                 for t in 0..prims {
-                    ix.extend_from_slice(&[0, (t + 1) as u16, (t + 2) as u16]);
+                    for v in [0, (t + 1) as u16, (t + 2) as u16] {
+                        bytes.extend_from_slice(&v.to_le_bytes());
+                    }
                 }
-                let bytes: Vec<u8> = ix.iter().flat_map(|v| v.to_le_bytes()).collect();
-                (2, b.data(&bytes, 4), ix.len() as u32, 0)
+                (2, b.data(&bytes, 4), prims * 3, 0)
             }
             (None, _) => (0, 0, count, 0),
         };
