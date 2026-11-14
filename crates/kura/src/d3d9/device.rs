@@ -570,6 +570,10 @@ unsafe fn stale(d: &D3d, iface: u32, m: u32, a: &dyn Fn(usize) -> u32) -> (bool,
         // (their contents: the draws read those again, and textures' and surfaces' page
         // textures and formats come from the objects at each draw)
         IF_VB | IF_IB | IF_TEXTURE | IF_SURFACE => return NONE,
+        // (GetDevice and Capture read the device's state, queries none of it: Siglus captures
+        // a block around every draw, and each one made the next draw prepare from scratch)
+        IF_STATEBLOCK if m == 3 || m == 4 => return NONE,
+        IF_QUERY => return NONE,
         IF_DEVICE => {}
         _ => return BOTH,
     }
