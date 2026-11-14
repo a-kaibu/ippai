@@ -1,4 +1,4 @@
-// The app installed and offline (web/src/sw.ts, pwa.ts, manifest.webmanifest): starts ippai
+// The app installed and offline (web/src/sw.ts, pwa.ts, manifest.webmanifest): starts masu
 // serve on a small store and checks in Chromium that the page is installable, that after one
 // online visit it opens with no network (still cross-origin isolated, the game list as last
 // read, "オフラインです") and that a file never fetched answers at once as offline (no retries);
@@ -8,7 +8,7 @@
 // into web/dist/sake: the game is saved to the device from its dialog, then started offline,
 // and must print a line matching EXPECT (default: one starting with the program's name).
 //
-//   node tests/offline-browser.mjs [path to ippai]   (web/dist built; PLAYWRIGHT as elsewhere)
+//   node tests/offline-browser.mjs [path to masu]   (web/dist built; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -17,7 +17,7 @@ import { basename, join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
 const work = mkdtempSync(join(tmpdir(), "ippai-offline-"));
 // (a copy of web/dist: without a sake build, stand-ins for its files, which 端末に保存 fetches)
 const web = join(work, "web");

@@ -19,6 +19,6 @@ fuzz_target!(|data: &[u8]| {
         }
     };
     if let Ok(w) = r {
-        ippai_fuzz::valid_wgsl(&w.code);
+        masu_fuzz::valid_wgsl(&w.code);
     }
 });

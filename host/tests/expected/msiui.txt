@@ -1,23 +1,23 @@
 == cancel
-  dialog "ippai msi test Setup" 360x200
+  dialog "masu msi test Setup" 360x200
     Edit "nobody" 20,53 267x24
     Button "Install extras" 20,87 267x23
     Button "&Next" 200,160 75x23
-    Static "Welcome to ippai msi test" 20,13 320x20
+    Static "Welcome to masu msi test" 20,13 320x20
     Button "Cancel" 280,160 75x23
   result 1602
   state -1
   extras component: -1
 == install
-  dialog "ippai msi test Setup" 360x200
+  dialog "masu msi test Setup" 360x200
     Edit "nobody" 20,53 267x24
     Button "Install extras" 20,87 267x23
     Button "&Next" 200,160 75x23
-    Static "Welcome to ippai msi test" 20,13 320x20
+    Static "Welcome to masu msi test" 20,13 320x20
     Button "Cancel" 280,160 75x23
   check box: 1
   progress dialog: "Copying new files"
-  dialog "ippai msi test Setup" 360x133
+  dialog "masu msi test Setup" 360x133
     Button "&Finish" 280,93 75x23
     Static "Thanks, Kota" 20,20 320x20
   result 0

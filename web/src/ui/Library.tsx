@@ -1,6 +1,6 @@
 // The game list (play.html without ?run=): a header (name, search, 設定 at the top right: a
 // sidebar with tabs, ui/Sidebar.tsx), the game last played to continue, the cards with cover, brand, year
-// and score from `ippai meta` (ordered and split into sections by brand or year as chosen:
+// and score from `masu meta` (ordered and split into sections by brand or year as chosen:
 // library-view.ts), and a sidebar with the game's details and records. Picking a game starts it from that click
 // (audio and fullscreen need the user gesture); one not yet saved to the device whole is saved
 // there first (SaveFirst.tsx), and 遊ぶ, a click again, starts it.
@@ -845,7 +845,7 @@ export function Library({
             className="flex shrink-0 items-center gap-2 rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
           >
             <Logo />
-            <h1 className="text-lg font-bold tracking-tight">ippai</h1>
+            <h1 className="text-lg font-bold tracking-tight">masu</h1>
             {build && (
               <span className="text-[10px] text-muted-foreground tabular-nums sm:text-xs" data-testid="build">
                 {build}
@@ -907,7 +907,7 @@ export function Library({
             <p className="text-base font-medium text-foreground">ゲームがまだありません</p>
             <p>
               ゲームのフォルダを{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5">ippai add &lt;dir&gt; --exe &lt;exe&gt;</code>{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5">masu add &lt;dir&gt; --exe &lt;exe&gt;</code>{" "}
               で追加すると、ここに並びます。
             </p>
           </div>

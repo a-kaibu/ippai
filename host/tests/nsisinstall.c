@@ -42,7 +42,7 @@ static void state(const char *what) {
         printf("  %s: %s\n", *files[i] ? files[i] : "(folder)", exists(files[i]) ? "there" : "missing");
     char v[MAX_PATH] = "";
     DWORD n = sizeof v;
-    LONG r = RegGetValueA(HKEY_CURRENT_USER, "Software\\ippai\\nsistest", "path", RRF_RT_REG_SZ, NULL, v, &n);
+    LONG r = RegGetValueA(HKEY_CURRENT_USER, "Software\\masu\\nsistest", "path", RRF_RT_REG_SZ, NULL, v, &n);
     strcat(v, "\\");
     printf("  HKCU path: %ld %s\n", r, r ? "" : strcmp(v, dir) ? v : "<INSTDIR>");
     n = sizeof v;

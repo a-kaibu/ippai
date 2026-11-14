@@ -8,12 +8,12 @@ again 1 err 183
 third view +0x18 12345678
 open wide 1
 OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, NULL) != NULL                       = 0 err 87
-OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "ippai-winref-none") != NULL        = 0 err 2
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "masu-winref-none") != NULL        = 0 err 2
 CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "bad\\name") != NULL = 0 err 3
-OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "ippai-winref-mapev") != NULL       = 0 err 6
-CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "ippai-winref-mapev") != NULL = 0 err 6
+OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "masu-winref-mapev") != NULL       = 0 err 6
+CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "masu-winref-mapev") != NULL = 0 err 6
 mapping after the event closed 1
-OpenEventA(EVENT_ALL_ACCESS, FALSE, "ippai-winref-mapev") != NULL                = 0 err 6
+OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-mapev") != NULL                = 0 err 6
 OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, n) != NULL                          = 0 err 2
 create again 1 err 0
 new section +0x18 00000000

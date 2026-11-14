@@ -2,7 +2,7 @@
 
 Games are stored in Hugging Face Storage Buckets (S3 API) as encrypted FastCDC chunks of 4 MiB
 on average (docs/chunk-size.md). The browser fetches them straight from the bucket with signed
-URLs (ippai serve `/store-direct`) and decrypts them itself. This note says why play from the
+URLs (masu serve `/store-direct`) and decrypts them itself. This note says why play from the
 bucket felt slow, and what the browser does about it.
 
 ## What the bucket costs
@@ -23,10 +23,10 @@ work is to ask early, to ask once, and to keep the request count under the limit
 
 Every request to the bucket goes through the network worker:
 
-- **Fetch once.** The worker keeps one promise per chunk in flight (`ippaiInflight`). A second
+- **Fetch once.** The worker keeps one promise per chunk in flight (`masuInflight`). A second
   reader of the same chunk joins it, and a game read that joins a lower class's fetch raises that
   fetch to the game's class. Contexts outside the worker (the page's save to the device) take a
-  Web Lock `ippai-chunk:<hex>` and look in the Cache first.
+  Web Lock `masu-chunk:<hex>` and look in the Cache first.
 - **One budget.** A token bucket in a SharedArrayBuffer holds the request budget: it refills at
   `RATE` (9) a second up to `BURST` (40). The page and the worker share the same buffer
   (web/src/budget.ts has the page's copy, tested against the worker's). Classes, most urgent
@@ -51,15 +51,15 @@ Every request to the bucket goes through the network worker:
   on a phone of 4 GB or less), and leaves out of a run the chunks whose lock the worker holds.
 - **Batch presign.** `POST /store-direct` with a JSON list of chunk paths answers each as
   `GET /store-direct/<path>` would, up to 4096 at once. The warm and the save ask for 256 at a
-  time ahead of fetching them, so most bucket GETs need no round trip to ippai serve first.
+  time ahead of fetching them, so most bucket GETs need no round trip to masu serve first.
 - **Yield to the game.** While the game waits for a read, the save to the device keeps only 2
   fetches going, and the warm narrows to its busy width.
 
 ## Engine-aware hints (crates/kura/src/vfs/hints.rs)
 
 When a read misses the device, kura says what the game will read soon, and the worker fetches it
-in the background (`vnvm_fetch_hint` → `ippaiFetchHint`). How engines lay out their files
-(vnrun's notes for each engine) gives two shapes:
+in the background (`vnvm_fetch_hint` → `masuFetchHint`). How engines lay out their files
+(masu's notes for each engine) gives two shapes:
 
 - **Loose files in a folder**, read in name order: voices `v_0001.ogg`, `v_0002.ogg`, ...; CG
   pictures; scripts. A read hints the next files of the folder of the same kind: 48 sounds,
@@ -73,14 +73,14 @@ in the background (`vnvm_fetch_hint` → `ippaiFetchHint`). How engines lay out 
 
 Movies are never hinted: they are read front to back as they play (vfs.rs `SEQ_AHEAD`).
 
-## Delivery packs (crates/ippai/src/storage.rs pack_objects)
+## Delivery packs (crates/masu/src/storage.rs pack_objects)
 
 A pack is a game's chunk objects, exactly as the bucket has them (still encrypted, each with
 its own key), side by side in one big object, in the order the game reads them. The chunk
 objects themselves stay, so the storage format does not change and nothing reads them
 differently; a pack is only a quicker way to the same bytes.
 
-- `ippai storage packs [game...]` makes them, about 64 MiB each (`--mib`). The order is the
+- `masu storage packs [game...]` makes them, about 64 MiB each (`--mib`). The order is the
   game's read-order list first (`<jit>/game.<id>.chunks`: what earlier runs and serve's
   pre-run read first), then the rest of its trees in tree order. The prefix's chunks are left
   out (every game shares them). Running it again packs only what was added or replaced.
@@ -103,11 +103,11 @@ differently; a pack is only a quicker way to the same bytes.
   makes its chunks read alone again.
 
 ```sh
-ippai storage usage                 # by kind (chunks, packs, saves, ...), then each game:
+masu storage usage                 # by kind (chunks, packs, saves, ...), then each game:
                                     # its own chunks (freed if it goes), shared ones, its packs
-ippai storage unpack saga_planets-2 # drop a game's packs ("?": packs from before marking)
-ippai storage unpack --all
-ippai storage gc --grace-days 0     # then delete them from the bucket
+masu storage unpack saga_planets-2 # drop a game's packs ("?": packs from before marking)
+masu storage unpack --all
+masu storage gc --grace-days 0     # then delete them from the bucket
 ```
 
 worker2's uplink is slow (about 100 KB/s, measured 2026-11-14: a 64 MiB pack did not get up in
@@ -117,20 +117,20 @@ stores name, and retires the packs no row names.
 
 ```sh
 # on the server: a backup of its database
-ippai storage backup                                   # prints <uuid>
+masu storage backup                                   # prints <uuid>
 # on the PC (same storage config; the server's read-order lists copied to <jit>)
-ippai --store <dir> storage merge <uuid>               # the server's objects, same UUIDs
-ippai --store <dir> storage packs --jit <jit>
-ippai --store <dir> storage backup                     # prints <uuid2>
+masu --store <dir> storage merge <uuid>               # the server's objects, same UUIDs
+masu --store <dir> storage packs --jit <jit>
+masu --store <dir> storage backup                     # prints <uuid2>
 # on the server
-ippai storage merge <uuid2>
+masu storage merge <uuid2>
 ```
 
 The user uploads the packs (this needs the bucket's write credentials):
 
 ```sh
-IPPAI_STORAGE_CONFIG=... ippai storage packs            # every game
-IPPAI_STORAGE_CONFIG=... ippai storage packs saga_planets-2
+MASU_STORAGE_CONFIG=... masu storage packs            # every game
+MASU_STORAGE_CONFIG=... masu storage packs saga_planets-2
 ```
 
 ## Chunks on the device: OPFS (web/src/chunkstore.ts)
@@ -144,7 +144,7 @@ so games saved before stay saved, and an entry there goes when it is kept or del
   handle, kept open 5 s for the next blocks (32 at most). Measured in headless Chromium
   (tests/opfs-read-browser.mjs): a 256 KiB block of a 4 MiB chunk takes 1.4 ms against Cache
   Storage's 1.6 ms. At that size the disk dominates; the gain is bigger for small reads. It also
-  avoids Cache Storage, which sometimes did not answer at all (IPPAI_CACHE_MS).
+  avoids Cache Storage, which sometimes did not answer at all (MASU_CACHE_MS).
 - A file exists empty from its creation, and its bytes land whole when it is closed. An empty
   file reads as not there.
 - A file the worker holds open cannot be deleted. A delete from the page then leaves it, and
@@ -196,12 +196,12 @@ Two more say what comes next whichever way the game goes, on its first run too:
   script, 8 MiB per file. The gallery's script names the gallery's pictures, a route's its
   scenes. Scripts a game encrypts its own way (cxdec and the like) read as noise and name
   nothing; compiled, packed ones (Siglus Scene.pck, BGI) neither (per-engine decoders: later).
-- **What came next before.** ippai serve keeps, beside a game's read-order list, which chunk
+- **What came next before.** masu serve keeps, beside a game's read-order list, which chunk
   each chunk led to (`<list>.next`, every branch, the newest 4 per chunk: serve.rs
   `merge_edges`). At the game's first read of a chunk the network worker queues what followed
-  it, nearest first across branches (fetch-bridge.js `ippaiFollow`, 12 at most).
+  it, nearest first across branches (fetch-bridge.js `masuFollow`, 12 at most).
 
-- **Read ahead of any play.** `GET /foresee/<tree>` (crates/ippai/src/foresee.rs): ippai
+- **Read ahead of any play.** `GET /foresee/<tree>` (crates/masu/src/foresee.rs): masu
   serve reads every script of a tree once (loose, and in its .xp3s) into a table of what each
   names (`<jit>/foresee/<tree>.tsv`, read again when the tree's list changes; 202 while it
   reads). The page hands it to kura at the start (web/src/foresee.ts, `vnhost_vfs_foresee`).
@@ -209,16 +209,16 @@ Two more say what comes next whichever way the game goes, on its first run too:
   without being read on the device; the table is where scripts only the server can decode (per
   engine, later) come in.
 
-Each first read of a chunk is counted by where it was then (`ippaiReads`): `device`, `saving`
+Each first read of a chunk is counted by where it was then (`masuReads`): `device`, `saving`
 (checked, on its way into the cache), `coming` (a fetch ahead on its way), `none` (the game's
 own fetch); with the milliseconds waited. The run log has a line a minute: `game reads, first
 of each chunk: ...`. `coming` + `none` is the real miss rate the 37% above is a floor of.
 
 ## Run traces and their replay (crates/kura/src/vfs/trace.rs, replay.rs)
 
-Each run sends its read trace with its chunks list (`IPPAI_TRACE_URL`, the page's:
+Each run sends its read trace with its chunks list (`MASU_TRACE_URL`, the page's:
 `trace.game.<id>.<start>`): every chunk's first read with its time, file, offset and wait, and
-every hint with its source (`layout`, `script`). ippai serve keeps the newest 300 in
+every hint with its source (`layout`, `script`). masu serve keeps the newest 300 in
 `<jit>/traces/`. `replay_traces` replays them in time against a model of the bucket (each
 request 1.5 s, 6 ahead at once, newest hints first), each run against its game's other runs:
 per game and foresight (none, layout, script, next, list and their sums), the reads that still
@@ -234,7 +234,7 @@ foresight, labelled by whether the game read them soon).
 ## sake's wasm from the bucket (web/src/wasmsource.ts)
 
 sake.wasm is ~23 MB (~5 MB as zstd). From worker2 it came at ~100 KB/s at times (2026-11-14:
-anemoi sat on "起動中" for minutes, the first instruction not run yet). `ippai serve` with S3
+anemoi sat on "起動中" for minutes, the first instruction not run yet). `masu serve` with S3
 puts each `<web>/sake/*.wasm` in the bucket once per build as a chunk (named by its BLAKE3,
 zstd 19, encrypted: store_api.rs `publish_wasm`), and `GET /sake-direct/<file>` says how to
 fetch it (a presigned URL, key, object, `chunk`), the server's own disk cache ignored. The page

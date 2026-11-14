@@ -6,9 +6,9 @@ use std::{
     sync::{Arc, OnceLock},
 };
 const BODY_MAX: usize = 4 * 1024 * 1024;
-/// The only HTTPS hosts the browser transport reaches: (ippai serve's route, host), on 443. The
+/// The only HTTPS hosts the browser transport reaches: (masu serve's route, host), on 443. The
 /// index is the transport's target number (host/tls-bridge.js has the routes in this order;
-/// crates/ippai/src/tls_relay.rs the same routes, checked by its tests).
+/// crates/masu/src/tls_relay.rs the same routes, checked by its tests).
 pub const DESTINATIONS: [(&str, &str); 3] = [
     ("soft-denchi", "charge1.soft-denchi.jp"),
     ("dmm-softdenchi", "dlsoft.dmm.co.jp"),

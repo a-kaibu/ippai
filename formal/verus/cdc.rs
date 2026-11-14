@@ -1,5 +1,5 @@
 // Verus (https://github.com/verus-lang/verus): unbounded proofs, for every input length, of the
-// FastCDC cutter of crates/ippai/src/cdc.rs (Cutter::next, the same steps on the same state;
+// FastCDC cutter of crates/masu/src/cdc.rs (Cutter::next, the same steps on the same state;
 // the gear table and the masks are parameters here). What Kani and proptest check for
 // bounded inputs, proved for all:
 //

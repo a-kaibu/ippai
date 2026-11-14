@@ -1,4 +1,4 @@
-//! How well the hints (hints.rs) foresee real games' reads: ippai serve's read-order lists
+//! How well the hints (hints.rs) foresee real games' reads: masu serve's read-order lists
 //! (`<jit>/game.<id>.chunks`: the store chunks runs of a game read first, in that order) replayed
 //! against the games' trees, for the hints as they are and for variants of them. Per engine
 //! (the game entry's `engine`): reads, how many of them waited for the network (none hinted
@@ -6,7 +6,7 @@
 //!
 //!   HINTS_STORE=<store> HINTS_JIT=<jit> cargo test -p kura --lib hints_eval -- --ignored --nocapture
 //!
-//! With HINTS_FORESEE=<dir> (`ippai foresee --out <dir>`: each tree's table and archive members)
+//! With HINTS_FORESEE=<dir> (`masu foresee --out <dir>`: each tree's table and archive members)
 //! also what the static foresight (vfs.rs `predicted` with a table) adds: each read reaches the
 //! members (or the loose file) its chunk holds, and those hint what the table says they name or
 //! what follows them in their scenes, as kura does. HINTS_DEBUG=1: a line for each read (what
@@ -40,7 +40,7 @@ fn tree(text: &str) -> Vec<File> {
         .collect()
 }
 
-/// `json` without the whitespace between its tokens (ippai writes games/<id>.json pretty).
+/// `json` without the whitespace between its tokens (masu writes games/<id>.json pretty).
 fn compact(json: &str) -> String {
     let (mut out, mut quoted, mut escaped) = (String::with_capacity(json.len()), false, false);
     for c in json.chars() {
@@ -60,7 +60,7 @@ fn compact(json: &str) -> String {
     out
 }
 
-/// A JSON string field's value, the simple way (games/<id>.json is ippai's own, compacted).
+/// A JSON string field's value, the simple way (games/<id>.json is masu's own, compacted).
 fn field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     let at = json.find(&format!("\"{key}\":\""))? + key.len() + 4;
     json[at..].find('"').map(|e| &json[at..at + e])
@@ -83,7 +83,7 @@ struct Variant {
     foresee: bool,
 }
 
-/// What a game's trees' tables foresee (`ippai foresee`), over its files.
+/// What a game's trees' tables foresee (`masu foresee`), over its files.
 #[derive(Default)]
 struct Foresight {
     table: HashMap<String, Vec<String>>,
@@ -353,7 +353,7 @@ fn hints_eval() {
     for e in games {
         let Some(id) = e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).map(String::from) else { continue };
         let json = compact(&std::fs::read_to_string(e.path()).unwrap_or_default());
-        // (its own list, else its program's newest: ippai pack.rs read_order_list)
+        // (its own list, else its program's newest: masu pack.rs read_order_list)
         let list = std::fs::read(format!("{jit}/game.{id}.chunks")).ok().filter(|l| l.len() >= 16).or_else(|| {
             let run = field(&json, "run")?.replace("\\\\", "\\");
             let prog: String = run.chars().map(|c| if c.is_ascii_alphanumeric() || "_.-".contains(c) { c } else { '_' }).collect();
@@ -482,7 +482,7 @@ fn replay_counts_what_hints_foresaw() {
     assert_eq!(engine(&names(&["game.exe", "readme.txt"])), "?");
     assert_eq!(mounts(r#"{"mounts":["/ippai/game=g1","/x="],"engine":"KiriKiri"}"#), vec!["g1"]);
     assert_eq!(field(r#"{"id":"a","engine":"KiriKiri Z"}"#, "engine"), Some("KiriKiri Z"));
-    // (as ippai writes them: pretty, spaces inside strings kept)
+    // (as masu writes them: pretty, spaces inside strings kept)
     let pretty = compact("{\n  \"run\": \"Z:\\\\ippai\\\\a b.exe\",\n  \"mounts\": [\n    \"/ippai/game=g 1\"\n  ],\n  \"engine\": \"Siglus \\\"x\\\"\"\n}");
     assert_eq!(mounts(&pretty), vec!["g 1"]);
     assert_eq!(field(&pretty, "run"), Some("Z:\\\\ippai\\\\a b.exe"));

@@ -81,7 +81,7 @@ def main():
                 known[(engine, op, kind)] = int(n)
     rows, worse = [], []
     for engine, jit in (("jit", "1"), ("interp", "0")):
-        mine = run(["node", sake, exe, a.seed, a.count], dict(env, IPPAI_JIT=jit))
+        mine = run(["node", sake, exe, a.seed, a.count], dict(env, MASU_JIT=jit))
         if len(mine) != len(ref):
             print(f"sake ({engine}) stopped after {len(mine)} of {len(ref)} operations")
             worse.append(f"{engine}: incomplete output")

@@ -7,8 +7,8 @@
 //!
 //! Unlike the sampled tests (diff_native*.rs), the list of codes is not hand-made: it is
 //! every code iced knows for these features, so an instruction the interpreter lacks shows up
-//! here as "not implemented" instead of not being tested. `IPPAI_ISA_FILTER=<prefix>` limits
-//! the run to codes whose name or mnemonic starts with it; `IPPAI_ISA_CASES=<n>` sets the
+//! here as "not implemented" instead of not being tested. `MASU_ISA_FILTER=<prefix>` limits
+//! the run to codes whose name or mnemonic starts with it; `MASU_ISA_CASES=<n>` sets the
 //! cases per code.
 #![cfg(all(target_arch = "x86_64", target_os = "linux"))]
 
@@ -75,7 +75,7 @@ fn skipped(m: Mn) -> bool {
 }
 
 fn codes() -> Vec<Code> {
-    let filter = std::env::var("IPPAI_ISA_FILTER").ok();
+    let filter = std::env::var("MASU_ISA_FILTER").ok();
     Code::values()
         .filter(|&c| {
             let op = c.op_code();
@@ -348,7 +348,7 @@ fn every_simd_and_bit_instruction_matches_the_host_cpu() {
         eprintln!("host CPU without AVX2/FMA/BMI2/LZCNT: skipped");
         return;
     }
-    let cases: usize = std::env::var("IPPAI_ISA_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(CASES);
+    let cases: usize = std::env::var("MASU_ISA_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(CASES);
     let list = codes();
     eprintln!("{} codes x {cases}", list.len());
     let page = unsafe { libc::mmap(std::ptr::null_mut(), 0x10000, libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) } as *mut u8;

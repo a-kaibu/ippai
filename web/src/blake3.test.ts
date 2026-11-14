@@ -1,6 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { blake3Hex } from "./blake3";
-// chunk names from the blake3 crate (crates/ippai/src/pack.rs makes the file)
+// chunk names from the blake3 crate (crates/masu/src/pack.rs makes the file)
 import tsv from "../../testdata/blake3.tsv?raw";
 
 /** The inputs testdata/blake3.tsv names: `p` i % 251, `r` an LCG seeded with the length. */

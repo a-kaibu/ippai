@@ -1,8 +1,8 @@
-// Web games (NW.js pages, web/src/html.ts + frame.ts) run on ippai serve's game listener: another
+// Web games (NW.js pages, web/src/html.ts + frame.ts) run on masu serve's game listener: another
 // origin than the app. Packs a fake NW.js game whose page tries to reach the app, starts the
 // server and checks in Chromium that the game gets its saves, writes them back, and reaches
 // nothing else: not the page, not the server's other routes.
-// node tests/webgame-isolation.mjs [path to ippai] (PLAYWRIGHT, CHROME as in fetch-browser.mjs)
+// node tests/webgame-isolation.mjs [path to masu] (PLAYWRIGHT, CHROME as in fetch-browser.mjs)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -11,8 +11,8 @@ import { join } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = process.argv[2] ?? "target/debug/ippai";
-const work = mkdtempSync(join(tmpdir(), "ippai-webgame-"));
+const bin = process.argv[2] ?? "target/debug/masu";
+const work = mkdtempSync(join(tmpdir(), "masu-webgame-"));
 const game = join(work, "game");
 mkdirSync(join(game, "www"), { recursive: true });
 writeFileSync(join(game, "Game.exe"), "MZ not really");
@@ -166,7 +166,7 @@ try {
     addEventListener(
       "message",
       (e) => {
-        if (e.data?.ippai === "hello" && dropped++ === 0) e.stopImmediatePropagation();
+        if (e.data?.masu === "hello" && dropped++ === 0) e.stopImmediatePropagation();
       },
       true,
     );

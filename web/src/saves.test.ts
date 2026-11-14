@@ -11,8 +11,8 @@ import {
   type SavesModule,
 } from "./saves";
 
-// The saved-game blobs across pages and devices (saves.ts): a model of ippai serve's /saves
-// (crates/ippai/src/saves.rs: a revision per name, If-Match, its revisions kept) and of each
+// The saved-game blobs across pages and devices (saves.ts): a model of masu serve's /saves
+// (crates/masu/src/saves.rs: a revision per name, If-Match, its revisions kept) and of each
 // device's OPFS; a "page" is a fresh transport over the same files.
 
 class Server {
@@ -54,7 +54,7 @@ const g = globalThis as unknown as { location?: unknown };
 const oldLocation = g.location;
 let online = true;
 beforeAll(() => {
-  g.location = { href: "https://ippai.test/play.html" };
+  g.location = { href: "https://masu.test/play.html" };
   Object.defineProperty(navigator, "onLine", { get: () => online, configurable: true });
 });
 afterAll(() => {

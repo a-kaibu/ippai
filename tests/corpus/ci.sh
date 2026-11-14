@@ -7,9 +7,9 @@
 # level get one more try (a busy runner can miss a timing). Grading: tests/corpus/check.py.
 #
 #   tests/corpus/ci.sh DIST FONTS OUT
-#     DIST: an unpacked release (ippai, web/: tools/ci/build.sh)
+#     DIST: an unpacked release (masu, web/: tools/ci/build.sh)
 #     FONTS: sake's C:\windows\Fonts (tools/ci/sake-fonts.py), as a release's fonts/; and
-#     with env RTP the official RPG Maker RTPs `ippai rtp --out RTP` installed. That is all of C:\: no Wine
+#     with env RTP the official RPG Maker RTPs `masu rtp --out RTP` installed. That is all of C:\: no Wine
 #     DLLs, so a title that needs a DLL sake does not implement yet fails here, and
 #     check.py lists the DLLs each title missed.
 #   env: SET=smoke|full (default smoke: rows with smoke=1), SCREEN (sake's screen, default
@@ -33,8 +33,8 @@ BASE=$WORK/base-store
 if [ ! -d "$BASE" ]; then
   set -e
   rm -rf "$BASE.part"
-  # (as `ippai serve` makes it: a release's fonts/, and the RTPs it installed)
-  "$DIST/ippai" --store "$BASE.part" prefix "$FONTS" ${RTP:+--rtp "$RTP"} >/dev/null
+  # (as `masu serve` makes it: a release's fonts/, and the RTPs it installed)
+  "$DIST/masu" --store "$BASE.part" prefix "$FONTS" ${RTP:+--rtp "$RTP"} >/dev/null
   mv "$BASE.part" "$BASE"
   set +e
 fi
@@ -51,12 +51,12 @@ EOF
 echo "shard ${SHARD:-0}/${SHARDS:-1}: $(wc -l < "$IDS") titles"
 
 # (none: sake's own screen, as before 11bef05)
-case ${SCREEN:-1920x1080} in none) SCREEN_QS= ;; *) SCREEN_QS="&env=IPPAI_SCREEN%3D${SCREEN:-1920x1080}" ;; esac
+case ${SCREEN:-1920x1080} in none) SCREEN_QS= ;; *) SCREEN_QS="&env=MASU_SCREEN%3D${SCREEN:-1920x1080}" ;; esac
 # (SAKE_ENV: NAME=value ... more of sake's environment, as a dispatch asks)
 for kv in ${SAKE_ENV:-}; do SCREEN_QS="$SCREEN_QS&env=${kv%%=*}%3D${kv#*=}"; done
 run1() {  # ids file, port
-  IPPAI_DIST=$DIST SAKE_FONTS=$FONTS BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
-    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1&env=IPPAI_API_COUNTS%3D1'"$SCREEN_QS" STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
+  MASU_DIST=$DIST SAKE_FONTS=$FONTS BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
+    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1&env=MASU_API_COUNTS%3D1'"$SCREEN_QS" STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
     python3 "$ROOT/tests/corpus-run.py" "$TITLES" "$1" "$OUT"
 }
 # LANES (default 2) queues side by side, each with its own Chromium, server and downloads: the

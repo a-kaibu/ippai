@@ -1,5 +1,5 @@
 # Folders and programs of real packages (the user's library) and the ErogameScape game each is, against
-# testdata/egs-games.tsv.gz (crates/ippai/src/egs_match.rs, test corpus::library). Columns: folder, program, expected:
+# testdata/egs-games.tsv.gz (crates/masu/src/egs_match.rs, test corpus::library). Columns: folder, program, expected:
 # an id (checked by hand), - (none matches: not in the list or no usable name), or x<id> (matched wrongly today: id it
 # picks; to fix, not to keep). The title given is the folder's last part, the program at the tree's root.
 frontwing\ピュアガール	puregirl.exe	17039

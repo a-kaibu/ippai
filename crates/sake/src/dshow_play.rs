@@ -1,5 +1,5 @@
-//! Playback for DirectShow's filter graph (dshow.rs): a movie `ippai pack` made a `.vnv` of
-//! (crates/ippai/src/movie.rs: VP9 frames the page decodes with WebCodecs, or uncompressed
+//! Playback for DirectShow's filter graph (dshow.rs): a movie `masu pack` made a `.vnv` of
+//! (crates/masu/src/movie.rs: VP9 frames the page decodes with WebCodecs, or uncompressed
 //! ones in tests, and its sound as Ogg Vorbis) plays on one host thread, which draws its frames
 //! into a display window of its own over the game's (where the video window or the EVR's
 //! rectangle is) and queues its sound to kura's audio output.

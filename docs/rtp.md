@@ -18,13 +18,13 @@ cdn.tkool.jp), but not to pass on. The page and each package's 利用規約.txt 
   配布、販売、加工・改変等することはできません」.
 - VX RTP 2.02 (`vx_rtp202.zip`): no redistribution without Enterbrain's written permission.
 
-So no RTP file is in the repository, in Releases or in any CI artifact. Each ippai server
+So no RTP file is in the repository, in Releases or in any CI artifact. Each masu server
 downloads the packages from the publisher itself, as a player installing them on Windows
 would, and installs them for its own sake (user's call, 2026-11-14: 「サーバーが公式から自動取得」).
 An earlier stand-in (our own generated pictures and tones under the RTP's names) was replaced
 by this.
 
-## crates/ippai/src/rtp.rs
+## crates/masu/src/rtp.rs
 
 `rtp::PACKAGES` lists the five official packages with their SHA-256 and size; a download that
 does not match is not used.
@@ -49,15 +49,15 @@ The setups are read, not run:
 - 2000: the publisher's fixed pictures (`RTP_patchk_190612.zip`, the support page's
   instructions) replace the setup's モンスター / 主人公3 / 基本 / ダンジョン / 船 / 内装 / 外観.
 
-`ippai rtp [--out DIR] [--cache DIR]` installs them into DIR (default the data directory's
+`masu rtp [--out DIR] [--cache DIR]` installs them into DIR (default the data directory's
 `rtp/`) as `drive_c/...` with an `INSTALLED` list; downloads (~280 MB) stay in the cache's
-`rtp/`. `ippai serve` does it in a background thread when the data directory has not got all
-five (env `IPPAI_RTP=0`: not), then puts them in sake's C:\.
+`rtp/`. `masu serve` does it in a background thread when the data directory has not got all
+five (env `MASU_RTP=0`: not), then puts them in sake's C:\.
 
 ## Into sake's C:\
 
 `pack::ensure_prefix(store, fonts, Some(rtp))` (at serve's start, after the background install,
-and `ippai prefix FONTS --rtp DIR`) copies the RTP part of `rtp/drive_c` (`pack::RTP_DIRS` and
+and `masu prefix FONTS --rtp DIR`) copies the RTP part of `rtp/drive_c` (`pack::RTP_DIRS` and
 the XP RTP's system32 DLLs) into the tree `prefix32`, with a stamp
 `Program Files/ippai-rtp-<hash of those files>`. A tree with another stamp gets its RTP part
 replaced and keeps the rest (fonts, files put in by hand: `merge_rtp`). sake sets each RTP's
@@ -65,13 +65,13 @@ registry value when its folder is there.
 
 ## Tests
 
-- `rtp::tests::official_packages` (`IPPAI_RTP_TEST=<cache>`; CI caches the zips): all five
-  installed, files where the setups put them; with `IPPAI_RTP_ORACLE=1` every file compared
+- `rtp::tests::official_packages` (`MASU_RTP_TEST=<cache>`; CI caches the zips): all five
+  installed, files where the setups put them; with `MASU_RTP_ORACLE=1` every file compared
   byte for byte with innoextract (Inno) and unshield (InstallShield) output.
 - proptests: `rtp::paths_stay_inside` (setup paths never leave drive_c),
   `iscab::garbage_is_an_error`, `iscab::deobfuscate_is_one_to_one`,
   `pack::merge_rtp_replaces_the_rtp_part`; `pack::prefix_with_rtps`.
-- Corpus (`tests/corpus/ci.sh` with `RTP=`, corpus.yml runs `ippai rtp` with the cached zips):
+- Corpus (`tests/corpus/ci.sh` with `RTP=`, corpus.yml runs `masu rtp` with the cached zips):
   VX Ace dl_RJ260990 / dl_RJ177152 / dl_RJ227621, VX dl_RJ106544 (ships its RGSS202J.dll) and
   dl_RJ170671 (the engine from the RTP).
 

@@ -1,7 +1,7 @@
 //! msiexec.exe: a small program sake writes to C:\Windows\System32 (a PE that calls
-//! msi!ippai_msiexec and exits with what it returns), so that installers and uninstall
+//! msi!masu_msiexec and exits with what it returns), so that installers and uninstall
 //! strings that run "msiexec /i package.msi" or "MsiExec.exe /X{code}" start a process of
-//! their own as on Windows. ippai_msiexec reads the command line:
+//! their own as on Windows. masu_msiexec reads the command line:
 //!   /i /package <msi>    install          /x /uninstall <msi | product code>  remove
 //!   /qn /qb /qr /qf /quiet /passive        the UI level ("+", "-", "!" after it ignored)
 //!   /norestart /promptrestart /forcerestart /l... <file>   accepted
@@ -13,7 +13,7 @@ use crate::msi_install::{install_product, set_ui_level, INSTALLUILEVEL_BASIC, IN
 pub const PATH: &str = "C:\\Windows\\System32\\msiexec.exe";
 
 /// The image: PE32, one section at RVA 0x1000 with the code and the imports of
-/// msi!ippai_msiexec and kernel32!ExitProcess.
+/// msi!masu_msiexec and kernel32!ExitProcess.
 pub fn image() -> Vec<u8> {
     const BASE: u32 = 0x40_0000;
     const RVA: u32 = 0x1000;
@@ -64,7 +64,7 @@ pub fn image() -> Vec<u8> {
     let t = 0x200usize;
     let iat_msi = BASE + RVA + 0x90;
     let iat_k32 = BASE + RVA + 0x98;
-    // call [msi!ippai_msiexec]; push eax; call [kernel32!ExitProcess]; ret
+    // call [msi!masu_msiexec]; push eax; call [kernel32!ExitProcess]; ret
     let mut code = vec![0xff, 0x15];
     code.extend(iat_msi.to_le_bytes());
     code.push(0x50);
@@ -83,7 +83,7 @@ pub fn image() -> Vec<u8> {
     for (thunk, name) in [(0x80, 0xa0u32), (0x88, 0xc0), (0x90, 0xa0), (0x98, 0xc0)] {
         w32(&mut f, t + thunk, RVA + name);
     }
-    f[t + 0xa2..t + 0xa2 + 13].copy_from_slice(b"ippai_msiexec");
+    f[t + 0xa2..t + 0xa2 + 13].copy_from_slice(b"masu_msiexec");
     f[t + 0xc2..t + 0xc2 + 11].copy_from_slice(b"ExitProcess");
     f[t + 0xe0..t + 0xe7].copy_from_slice(b"msi.dll");
     f[t + 0xf0..t + 0xfc].copy_from_slice(b"kernel32.dll");
@@ -175,8 +175,8 @@ pub fn parse_words(w: &[String]) -> Option<(bool, String, u32, String)> {
     Some((remove, target?, level, props.join(" ")))
 }
 
-/// msi!ippai_msiexec: the command line run; its result is the exit code.
-fn ippai_msiexec(c: &mut Ctx) -> u32 {
+/// msi!masu_msiexec: the command line run; its result is the exit code.
+fn masu_msiexec(c: &mut Ctx) -> u32 {
     let line = crate::k32::arg_str(crate::k32::cmdline().1, true);
     // (by argv's rules: " /i x.msi", with the program left out, is an install)
     let w = crate::process::argv(&line);
@@ -195,7 +195,7 @@ fn ippai_msiexec(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
-    implement("msi", "ippai_msiexec", ippai_msiexec);
+    implement("msi", "masu_msiexec", masu_msiexec);
 }
 
 #[cfg(test)]
@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(name(rva(d + 12)), "msi.dll");
         assert_eq!(name(rva(d + 20 + 12)), "kernel32.dll");
         let at = |r: usize| r - 0x1000 + 0x200;
-        assert_eq!(name(rva(at(rva(d))) + 2), "ippai_msiexec");
+        assert_eq!(name(rva(at(rva(d))) + 2), "masu_msiexec");
         assert_eq!(name(rva(at(rva(d + 20))) + 2), "ExitProcess");
         // (the code calls through the IATs: ImageBase + their RVAs)
         assert_eq!(&f[0x200..0x202], &[0xff, 0x15]);

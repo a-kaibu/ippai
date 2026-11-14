@@ -200,7 +200,7 @@ static __inline__ void bench_pump_or_exit(void)
 }
 
 /* Runs frame(i) `warm` times, then at least `n` times timed: reports ms per frame. The frames are as
- * fast as the guest and the page can make them (run.mjs sets IPPAI_NOPACE and unlimits the
+ * fast as the guest and the page can make them (run.mjs sets MASU_NOPACE and unlimits the
  * page's frame rate). */
 static __inline__ void bench_frames(const char *name, int warm, int n, void (*frame)(int))
 {

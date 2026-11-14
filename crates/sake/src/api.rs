@@ -633,7 +633,7 @@ pub fn dump_ring(why: &str) {
     });
 }
 
-/// (IPPAI_API_COUNTS: calls by trap index)
+/// (MASU_API_COUNTS: calls by trap index)
 static USAGE: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 fn usage(i: u32) {
@@ -975,7 +975,7 @@ mod spec_tests {
     /// Every function sake implements under a DLL whose exports are all stdcall has its spec
     /// line (the bytes the callee pops): without one it binds as cdecl popping nothing, and a
     /// 32-bit caller's stack is off by the arguments after the call (Inno Setup's ISCC crashed
-    /// so in BCryptVerifySignature). The LongPtr functions are x64's only (macros on x86); ippai_*
+    /// so in BCryptVerifySignature). The LongPtr functions are x64's only (macros on x86); masu_*
     /// are sake's own, called without arguments.
     #[test]
     fn stdcall_implementations_have_specs() {
@@ -1018,7 +1018,7 @@ mod spec_tests {
                 }
             }
             for (d, n) in found {
-                if all_stdcall.get(d.as_str()) == Some(&true) && !n.contains("LongPtr") && !n.starts_with("ippai_") && !known(&d, &n) {
+                if all_stdcall.get(d.as_str()) == Some(&true) && !n.contains("LongPtr") && !n.starts_with("masu_") && !known(&d, &n) {
                     missing.push(format!("{d}!{n} ({})", p.file_name().unwrap().to_string_lossy()));
                 }
             }

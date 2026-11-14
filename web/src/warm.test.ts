@@ -152,7 +152,7 @@ test("the first ones and the width while the game waits reach the worker", () =>
 test("a game's chunks list goes by the game, not its program", () => {
   expect(gameChunksName("saga_planets-2")).toBe("game.saga_planets-2");
   expect(gameChunksName("a/b c")).toBe("game.a_b_c");
-  // (what ippai serve's /jit-save takes: letters, digits, _ - .)
+  // (what masu serve's /jit-save takes: letters, digits, _ - .)
   for (const id of ["x", "日本語", "../x", "a.b"])
     expect(gameChunksName(id)).toMatch(/^game\.[A-Za-z0-9_-]+$/);
 });
@@ -206,7 +206,7 @@ test("the pairs and the reads' reports reach the worker and the run log", () => 
   stop();
 });
 
-test("a run's trace goes by the game and the run's start, as ippai serve takes it", () => {
+test("a run's trace goes by the game and the run's start, as masu serve takes it", () => {
   expect(traceName("saga_planets-2", 36 ** 3)).toBe("trace.game.saga_planets-2.1000");
   for (const id of ["x", "日本語", "../x"])
     expect(traceName(id, Date.now())).toMatch(/^trace\.game\.[A-Za-z0-9_.-]+$/);

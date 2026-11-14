@@ -19,17 +19,17 @@ function rng(seed: number) {
 
 describe("applyGame", () => {
   it("keeps the address's own env after the game's (a trace asked for in the URL)", () => {
-    const params = new URLSearchParams("game=anemoi&env=IPPAI_D3D_TRACE%3D1&env=SAKE_X%3D2");
+    const params = new URLSearchParams("game=anemoi&env=MASU_D3D_TRACE%3D1&env=SAKE_X%3D2");
     applyGame(params, anemoi);
-    expect(params.getAll("env")).toEqual(["SAKE_X=1", "IPPAI_D3D_TRACE=1", "SAKE_X=2"]);
+    expect(params.getAll("env")).toEqual(["SAKE_X=1", "MASU_D3D_TRACE=1", "SAKE_X=2"]);
     // (the page's environment: the last of a name wins)
     const env = Object.fromEntries(
       params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),
     );
-    expect(env).toEqual({ SAKE_X: "2", IPPAI_D3D_TRACE: "1" });
+    expect(env).toEqual({ SAKE_X: "2", MASU_D3D_TRACE: "1" });
     // applied again (a page that already has them): the same, not doubled
     applyGame(params, anemoi);
-    expect(params.getAll("env")).toEqual(["SAKE_X=1", "IPPAI_D3D_TRACE=1", "SAKE_X=2"]);
+    expect(params.getAll("env")).toEqual(["SAKE_X=1", "MASU_D3D_TRACE=1", "SAKE_X=2"]);
   });
 });
 
@@ -99,7 +99,7 @@ describe("nextRunUrl", () => {
         title: word(),
         run: `Z:\\ippai\\game\\${word()}.exe`,
         args: Array.from({ length: Math.floor(r() * 3) }, word).filter((a) => !/[\s,]/.test(a)),
-        mounts: Array.from({ length: Math.floor(r() * 3) }, () => `/ippai/${word()}=${word()}`),
+        mounts: Array.from({ length: Math.floor(r() * 3) }, () => `/masu/${word()}=${word()}`),
         env: Array.from({ length: Math.floor(r() * 3) }, () => `${word()}=${word()}`),
       };
       const params = new URLSearchParams(r() < 0.5 ? "debug" : "");

@@ -146,7 +146,7 @@ pub fn cases(seeds: &[Case], n: usize, seed: u64) -> Vec<Case> {
         if code == c.code {
             continue;
         }
-        let shown = std::env::var("IPPAI_ORACLE_SHOW").ok() == Some(k.to_string());
+        let shown = std::env::var("MASU_ORACLE_SHOW").ok() == Some(k.to_string());
         if shown {
             let hex = w.iter().map(|w| format!("{w:08x}")).collect::<Vec<_>>().join(" ");
             eprintln!("---- input\n{}: {hex}", if c.api == "dxbc" { "DXBC" } else { "D3D9 tokens" });

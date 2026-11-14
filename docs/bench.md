@@ -1,8 +1,8 @@
 # Benchmarks
 
-`tests/bench` measures ippai on every commit to main (`.github/workflows/bench.yml`, after CI).
+`tests/bench` measures masu on every commit to main (`.github/workflows/bench.yml`, after CI).
 Each group runs on its own GitHub runner; the commit's build and the previous commit's build
-(CI's `ippai` artifacts) run side by side, alternating round by round, so the comparison does not
+(CI's `masu` artifacts) run side by side, alternating round by round, so the comparison does not
 depend on how fast that runner happens to be. Every number is milliseconds, lower is better
 (per frame for the graphics cases).
 
@@ -27,7 +27,7 @@ depend on how fast that runner happens to be. Every number is milliseconds, lowe
 | `js` | `cpu.c`'s computing cases and `bench.c` as plain wasm in V8 (node) and JavaScriptCore (WebKitGTK's nightly shell, pinned by revision + sha256): the engines compared, and the cost of the x86 translation against `cpu-game`; `dyn.js`: wasm the way koji makes it (modules compiled at run time, instantiation, a module per block, `call` vs `call_indirect`, first tier vs optimized) |
 
 The scenes are 1280x720 and drawn from procedural pictures (`src/bench.h`): no game files.
-Frames run unpaced (`IPPAI_NOPACE`, Chromium without vsync); the WebGPU device on the runners is
+Frames run unpaced (`MASU_NOPACE`, Chromium without vsync); the WebGPU device on the runners is
 SwiftShader, so the graphics numbers are mostly CPU: translating the calls, the page's work, and
 the software rasterizer.
 
@@ -35,7 +35,7 @@ Every graphics case reads back what it showed (GetDIBits of the window, a Lock o
 surface, GetRenderTargetData / CopyRects, a staging copy, glReadPixels): the last warm-up frame's
 hash is a checksum (`<case>.frame`), a frame of one color fails the case, and the timed frames
 end with a read back, so the GPU's queue is done when the clock stops. The pages say
-`BENCH-HOST nopace` when they run unpaced (`IPPAI_NOPACE`); a previous build that doesn't is left
+`BENCH-HOST nopace` when they run unpaced (`MASU_NOPACE`); a previous build that doesn't is left
 out of the comparison (its numbers would be its 60 fps pacing), and this build not saying it
 fails the run.
 
@@ -54,14 +54,14 @@ history's), the JS engines disagree, a group left no results, a case has fewer n
 rounds, or there are none. The artifact `bench-history` carries the medians and checksums of the
 last 300 commits from run to run; `VERSION` in `suite.mjs` says how they were measured, and only
 the same version is compared with (bump it when the numbers stop being comparable). The report's
-計測条件 lists Chromium, node, Emscripten and the JavaScriptCore revision (pinned by `IPPAI_JSC_REV` + `IPPAI_JSC_SHA256` in `js.sh`).
+計測条件 lists Chromium, node, Emscripten and the JavaScriptCore revision (pinned by `MASU_JSC_REV` + `MASU_JSC_SHA256` in `js.sh`).
 
 The JavaScriptCore shell is Safari's engine on Linux, not iPhone Safari: no iOS memory limits,
 other JIT settings, another CPU.
 
-Locally (a build in `web/dist` and `target/release/ippai`, fonts from `tools/ci/sake-fonts.py`):
+Locally (a build in `web/dist` and `target/release/masu`, fonts from `tools/ci/sake-fonts.py`):
 
-    mkdir -p /tmp/new && cp target/release/ippai /tmp/new && cp -r web/dist /tmp/new/web
+    mkdir -p /tmp/new && cp target/release/masu /tmp/new && cp -r web/dist /tmp/new/web
     NEW=/tmp/new [OLD=/tmp/old] ROUNDS=1 PLAYWRIGHT=... tests/bench/ci.sh out.json FONTS d3d9 gdi
     python3 tests/bench/report.py DIR_OF_OUT_JSON --sha local
 
@@ -116,7 +116,7 @@ speedup. Rasterization dominates most of these cases on this software GPU.
 per round, including opaque/alpha/color-mask changes, two target formats and synchronous
 pixel readback. Compile with an i686 Windows GCC (`-O2 -ld3d9 -lgdi32`) to
 `d3d9-submit-32.exe`; put `d3d9-submit-32` in the executable directory's `browser.txt`.
-Run it with `tests/winref/run-browser.mjs EXE_DIR OUT_DIR`, setting `IPPAI`, `WEB` and
+Run it with `tests/winref/run-browser.mjs EXE_DIR OUT_DIR`, setting `MASU`, `WEB` and
 `PLAYWRIGHT` as for other browser probes. Compare the non-timing output exactly and
 discard round zero of each process before comparing the remaining five timings.
 
@@ -141,7 +141,7 @@ not been measured.
 
 ## The device benchmark (web/bench.html)
 
-`/bench.html` on ippai serve measures the device it is opened on (an Android phone above all:
+`/bench.html` on masu serve measures the device it is opened on (an Android phone above all:
 phones differ a lot in cores, GPU, memory and heat, and the CI runners say nothing about them).
 The start screen offers three profiles and shows every device's earlier results:
 
@@ -153,11 +153,11 @@ The start screen offers three profiles and shows every device's earlier results:
 
 The programs are the CI suite's own (`tests/bench/src`, `host/tests/bench.c`; the cases are
 `suite.mjs`'s, `web/src/devbench.test.ts` checks that) run the way `run.mjs` runs them
-(`IPPAI_NOPACE`, `BENCH` lines, the GPU time between `BENCH-MARK` and `BENCH-FRAMES` where
+(`MASU_NOPACE`, `BENCH` lines, the GPU time between `BENCH-MARK` and `BENCH-FRAMES` where
 the device has `timestamp-query`). A release carries them as `bench/` (`PROGRAMS_ONLY=1
-tests/bench/build.sh`); `ippai update`/install.sh put them in the data directory and `ippai
+tests/bench/build.sh`); `masu update`/install.sh put them in the data directory and `masu
 serve` packs them as the store's tree `bench` when it starts (again when they change:
-`<store>/bench.version`). By hand: `ippai pack DIR bench`.
+`<store>/bench.version`). By hand: `masu pack DIR bench`.
 
 What a run records besides the numbers: the model and Android version (client hints), cores,
 `deviceMemory`, the JS heap limit, screen, devicePixelRatio, the GPU (`adapter.info`, features,

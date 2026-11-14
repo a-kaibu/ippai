@@ -4,25 +4,25 @@ import { BURST, BYTES, CLASS, RATE, RESERVE, drain, take, waitFor } from "./budg
 
 // host/fetch-bridge.js's copy, run on the same buffer: the page and the network worker share it
 interface Bridge {
-  IPPAI_CLASS: typeof CLASS;
-  IPPAI_RATE: number;
-  IPPAI_BURST: number;
-  IPPAI_RESERVE: number[];
-  ippaiBudgetInit(b?: SharedArrayBuffer): SharedArrayBuffer;
-  ippaiTake(cls: number, now: number): boolean;
-  ippaiDrain(ms: number, now: number): void;
-  IPPAI_BUDGET_BYTES: number;
+  MASU_CLASS: typeof CLASS;
+  MASU_RATE: number;
+  MASU_BURST: number;
+  MASU_RESERVE: number[];
+  masuBudgetInit(b?: SharedArrayBuffer): SharedArrayBuffer;
+  masuTake(cls: number, now: number): boolean;
+  masuDrain(ms: number, now: number): void;
+  MASU_BUDGET_BYTES: number;
 }
 const bridge = (): Bridge =>
   // oxlint-disable-next-line typescript/no-implied-eval -- (the worker's script, as the worker runs it)
   new Function(
-    `${source}; return { IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_BUDGET_BYTES, ippaiBudgetInit, ippaiTake, ippaiDrain };`,
+    `${source}; return { MASU_CLASS, MASU_RATE, MASU_BURST, MASU_RESERVE, MASU_BUDGET_BYTES, masuBudgetInit, masuTake, masuDrain };`,
   )() as Bridge;
 
 test("the page's budget is the network worker's: same constants", () => {
   const b = bridge();
-  expect({ ...b.IPPAI_CLASS }).toEqual(CLASS);
-  expect([b.IPPAI_RATE, b.IPPAI_BURST, [...b.IPPAI_RESERVE], b.IPPAI_BUDGET_BYTES]).toEqual([
+  expect({ ...b.MASU_CLASS }).toEqual(CLASS);
+  expect([b.MASU_RATE, b.MASU_BURST, [...b.MASU_RESERVE], b.MASU_BUDGET_BYTES]).toEqual([
     RATE,
     BURST,
     RESERVE,
@@ -44,20 +44,20 @@ test("the page and the worker taking from one buffer agree with one taker (diffe
     const both = mk();
     const alone = mk();
     const w = bridge();
-    w.ippaiBudgetInit(both);
+    w.masuBudgetInit(both);
     let now = t0;
     for (let i = 0; i < 300; i++) {
       now += rnd(150);
       // (now and then a 429, from either side)
       if (rnd(40) === 0) {
         const ms = rnd(6000);
-        if (rnd(2)) w.ippaiDrain(ms, now);
+        if (rnd(2)) w.masuDrain(ms, now);
         else drain(ms, now, both);
         drain(ms, now, alone);
         continue;
       }
       const cls = rnd(5);
-      const a = rnd(2) ? w.ippaiTake(cls, now) : take(cls, now, both);
+      const a = rnd(2) ? w.masuTake(cls, now) : take(cls, now, both);
       const b = take(cls, now, alone);
       expect(a, `run ${run} step ${i}`).toBe(b);
     }
@@ -95,9 +95,9 @@ test("a lock word its holder never gave back (a worker that died inside) is take
   // (and freed after: the next one takes it at once)
   expect(new Int32Array(buf, 0, 1)[0]).toBe(0);
   const b = bridge();
-  const wb = b.ippaiBudgetInit(buf);
+  const wb = b.masuBudgetInit(buf);
   new Int32Array(wb, 0, 1)[0] = 1;
-  expect(b.ippaiTake(CLASS.game, 0)).toBe(true);
+  expect(b.masuTake(CLASS.game, 0)).toBe(true);
 });
 
 /** waitFor against take over random budgets: when it says 0 a take goes now; when it says t, no

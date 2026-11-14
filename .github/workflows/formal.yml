@@ -67,7 +67,7 @@ jobs:
         run: TLC=~/.local/bin/tlc formal/run.sh
       # (kura's real D3D9/D3D11/GL code, random calls, each run checked against its spec in formal/tla)
       - name: Trace checks
-        run: IPPAI_TRACE_SEEDS=200 KEEP=$RUNNER_TEMP/failed-traces TLC=~/.local/bin/tlc formal/trace.sh
+        run: MASU_TRACE_SEEDS=200 KEEP=$RUNNER_TEMP/failed-traces TLC=~/.local/bin/tlc formal/trace.sh
       - name: Keep failing traces
         if: failure()
         uses: actions/upload-artifact@v7.0.2
@@ -288,7 +288,7 @@ jobs:
             render-model-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             render-model-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Optimized and plain runs draw the same
-        run: IPPAI_MODEL_SEEDS=100000 cargo test --release -p kura --lib optimizations_draw_the_same -- --nocapture
+        run: MASU_MODEL_SEEDS=100000 cargo test --release -p kura --lib optimizations_draw_the_same -- --nocapture
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}

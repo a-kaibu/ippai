@@ -2,7 +2,7 @@
 //! state, recorded as a trace for TLC to check against formal/tla/D2dDraw.tla (formal/trace.sh):
 //! what each call gave back.
 //!
-//! `IPPAI_TRACE_DIR=dir` writes `dir/d2d-<seed>/`; `IPPAI_TRACE_SEEDS=n` (default 20).
+//! `MASU_TRACE_DIR=dir` writes `dir/d2d-<seed>/`; `MASU_TRACE_SEEDS=n` (default 20).
 
 use super::*;
 use std::fmt::Write as _;
@@ -109,11 +109,11 @@ fn check(steps: &[(usize, i64)], seed: u64) {
 
 #[test]
 fn d2d_draw_trace() {
-    let seeds = std::env::var("IPPAI_TRACE_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20u64);
+    let seeds = std::env::var("MASU_TRACE_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20u64);
     for seed in 0..seeds {
         let steps = run(seed);
         check(&steps, seed);
-        let Some(dir) = std::env::var_os("IPPAI_TRACE_DIR") else { continue };
+        let Some(dir) = std::env::var_os("MASU_TRACE_DIR") else { continue };
         let mut s = String::from("---- MODULE D2dData ----\nTrace == <<\n");
         for (i, (op, ret)) in steps.iter().enumerate() {
             let _ = writeln!(s, "  [op |-> \"{}\", ret |-> {ret}]{}", OPS[*op], if i + 1 < steps.len() { "," } else { "" });

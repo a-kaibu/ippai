@@ -1,4 +1,4 @@
-/* Direct3D 10 check for ippai: d3d11test drawn through d3d10.dll (the same picture): a swap chain
+/* Direct3D 10 check for masu: d3d11test drawn through d3d10.dll (the same picture): a swap chain
  * (D3D10CreateDeviceAndSwapChain), HLSL compiled with D3D10CompileShader, a spinning colored
  * triangle (vertex buffer, constant buffer written with ID3D10Buffer::Map/DISCARD every frame)
  * over a textured quad (texture from initial data, sampler, D3D10_BLEND_DESC alpha blending),

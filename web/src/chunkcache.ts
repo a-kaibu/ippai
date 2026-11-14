@@ -1,5 +1,5 @@
 /**
- * The size of kura's chunk cache (IPPAI_CHUNK_CACHE_MB, crates/kura/src/vfs.rs): the blocks of
+ * The size of kura's chunk cache (MASU_CHUNK_CACHE_MB, crates/kura/src/vfs.rs): the blocks of
  * the store's chunks a read decoded, kept in the wasm memory for the next read. The memory a
  * page of the wasm memory once held is never given back, so the whole cache stays in RAM for
  * the rest of the play. A device that says it has less than 8 GB (navigator.deviceMemory:

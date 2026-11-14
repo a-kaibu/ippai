@@ -4,7 +4,7 @@
 //! - `waveaudio` (.wav) and `mpegvideo` (MP3 / MPEG / AVI / WMV, a file with no extension opened
 //!   with `type mpegvideo`): a sound plays through the mixer (sound.rs) as PCM, MP3 and the
 //!   others decoded by the page's AudioDecoder (audiofile.rs, kura::adec); a movie plays from
-//!   the `.vnv` `ippai pack` made next to it (dshow_play.rs), in the window the program gives
+//!   the `.vnv` `masu pack` made next to it (dshow_play.rs), in the window the program gives
 //!   (MCI_WINDOW / MCI_DGV_OPEN_PARENT / MCIWnd), else on the screen.
 //! - open (type, element, alias, by extension), close (one or all), play (from, to, notify,
 //!   wait, repeat), stop, pause, resume, seek (to, start, end), status (length, position, mode,
@@ -599,7 +599,7 @@ fn open(kind: Option<Kind>, element: &str, alias: Option<&str>) -> Result<u32, u
             None => {
                 mem::heap_free(key);
                 if crate::files::resolve(&full).is_some() && kind != Kind::Wave {
-                    eprintln!("sake: mci {element}: not played (no .vnv to decode, see ippai pack)");
+                    eprintln!("sake: mci {element}: not played (no .vnv to decode, see masu pack)");
                 }
                 return Err(MCIERR_INVALID_FILE);
             }

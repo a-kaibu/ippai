@@ -9,12 +9,12 @@ test("a restore's file: refused at once when empty or past the server's limit", 
   expect(restoreProblem({ size: 4 * 2 ** 30 })).toMatch(/4096 MiB/);
 });
 
-test("PACKAGE_MAX is what ippai serve takes for /api/packages (crates/ippai/src/portable.rs)", async () => {
+test("PACKAGE_MAX is what masu serve takes for /api/packages (crates/masu/src/portable.rs)", async () => {
   // (node's fs, out of the web types' sight)
   const { readFileSync } = (await import(/* @vite-ignore */ ["node", "fs"].join(":"))) as {
     readFileSync: (u: URL, e: string) => string;
   };
-  const rs = readFileSync(new URL("../../crates/ippai/src/portable.rs", import.meta.url), "utf8");
+  const rs = readFileSync(new URL("../../crates/masu/src/portable.rs", import.meta.url), "utf8");
   const m = /DefaultBodyLimit::max\((\d+) << (\d+)\)/.exec(rs);
   expect(m).not.toBeNull();
   expect(Number(m![1]) * 2 ** Number(m![2])).toBe(PACKAGE_MAX);

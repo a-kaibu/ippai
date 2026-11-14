@@ -4,7 +4,7 @@
  * GetCurrentImage); then graphs rendering into a windowless VMR-7 / VMR-9 added by hand, as
  * Artemis does (IVMRFilterConfig, IVMRWindowlessControl). The probe writes its own movie: an uncompressed AVI (64x48, 10 fps, 20
  * frames, each frame's top and bottom halves two grays), which Windows plays with its AVI
- * splitter, and next to it the `.vnv` ippai pack would make of it (uncompressed I420, the same
+ * splitter, and next to it the `.vnv` masu pack would make of it (uncompressed I420, the same
  * pictures in video range), which sake plays. Times are printed rounded to what a loaded
  * runner keeps to.
  * libs: -lole32 -lstrmiids -loleaut32 -luuid -lgdi32 -luser32 */

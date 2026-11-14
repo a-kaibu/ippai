@@ -1,4 +1,4 @@
-//! koji's check of a translated module the page uploads (`ippai serve` keeps what it accepts for
+//! koji's check of a translated module the page uploads (`masu serve` keeps what it accepts for
 //! other pages): no panic on any bytes, and a module it accepts carries the canonical types and
 //! imports sections of a translation (review b02: they had to match byte for byte), so that
 //! no accepted bundle fails every other page's instantiation. The first byte picks how many

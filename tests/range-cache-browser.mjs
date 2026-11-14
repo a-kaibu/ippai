@@ -1,9 +1,9 @@
-// Real browser regression: ippai serve answers a chunk's URL whole (200, Content-Encoding:
+// Real browser regression: masu serve answers a chunk's URL whole (200, Content-Encoding:
 // zstd, kept for good) and in ranges of its decoded bytes (206). After the page's read-ahead
 // fetched a chunk whole, Chromium answered a game read's range from that cache entry with the
 // coded bytes (a wrong Content-Range, then "Failed to fetch"): the read was retried for good
 // and the game stopped at its start (mirror trials, part 3). host/fetch-bridge.js keeps ranges
-// out of the HTTP cache. Checks it through the real worker protocol (ippaiFetchSync).
+// out of the HTTP cache. Checks it through the real worker protocol (masuFetchSync).
 // node tests/range-cache-browser.mjs (PLAYWRIGHT, CHROME as in fetch-browser.mjs)
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -28,7 +28,7 @@ const server = createServer((req, res) => {
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   if (req.url === '/') { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>range cache test</title>'); return; }
   if (req.url !== path) { res.writeHead(404); res.end(); return; }
-  // (crates/ippai/src/serve.rs and store_api.rs)
+  // (crates/masu/src/serve.rs and store_api.rs)
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.setHeader('Content-Type', 'application/octet-stream');
   const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
@@ -49,9 +49,9 @@ try {
   const results = await page.evaluate(async ([source, url, asks, B]) => {
     // the page's read-ahead: the whole chunk into the HTTP cache
     const whole = new Uint8Array(await (await fetch(url)).arrayBuffer());
-    const connect = new Function(source + '; return ippaiFetchConnect;')();
+    const connect = new Function(source + '; return masuFetchConnect;')();
     const port = connect();
-    const script = source + `\nIPPAI_GIVE_UP_MS = 3000;\nself.onmessage=e=>{ippaiFetchPort=e.data.port;const out=[];for(const n of e.data.names){try{out.push(Array.from(ippaiFetchSync(...ippaiRange(n))));}catch(err){out.push(err.message);}}self.postMessage(out);};`;
+    const script = source + `\nMASU_GIVE_UP_MS = 3000;\nself.onmessage=e=>{masuFetchPort=e.data.port;const out=[];for(const n of e.data.names){try{out.push(Array.from(masuFetchSync(...masuRange(n))));}catch(err){out.push(err.message);}}self.postMessage(out);};`;
     const blob = URL.createObjectURL(new Blob([script], { type: 'text/javascript' }));
     const worker = new Worker(blob);
     const out = await new Promise((resolve, reject) => {

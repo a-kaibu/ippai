@@ -1,6 +1,6 @@
 # 吉里吉里ベンチ
 
-A small visual novel for 吉里吉里Z (krkrz) and KAG3, made for ippai's benchmarks
+A small visual novel for 吉里吉里Z (krkrz) and KAG3, made for masu's benchmarks
 (`tests/bench`, group `kirikiri`: `pack-kirikiri.mjs` packs this folder into data.xp3 next to
 krkrz 1.4.0r2's tvpwin32.exe, `scenario.mjs` plays it). The story and the harness's signals
 are in `scenario/first.ks`, the heavy effects in `bench.tjs`.

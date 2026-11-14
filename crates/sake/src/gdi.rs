@@ -1459,7 +1459,7 @@ fn dc_palette(t: &Objs, s: &DcState) -> Vec<u32> {
 struct Face {
     names: &'static [&'static str],
     /// the collection and the face in it as Windows has them (msgothic.ttc: MS Gothic, MS UI
-    /// Gothic, MS PGothic; winref dwfont), else the font's own file. `ippai ttc` makes the
+    /// Gothic, MS PGothic; winref dwfont), else the font's own file. `masu ttc` makes the
     /// collections from the separate files (a third of their size); a face is found in one by
     /// its family name, so a collection in another order works too.
     ttc: (&'static str, u32),

@@ -34,7 +34,7 @@ jobs:
           key: gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             gamedb-${{ runner.os }}-${{ env.RUST_KEY }}-
-      - run: cargo build --release -p ippai
+      - run: cargo build --release -p masu
       # Manual only. Each part is checked before publication; retain EGS enrichment.
       - name: Build and push
         env:
@@ -45,7 +45,7 @@ jobs:
           if [ "$parts" = all ]; then parts="egs vndb"; fi
           failed=0
           for part in $parts; do
-            ./target/release/ippai gamedb update --part "$part" "$RUNNER_TEMP/gamedb" || failed=1
+            ./target/release/masu gamedb update --part "$part" "$RUNNER_TEMP/gamedb" || failed=1
           done
           exit "$failed"
       - name: Shrink the cargo cache

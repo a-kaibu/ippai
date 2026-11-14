@@ -1,7 +1,7 @@
-// Store chunks straight from the bucket (S3) for the page, as host/fetch-bridge.js ippaiDirect
+// Store chunks straight from the bucket (S3) for the page, as host/fetch-bridge.js masuDirect
 // does it for the game (that runs as a plain script inside sake.js, so it has its own copy):
-// ippai serve's /store-direct gives a presigned URL, the object's AES-256-GCM key and UUID; the
-// object is fetched, opened (nonce first, the UUID as associated data, crates/ippai/src/envelope.rs),
+// masu serve's /store-direct gives a presigned URL, the object's AES-256-GCM key and UUID; the
+// object is fetched, opened (nonce first, the UUID as associated data, crates/masu/src/envelope.rs),
 // zstd-decoded by sake's snapz and checked against its name. The bucket answers each object
 // after ~2 s whatever its size but takes many at once, so saving a whole game to the device
 // (offline.ts) goes many at a time this way instead of through the server's own line.
@@ -15,7 +15,7 @@ export interface DirectInfo {
   url: string;
   key: string;
   object: string;
-  /** Where a delivery pack holds the same object (crates/ippai/src/storage.rs pack_objects). */
+  /** Where a delivery pack holds the same object (crates/masu/src/storage.rs pack_objects). */
   pack?: PackSpan;
 }
 
@@ -27,7 +27,7 @@ export interface PackSpan {
   len: number;
 }
 
-/** Whether `v` is a well-formed pack place (host/fetch-bridge.js ippaiPackValid). */
+/** Whether `v` is a well-formed pack place (host/fetch-bridge.js masuPackValid). */
 export function isPackSpan(v: unknown): v is PackSpan {
   const p = v as Partial<PackSpan> | null;
   return (
@@ -42,7 +42,7 @@ export function isPackSpan(v: unknown): v is PackSpan {
   );
 }
 
-/** A save's one ranged GET of a pack at most: bytes, chunks (host/fetch-bridge.js IPPAI_PACK_SPAN). */
+/** A save's one ranged GET of a pack at most: bytes, chunks (host/fetch-bridge.js MASU_PACK_SPAN). */
 export const PACK_RUN_BYTES = 32 << 20;
 export const PACK_RUN_MAX = 64;
 
@@ -165,7 +165,7 @@ export function isDirectInfo(v: unknown): v is DirectInfo {
  * never again for this fetcher; a chunk only on the server, a stuck server, an object that
  * would not open): the caller asks the server.
  */
-/** Chunks one POST /store-direct asks for (host/fetch-bridge.js IPPAI_DIRECT_MANY). */
+/** Chunks one POST /store-direct asks for (host/fetch-bridge.js MASU_DIRECT_MANY). */
 export const DIRECT_MANY = 512;
 
 export function directFetcher(

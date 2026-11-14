@@ -1,4 +1,4 @@
-# Pasted addresses and the metadata entry they name (crates/ippai/src/meta_url.rs entry_id;
+# Pasted addresses and the metadata entry they name (crates/masu/src/meta_url.rs entry_id;
 # web/src/meta-source.ts looksLikeGamePage agrees on each). Columns: address (\t, \n escaped), id or -
 https://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=35435	egs:35435
 http://erogamescape.dyndns.org/~ap2/ero/toukei_kaiseki/game.php?game=25603#ad	egs:25603

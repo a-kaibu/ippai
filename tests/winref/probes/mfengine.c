@@ -5,7 +5,7 @@
  * and TransferVideoFrame into a D3D11 texture (read back: which frame it is), seeking, Play to
  * the end (IsEnded), Pause, and calls after Shutdown. The movie is the probe's own uncompressed
  * AVI (64x48, 10 fps, 20 frames, each frame's halves two grays; as tests/winref/probes/dshow.c)
- * with the `.vnv` ippai pack would make of it next to it. mingw-w64 has no mfmediaengine.h:
+ * with the `.vnv` masu pack would make of it next to it. mingw-w64 has no mfmediaengine.h:
  * the interfaces are called by vtable index.
  * run: browser
  * libs: -lole32 -lmfplat -lmfuuid -ld3d11 -luuid -loleaut32 */

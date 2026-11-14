@@ -559,7 +559,7 @@ impl<'a> Context<'a> {
                     // Don't try to generate `AccessIndex` if in a LHS position, since it
                     // wouldn't produce a pointer.
                     ExprPos::Lhs => None,
-                    // (ippai: a constant expression's index lives in the global arena)
+                    // (masu: a constant expression's index lives in the global arena)
                     _ => self
                         .module
                         .to_ctx()

@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn malformed_sources_are_errors() {
         // an array size that is itself indexed: naga looked its index up in the function's
-        // expressions instead of the constant ones (vendor/naga/IPPAI-PATCH.md)
+        // expressions instead of the constant ones (vendor/naga/MASU-PATCH.md)
         for src in ["uniform B { float a[2[2]]; };\nvoid main() { gl_FragColor = vec4(1.0); }", "float a[3[1]];\nvoid main() { gl_FragColor = vec4(a[0]); }"] {
             assert!(check(src, true).is_err(), "{src}");
             assert!(check(&src.replace("gl_FragColor", "gl_Position"), false).is_err(), "{src}");

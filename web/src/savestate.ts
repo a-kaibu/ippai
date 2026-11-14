@@ -6,7 +6,7 @@
 // before the module runs, which then starts its threads where they stood.
 //
 // A state is kept in this browser (OPFS: states/<game>/<hash>.snap and index.json) and on the
-// server (ippai serve /saves/state.<game>.<hash>, its S3 bucket), so another device goes on
+// server (masu serve /saves/state.<game>.<hash>, its S3 bucket), so another device goes on
 // from it too. The file is host/snap.js's: "IPPAISNP", u32 version, u32 header length, the
 // header (JSON), then blocks (u32 address, u32 length, u32 compressed length, a zstd frame),
 // ended by the address 0xffffffff.
@@ -445,7 +445,7 @@ export async function stateMemory(
 ): Promise<WebAssembly.Memory> {
   const h = stateHeader(file);
   if (!loadable(await builds(), h))
-    throw new Error("ippai の更新前のステートです（このバージョンでは読み込めません）");
+    throw new Error("masu の更新前のステートです（このバージョンでは読み込めません）");
   // (sake's memory: crates/sake/build.sh FIXED / GROW, as large as it was)
   const mem =
     h.wasm === "sake" ? fixed : new WebAssembly.Memory({ initial: h.pages, maximum: 65535, shared: true });
@@ -466,7 +466,7 @@ export async function stateMemory(
   return mem;
 }
 
-// ---- older builds' states: their web apps, kept by the server (crates/ippai/src/apps.rs) ----
+// ---- older builds' states: their web apps, kept by the server (crates/masu/src/apps.rs) ----
 
 /** The server's root (this page may be a kept app's, at apps/<key>/). */
 export const appRoot = () => new URL(".", location.href).href.replace(/apps\/[0-9a-f]{16}\/$/, "");

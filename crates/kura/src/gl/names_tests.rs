@@ -2,7 +2,7 @@
 //! glGetError on one context, recorded as a trace for TLC to check against
 //! formal/tla/GlNames.tla (formal/trace.sh): what each call gave back.
 //!
-//! `IPPAI_TRACE_DIR=dir` writes `dir/gl-<seed>/`; `IPPAI_TRACE_SEEDS=n` (default 20).
+//! `MASU_TRACE_DIR=dir` writes `dir/gl-<seed>/`; `MASU_TRACE_SEEDS=n` (default 20).
 
 use super::*;
 use crate::d3d9::trace_tests::{seeds, write_module, Rng, SERIAL};

@@ -8,7 +8,7 @@
 
 // What the numbers mean: bump it when a change to the programs or the harness makes the numbers
 // of before incomparable (the report then compares only with the history of the same version).
-//   2: frames read back at the end of the timed ones; IPPAI_NOPACE (was VNVM_NOPACE)
+//   2: frames read back at the end of the timed ones; MASU_NOPACE (was VNVM_NOPACE)
 //   3: scenario: starts by what is kept (start.*), idle_cpu by process; kirikiri: still screens
 //      for the checkpoint pictures (2.5 s each)
 export const VERSION = 3;

@@ -1,6 +1,6 @@
 # Coverage-guided fuzzing (cargo-fuzz / libFuzzer, nightly): fuzz/README.md.
 [package]
-name = "ippai-fuzz"
+name = "masu-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"

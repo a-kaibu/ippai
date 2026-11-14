@@ -4,7 +4,7 @@
 [Setup]
 AppName=InnoTest
 AppVersion=1.0
-AppPublisher=ippai
+AppPublisher=masu
 DefaultDirName={autopf}\InnoTest
 DefaultGroupName=InnoTest
 DisableProgramGroupPage=yes
@@ -22,4 +22,4 @@ Source: "b.dat"; DestDir: "{app}\sub"
 Name: "{group}\InnoTest"; Filename: "{app}\a.txt"; Parameters: "/x"; WorkingDir: "{app}"; Comment: "the test file"
 
 [Registry]
-Root: HKCU; Subkey: "Software\ippai\innotest"; ValueType: string; ValueName: "path"; ValueData: "{app}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\masu\innotest"; ValueType: string; ValueName: "path"; ValueData: "{app}"; Flags: uninsdeletekey

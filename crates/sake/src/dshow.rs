@@ -1,8 +1,8 @@
 //! DirectShow's filter graph (CLSID_FilterGraph) and the EVR, for games that play their movies
 //! with RenderFile and Run.
 //!
-//! A movie with a `.vnv` next to it (`ippai pack` makes one of every mpg / wmv / avi / mp4 ...,
-//! crates/ippai/src/movie.rs) really plays (dshow_play.rs): its clock, seeking, EC_COMPLETE at
+//! A movie with a `.vnv` next to it (`masu pack` makes one of every mpg / wmv / avi / mp4 ...,
+//! crates/masu/src/movie.rs) really plays (dshow_play.rs): its clock, seeking, EC_COMPLETE at
 //! its end, its picture where the video window (IVideoWindow / IBasicVideo) or the EVR's
 //! rectangle (IMFVideoDisplayControl) is, its sound. A sound-only file (wav, mp3, ogg ...: what
 //! mci.rs's waveaudio decodes, through the page's AudioDecoder for mp3) plays on the mixer with
@@ -567,7 +567,7 @@ fn load(b: u32, w: &str) -> Result<(), u32> {
         }
     }
     let Some(movie) = movie else {
-        eprintln!("sake: movie {w}: not played (no .vnv to decode, see ippai pack)");
+        eprintln!("sake: movie {w}: not played (no .vnv to decode, see masu pack)");
         with(b, |g| {
             g.done = false;
             g.playing = false;

@@ -1,5 +1,5 @@
-//! The page's file system: directory trees packed by `ippai pack` (`trees/<name>.tsv` plus
-//! chunks in the store) mounted where `IPPAI_MOUNTS` says ("/=:/ippai/game=reunion"), read
+//! The page's file system: directory trees packed by `masu pack` (`trees/<name>.tsv` plus
+//! chunks in the store) mounted where `MASU_MOUNTS` says ("/=:/ippai/game=reunion"), read
 //! lazily chunk by chunk. Whatever is written stays in memory. Paths outside the mounts are the
 //! host's (node; the page mounts an empty tree at "/", so there is nothing outside). Rust code
 //! reaches it through crate::fs.
@@ -32,7 +32,7 @@ enum Content {
     Upper(crate::pages::Pages),
 }
 
-/// Where a store file's chunks lie (cut by content: ippai's cdc.rs): where each starts, and the
+/// Where a store file's chunks lie (cut by content: masu's cdc.rs): where each starts, and the
 /// file's size last.
 #[derive(Clone)]
 struct Layout {
@@ -394,7 +394,7 @@ fn fetch(name: &str) -> Option<Vec<u8>> {
 
 fn trace() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("IPPAI_TRACE_VFS").is_some())
+    *ON.get_or_init(|| std::env::var_os("MASU_TRACE_VFS").is_some())
 }
 
 fn unesc(s: &str) -> String {
@@ -433,7 +433,7 @@ fn now() -> i64 {
 impl Fs {
     fn load() -> Fs {
         let mut fs = Fs { next_handle: 1, ..Default::default() };
-        let Ok(spec) = std::env::var("IPPAI_MOUNTS") else { return fs };
+        let Ok(spec) = std::env::var("MASU_MOUNTS") else { return fs };
         let mut mounts: Vec<(String, &str)> =
             spec.split(':').filter_map(|m| m.split_once('=')).map(|(at, name)| (clean(at), name)).collect();
         // "/" first (the page mounts an empty one: then nothing is emscripten's), the others
@@ -979,7 +979,7 @@ static CACHE: Mutex<Option<Cache<Key>>> = Mutex::new(None);
 
 fn cache_limit() -> usize {
     static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *LIMIT.get_or_init(|| std::env::var("IPPAI_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize) << 20)
+    *LIMIT.get_or_init(|| std::env::var("MASU_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize) << 20)
 }
 
 /// The chunks this run read, in the order of their first read (the first FETCHED_MAX): the
@@ -1016,7 +1016,7 @@ fn note_read(h: &Hash) {
 /// A block of a chunk: the chunk and the block's number in it.
 type Key = (Hash, u32);
 
-/// Bytes in a block (IPPAI_VFS_BLOCK_KIB, default 256): small enough that a scattered read
+/// Bytes in a block (MASU_VFS_BLOCK_KIB, default 256): small enough that a scattered read
 /// fetches little more than it needs, big enough that a long read is not a request per few KiB.
 /// (Tests: 24 bytes, so their small files have many blocks and blocks that are not a power of two.)
 fn block() -> u64 {
@@ -1027,7 +1027,7 @@ fn block() -> u64 {
     #[cfg(not(test))]
     {
         static B: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        *B.get_or_init(|| std::env::var("IPPAI_VFS_BLOCK_KIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&k| k > 0).unwrap_or(256) << 10)
+        *B.get_or_init(|| std::env::var("MASU_VFS_BLOCK_KIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&k| k > 0).unwrap_or(256) << 10)
     }
 }
 
@@ -1387,7 +1387,7 @@ pub unsafe extern "C" fn vnhost_vfs_put_chunk(hash: *const u8, data: *mut u8, le
 // hints: when a read waits for the network, what the game reads soon goes to the page to fetch
 // onto the device meanwhile (vfs/hints.rs says what, by how engines lay out their files; the
 // page's network worker fetches them below the game's own reads, host/fetch-bridge.js
-// ippaiHint).
+// masuHint).
 
 /// Store files' paths by inode, as they were opened (a read knows only the inode): the folder
 /// their neighbours are in.
@@ -1459,7 +1459,7 @@ fn hint(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) {
     send_hint(&hinted(ino, l, chunks, i, first), "layout");
 }
 
-/// Tells the page the chunks `hs`, to fetch onto the device (host/fetch-bridge.js ippaiHint);
+/// Tells the page the chunks `hs`, to fetch onto the device (host/fetch-bridge.js masuHint);
 /// `source` says which foresight gave them (the run's trace keeps it: vfs/trace.rs).
 fn send_hint(hs: &[Hash], source: &str) {
     if hs.is_empty() {
@@ -1499,8 +1499,8 @@ struct Predict {
     archives: HashMap<Ino, Vec<predict::Member>>,
     /// Scripts looked into: (file, member start; 0 for a loose one).
     scanned: std::collections::HashSet<(Ino, u64)>,
-    /// The trees' scripts and what they name, as ippai serve read them all ahead
-    /// (vnhost_vfs_foresee; crates/ippai/src/foresee.rs), and those keys without extension.
+    /// The trees' scripts and what they name, as masu serve read them all ahead
+    /// (vnhost_vfs_foresee; crates/masu/src/foresee.rs), and those keys without extension.
     table: HashMap<String, Vec<String>>,
     stems: HashMap<String, String>,
     /// Where the table's scripts name each name (foresee::table_places).
@@ -1525,7 +1525,7 @@ enum Pack {
 const FORESEE_DEPTH: usize = 1;
 
 /// The page hands a tree's table (text, `len` bytes at `text`: foresee::parse_table), read by
-/// ippai serve from all its scripts ahead: a script read then foresees what it names and what
+/// masu serve from all its scripts ahead: a script read then foresees what it names and what
 /// the scripts it goes on to name, without reading it here (scripts this cannot read, too).
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_vfs_foresee(text: *const u8, len: size_t) {
@@ -3246,7 +3246,7 @@ pub(crate) mod tests {
         *FS.lock().unwrap() = None;
     }
 
-    /// A table read ahead (ippai serve's, of all a tree's scripts): a script this cannot read
+    /// A table read ahead (masu serve's, of all a tree's scripts): a script this cannot read
     /// (encrypted: noise here) foresees what the table says it names, and what the script it
     /// goes on to names, before that one is read; without the table, nothing.
     #[test]
@@ -3627,7 +3627,7 @@ mod proptests {
         }
     }
 
-    /// `ippai pack`'s escaping for the tree list (crates/ippai/src/pack.rs).
+    /// `masu pack`'s escaping for the tree list (crates/masu/src/pack.rs).
     fn esc(s: &str) -> String {
         s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
     }

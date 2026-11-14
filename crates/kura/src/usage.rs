@@ -1,9 +1,9 @@
-//! `IPPAI_API_COUNTS`: how often a run called each entry point: Direct3D 8/9/10/11 and DXGI
+//! `MASU_API_COUNTS`: how often a run called each entry point: Direct3D 8/9/10/11 and DXGI
 //! methods by their call id, every sake export and COM method by name, and the GL functions a
 //! game asked for that kura does not have. Printed to stderr as one line,
 //! `api-counts <key>=<n> ...`, every time the total doubles (from 4096), every 2^20 calls and
 //! when the process exits, so the last such line in a log is the run's tally. tests/coverage/usage.py sets the corpus' tallies beside
-//! what the tests call (the same counter): with `IPPAI_API_COUNTS_OUT` set the line goes to
+//! what the tests call (the same counter): with `MASU_API_COUNTS_OUT` set the line goes to
 //! the end of that file instead, once at exit (the unit tests; host/tests and the Wine tests on
 //! sake, whose output is compared, a line per process): the entry points games use that no
 //! test reaches.
@@ -20,7 +20,7 @@ static TOTAL: AtomicU64 = AtomicU64::new(0);
 static MORE: OnceLock<fn() -> Vec<(String, u64)>> = OnceLock::new();
 
 pub fn on() -> bool {
-    crate::env_on!("IPPAI_API_COUNTS")
+    crate::env_on!("MASU_API_COUNTS")
 }
 
 /// A Direct3D / DXGI call id (key `d3d9:<iface>::<method>`, else `d3d:<iface>.<method>`).
@@ -54,7 +54,7 @@ pub fn tick() {
     AT_EXIT.call_once(|| {
         extern "C" fn at_exit() {
             let l = line();
-            match std::env::var_os("IPPAI_API_COUNTS_OUT") {
+            match std::env::var_os("MASU_API_COUNTS_OUT") {
                 Some(p) => {
                     use std::io::Write;
                     let f = std::fs::OpenOptions::new().create(true).append(true).open(p);
@@ -75,10 +75,10 @@ pub fn tick() {
     }
 }
 
-/// (IPPAI_API_COUNTS_OUT: the tally only at exit, in that file)
+/// (MASU_API_COUNTS_OUT: the tally only at exit, in that file)
 fn to_file() -> bool {
     static V: OnceLock<bool> = OnceLock::new();
-    *V.get_or_init(|| std::env::var_os("IPPAI_API_COUNTS_OUT").is_some())
+    *V.get_or_init(|| std::env::var_os("MASU_API_COUNTS_OUT").is_some())
 }
 
 /// `api-counts k=n ...`, keys sorted.

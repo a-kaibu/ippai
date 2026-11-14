@@ -1,4 +1,4 @@
-//! IPPAI_API_COUNTS_OUT (tests/coverage/usage.py's tests side): each process appends its tally
+//! MASU_API_COUNTS_OUT (tests/coverage/usage.py's tests side): each process appends its tally
 //! as one line at exit and prints none on stderr (host/tests and the Wine tests compare their
 //! output); without it the tally goes to stderr, at exit too, as the corpus' logs have it.
 
@@ -22,11 +22,11 @@ fn tallies_append_a_line_per_process() {
     let exe = std::env::current_exe().unwrap();
     let child = |n: u64, file: bool| {
         let mut c = Command::new(&exe);
-        c.args(["--exact", "tallies_append_a_line_per_process", "--nocapture"]).env("USAGE_OUT_CHILD", n.to_string()).env("IPPAI_API_COUNTS", "1");
+        c.args(["--exact", "tallies_append_a_line_per_process", "--nocapture"]).env("USAGE_OUT_CHILD", n.to_string()).env("MASU_API_COUNTS", "1");
         if file {
-            c.env("IPPAI_API_COUNTS_OUT", &out);
+            c.env("MASU_API_COUNTS_OUT", &out);
         } else {
-            c.env_remove("IPPAI_API_COUNTS_OUT");
+            c.env_remove("MASU_API_COUNTS_OUT");
         }
         let o = c.output().unwrap();
         assert!(o.status.success());

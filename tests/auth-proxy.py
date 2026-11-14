@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""ippai serve's sign-in (auth.rs). By default this machine's browser and `tailscale serve` need
+"""masu serve's sign-in (auth.rs). By default this machine's browser and `tailscale serve` need
 nothing, a proxy that says it forwards needs the token. With --strict-auth, a reverse proxy on
 the same machine that connects from loopback, sets `Host: 127.0.0.1:<port>` and adds no
 forwarding header (nginx's proxy_pass defaults) must not let anyone in without the token; then
 the ways in: a bearer token, the sign-in page's POST (a session cookie, not the token).
 
-    tests/auth-proxy.py [path to ippai]
+    tests/auth-proxy.py [path to masu]
 """
 import http.client, http.server, os, socket, subprocess, sys, tempfile, threading, time, urllib.parse
 
-BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/ippai')
+BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/masu')
 
 
 def free_port():
@@ -69,7 +69,7 @@ def serve(home, port, *extra):
         except OSError:
             time.sleep(0.1)
     else:
-        raise SystemExit('ippai serve did not start')
+        raise SystemExit('masu serve did not start')
     token = subprocess.check_output([BIN, 'token'], env=env, stderr=subprocess.DEVNULL, text=True).strip()
     return p, token
 
@@ -80,7 +80,7 @@ def check(what, got, want):
     print(f'ok   {what}: {got}')
 
 
-home = tempfile.mkdtemp(prefix='ippai-auth-')
+home = tempfile.mkdtemp(prefix='masu-auth-')
 port = free_port()
 srv, token = serve(home, port)
 try:

@@ -1,12 +1,12 @@
 // The device benchmark (web/bench.html, web/src/bench.ts) end to end in headless Chromium: a
 // profile from the start screen's button to the comparison table, every step's numbers in the
-// run ippai serve kept (GET /bench-results), the program steps' checksums agreeing (the JIT's
+// run masu serve kept (GET /bench-results), the program steps' checksums agreeing (the JIT's
 // first and second bench.exe, the second from the saved translations), and a second run compared
 // with the first. Needs a built page with benchwasm (host/tests/bench-wasm.sh, tools/ci/build.sh)
 // and the programs (PROGRAMS_ONLY=1 tests/bench/build.sh DIR); packs them as the tree "bench"
 // of a new store (C:\ with FONTS's fonts, else none).
 //
-//   node tests/devbench-browser.mjs IPPAI PROGRAMS [profile]
+//   node tests/devbench-browser.mjs MASU PROGRAMS [profile]
 //   env: ANDROID=1 (V8 as on Android: every wasm access checked), PLAYWRIGHT, SHOTS=dir, FONTS=dir
 import { execFileSync, spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 const [bin, programs, profile = "quick"] = process.argv.slice(2);
-const work = mkdtempSync(join(tmpdir(), "ippai-devbench-"));
+const work = mkdtempSync(join(tmpdir(), "masu-devbench-"));
 const store = join(work, "store");
 mkdirSync(join(work, "prefix/drive_c/windows/temp"), { recursive: true });
 writeFileSync(join(work, "prefix/drive_c/windows/win.ini"), "");

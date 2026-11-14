@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the benchmark programs (tests/bench/src, and host/tests/bench.c) with mingw-w64 into
-# OUT (default target/bench-exe): the tree run.mjs mounts as "bench" (`ippai pack OUT bench`).
+# OUT (default target/bench-exe): the tree run.mjs mounts as "bench" (`masu pack OUT bench`).
 # Each source's "Build:" line has its libraries; scenario.dat is scenario.exe's archive, kirikiri/
 # the KiriKiri game (testdata/kirikiri, pack-kirikiri.mjs), renpy/ the Ren'Py game (pack-renpy.py),
 # onscripter/ and onscripter64/ the ONScripter game (pack-onscripter.py), novel16/ and novel16p/ the

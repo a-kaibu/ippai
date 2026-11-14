@@ -8,7 +8,7 @@
 //! (D3DSBT_ALL's only), texture 0, the vertex and pixel shaders, constant 0 of each, the view transform,
 //! the viewport, light 2. A value is 0..3 (objects: 0 none, 1 or 2 one of two).
 //!
-//! `IPPAI_TRACE_DIR=dir` writes `dir/d3d9sb-<seed>/`; `IPPAI_TRACE_SEEDS=n` (default 20).
+//! `MASU_TRACE_DIR=dir` writes `dir/d3d9sb-<seed>/`; `MASU_TRACE_SEEDS=n` (default 20).
 
 use super::trace_tests::{alloc, seeds, write_module, Rng, CALLS, SERIAL};
 use super::*;

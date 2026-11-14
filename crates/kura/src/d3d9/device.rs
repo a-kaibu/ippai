@@ -128,10 +128,10 @@ pub struct Buffer {
 }
 
 /// A buffer whose page copy a draw may read (`Buffer::gpu`): not dynamic (the game writes those
-/// every frame, often past what it locks); IPPAI_NORESIDENT=1: none.
+/// every frame, often past what it locks); MASU_NORESIDENT=1: none.
 fn resident(b: &Buffer) -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    b.usage & 0x200 == 0 && b.len >= 4 && !*OFF.get_or_init(|| std::env::var_os("IPPAI_NORESIDENT").is_some_and(|v| v != "0"))
+    b.usage & 0x200 == 0 && b.len >= 4 && !*OFF.get_or_init(|| std::env::var_os("MASU_NORESIDENT").is_some_and(|v| v != "0"))
 }
 
 /// The page copy of buffer `obj`, made or brought up to date with what was locked for writing
@@ -978,8 +978,8 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             }
             std::ptr::write_bytes(p, 0, 1100);
             let put = |off: usize, s: &[u8]| std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(off), s.len());
-            put(0, b"ippai.dll");
-            put(512, b"ippai WebGPU");
+            put(0, b"masu.dll");
+            put(512, b"masu WebGPU");
             put(1024, b"\\\\.\\DISPLAY1");
             // DriverVersion (1056), VendorId 1064, DeviceId 1068
             *(p.add(1056) as *mut u32) = 0x0001_0000;
@@ -3332,8 +3332,8 @@ unsafe fn create_shader(d: &mut D3d, pixel: bool, code: u32, out: u32) -> u32 {
     let dev = dev!(d);
     dev.serial += 1;
     let serial = dev.serial;
-    // (IPPAI_D3D_TRACE_CODE=1 with the trace: the tokens too, to translate them again by hand)
-    let dump = d.trace && std::env::var_os("IPPAI_D3D_TRACE_CODE").is_some();
+    // (MASU_D3D_TRACE_CODE=1 with the trace: the tokens too, to translate them again by hand)
+    let dump = d.trace && std::env::var_os("MASU_D3D_TRACE_CODE").is_some();
     let words = if dump { code.iter().map(|t| format!("{t:08x}")).collect::<Vec<_>>().join(" ") } else { String::new() };
     let o = d.new_obj(if pixel { IF_PS } else { IF_VS }, 0, Data::Shader(ShaderObj { code, parsed, serial }));
     if dump {
@@ -3770,9 +3770,9 @@ unsafe fn present(d: &mut D3d, after: &mut After, src: u32, dst: u32, over: u32)
 /// Present of a swap chain: `chain` (back buffer, windowed, window) for an additional one,
 /// None for the device's own.
 unsafe fn present_from(d: &mut D3d, after: &mut After, chain: Option<(u32, bool, u32, bool)>, src: u32, dst: u32, over: u32) -> u32 {
-    // IPPAI_D3D_TRACE_EVERY=n: trace one whole frame in n
+    // MASU_D3D_TRACE_EVERY=n: trace one whole frame in n
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
-    let every = *EVERY.get_or_init(|| std::env::var("IPPAI_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
+    let every = *EVERY.get_or_init(|| std::env::var("MASU_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
     if let (Some(n), Some(dev)) = (every, d.dev.as_ref()) {
         d.trace = (dev.frames + 1) % n == 0;
     }
@@ -4095,7 +4095,7 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     let trace = d.trace || no_prep_cache();
     let hit = d.dev.as_mut().unwrap().prep.take().filter(|p| p.key == pkey && !trace);
     let fresh = hit.is_none();
-    // (IPPAI_PREP_CHECK: a draw that reuses also prepares from scratch, and says what differs)
+    // (MASU_PREP_CHECK: a draw that reuses also prepares from scratch, and says what differs)
     let check = !fresh && prep_check();
     let st = &d.dev.as_ref().unwrap().st;
     let layout = |d: &D3d, st: &State| -> Option<(Vec<Elem>, u32, Vec<u32>)> {
@@ -4199,7 +4199,7 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
         }
         if let Some(&(_, ptr, stride)) = streams.first() {
             eprintln!("d3d9:   data {ptr:#x} stride {stride}");
-            let max = std::env::var("IPPAI_D3D_TRACE_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+            let max = std::env::var("MASU_D3D_TRACE_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
             for v in 0..count.min(max) {
                 let p = ptr + (first + v) * stride;
                 let w: Vec<String> = (0..stride / 4).map(|k| format!("{:08x}", *((p + 4 * k) as *const u32))).collect();
@@ -4920,11 +4920,11 @@ struct Uni {
     hash: u64,
 }
 
-/// IPPAI_NOPREP=1: every draw prepares from scratch (to compare with); IPPAI_PREP_CHECK=1: a
+/// MASU_NOPREP=1: every draw prepares from scratch (to compare with); MASU_PREP_CHECK=1: a
 /// draw that reuses the last preparation prepares from scratch too and says what differs (each
 /// a bug of `stale`). Tests set them with `set_prep_mode`.
 static PREP_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xff);
-/// the differences IPPAI_PREP_CHECK found
+/// the differences MASU_PREP_CHECK found
 pub static PREP_DIFFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn prep_mode() -> u8 {
@@ -4934,7 +4934,7 @@ fn prep_mode() -> u8 {
         return m;
     }
     let on = |k: &str| std::env::var_os(k).is_some_and(|v| v != "0");
-    let m = on("IPPAI_NOPREP") as u8 | (on("IPPAI_PREP_CHECK") as u8) << 1;
+    let m = on("MASU_NOPREP") as u8 | (on("MASU_PREP_CHECK") as u8) << 1;
     PREP_MODE.store(m, Relaxed);
     m
 }
@@ -4945,7 +4945,7 @@ pub(crate) fn set_prep_mode(m: u8) {
     PREP_MODE.store(m, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// IPPAI_NOMERGE=1: no draw joins the last one (#120). Tests set it with `set_merge_mode`.
+/// MASU_NOMERGE=1: no draw joins the last one (#120). Tests set it with `set_merge_mode`.
 static MERGE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xff);
 /// draws joined to the one before them
 pub static DRAWS_JOINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -4959,7 +4959,7 @@ fn merging() -> bool {
     use std::sync::atomic::Ordering::Relaxed;
     let mut m = MERGE_MODE.load(Relaxed);
     if m == 0xff {
-        m = std::env::var_os("IPPAI_NOMERGE").is_some_and(|v| v != "0") as u8;
+        m = std::env::var_os("MASU_NOMERGE").is_some_and(|v| v != "0") as u8;
         MERGE_MODE.store(m, Relaxed);
     }
     m == 0
@@ -5016,7 +5016,7 @@ fn shader_module(dev: &mut Device, wgsl: String) -> u32 {
         let off = b.blob(wgsl.as_bytes());
         b.cmd(&[gpu::CREATE_SHADER, id, off, wgsl.len() as u32]);
     });
-    if crate::env_on!("IPPAI_D3D_WGSL") {
+    if crate::env_on!("MASU_D3D_WGSL") {
         eprintln!("d3d9: shader {id}:\n{wgsl}");
     }
     dev.shaders.insert(wgsl, id);

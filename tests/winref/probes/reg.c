@@ -2,11 +2,11 @@
  * value type, the sizes and error codes of queries (ERROR_MORE_DATA and the size it asks for,
  * strings stored without their NUL, A vs W conversions in code page 932), the default value,
  * enumeration orders, RegQueryInfoKey's counts and maxima, deleting keys with subkeys, case
- * insensitivity, predefined keys. Under HKCU\Software\ippai-winref, removed first and last. */
+ * insensitivity, predefined keys. Under HKCU\Software\masu-winref, removed first and last. */
 #include "../probe.h"
 
 #define E(expr) do { SetLastError(0xdead); long long r_ = (long long)(expr); printf("%-70s = %lld\n", #expr, r_); } while (0)
-#define BASE "Software\\ippai-winref"
+#define BASE "Software\\masu-winref"
 
 static void hexa(const BYTE *a, DWORD n) { for (DWORD i = 0; i < n && i < 48; i++) printf(" %02x", a[i]); }
 

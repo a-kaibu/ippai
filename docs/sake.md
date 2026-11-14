@@ -182,10 +182,10 @@
   jit/long/avx.rs が直接訳す (2026-11-13、#36: 結果を L_V0/L_V1 に作ってから書くので、行き先が
   元と同じでもよい)。FMA、gather、vptest、vmaskmov、cvt の拡大・縮小、xmm の個数のシフトはまだインタプリタ。確認は tools/jit64test (ymm の形もインタプリタと照合) と
   host/tests/avx256.c (ネイティブの x86-64 と同じチェックサム)。CPUID は既定では AVX 系を報告しない
-  (CPUID で経路を選ぶ memcpy やコーデックがインタプリタの命令に入るため)。IPPAI_CPUID_AVX を付けると
+  (CPUID で経路を選ぶ memcpy やコーデックがインタプリタの命令に入るため)。MASU_CPUID_AVX を付けると
   AVX/AVX2/FMA/BMI1/BMI2/LZCNT/OSXSAVE と leaf 7 を報告する (koji::CPUID_AVX)。
   確認は crates/koji/tests/diff_isa.rs: MMX〜SSE4.2、AVX、AVX2、FMA3、BMI、POPCNT、LZCNT の
-  iced の Code 全部 (1078) を各 48 回 (IPPAI_ISA_CASES で増やせる)、NaN や非正規数を含む値で
+  iced の Code 全部 (1078) を各 48 回 (MASU_ISA_CASES で増やせる)、NaN や非正規数を含む値で
   実 CPU と比べる (YMM 全体、MMX、汎用レジスタ、フラグ、MXCSR の例外フラグまで、メモリ)。これで見つかった
   既存のずれ: HADD/HSUB/ADDSUB と DPPS/DPPD の NaN と丸めモード、ROUND* が SNaN を quiet に
   しない、FMA の NaN の優先順 (式の順 x*y+z)、MXCSR の例外フラグ (FMA は一度だけ丸めた結果が
@@ -254,7 +254,7 @@
     ときだけ JIT で走らせ、それ以外はインタプリタ)、PC24 の x87 を f32 の指数範囲で丸めていた、x87 の非正規化数になる
     積・商の二重丸め (レジスタで 53 ビット、ストアで f64)。
   - x87 の 80 ビット拡張精度 (2026-11-14、#52): 既定の x87 は f64 で計算する (速さのため。PC64 も 53 ビット)。
-    IPPAI_X87_80=1 を付けると koji::f80 (SoftFloat の roundPackToExtF80 と同じ丸め、x86 の NaN 規則、
+    MASU_X87_80=1 を付けると koji::f80 (SoftFloat の roundPackToExtF80 と同じ丸め、x86 の NaN 規則、
     後丸めの tininess) で 64 ビット仮数・15 ビット指数のまま計算し、PC 24/53/64 と 4 つの RC を守る
     (interp/x87.rs の x87_precise。ロード・ストア・四則と整数オペランド・fsqrt・frndint・比較・fcmov・
     fsave/frstor・fxsave/fxrstor。超越関数などは f64 のまま)。このモードでは x87 の JIT を使わない。
@@ -266,7 +266,7 @@
     8 回続けて一番多く出ていく」で統合していた。ring は 64 回の移動ごと (次の miss や API 呼び出しで)
     読まれるので、起動中のコードは数千回の移動で統合され、タイトルまでに約 1300 回、大きくなった
     リージョンを丸ごと V8 にコンパイルし直していた (しかも直後は Liftoff からやり直し)。いまは ring に
-    占める割合から推定した移動回数が 2^18 (IPPAI_JIT_MERGE_HOPS) に達したら統合する: タイトルまで
+    占める割合から推定した移動回数が 2^18 (MASU_JIT_MERGE_HOPS) に達したら統合する: タイトルまで
     約 70 秒 → 38〜45 秒 (4 回。統合しなければ 40 秒だが、bench.exe の sort が 2 倍、cxx の virtual が 3 倍遅く
     なる)。リージョンは自分のコードが読み書きするレジスタだけを Cpu と出し入れする (入口で読むのは
     名前を出すもの、出口で書くのは書き換えるもの。ほかは Cpu にあるまま): 1024 個の関数を呼び分ける
@@ -276,7 +276,7 @@
     超)。熱いリージョンを 1 モジュールにまとめ直すとベンチは 2 倍速いが、このゲームでは再コンパイルが
     移動の損 (メインスレッドで約 3 秒) より高くつき、タイトルが 85〜100 秒になった。
     テスト: host/tests/hops.c (64 個ずつ 4 種類の関数を表から呼ぶ。x86/x64/インタプリタ/統合を最初の
-    移動でする設定 (IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1) で同じ結果)、fuzz の x86_jit64
+    移動でする設定 (MASU_JIT_MERGE_HOPS=1 MASU_JIT_RECLAIM=1) で同じ結果)、fuzz の x86_jit64
     (1〜4 ブロックのリージョンをモジュール 1 つずつ、移動だらけで解釈器と比べる。全レジスタを出し入れする
     DEBUG_ALL_REGS とも)、long.rs の splice_regs の PBT、jit64test (JALLREGS で全レジスタ)。
     「書くレジスタしか読み込まない」壊し方は jit64test と x86_jit64 の両方が見つける。
@@ -291,7 +291,7 @@
   - 残り: script 1.5 倍、C++ の std::map 2〜4 倍、x87 と minss の JIT。
   - なぜまだ x64 が遅いか (2026-11-14): 32 ビットは関数単位の翻訳 (FN モード、structure.rs) が既定だが、
     x64 は古いリージョン翻訳 (1 リージョン = `loop{block×n; br_table}`、出口ごとにレジスタを Cpu へ
-    書いてハッシュ引き) のまま。x86 を IPPAI_JIT_FN=0 でリージョンに戻すと flatbench は 4.35 秒で
+    書いてハッシュ引き) のまま。x86 を MASU_JIT_FN=0 でリージョンに戻すと flatbench は 4.35 秒で
     x64 とほぼ同じ。ほかに x64 だけの重さは、Cpu のレジスタが lo/hi に分かれている、メモリ参照ごとの
     範囲チェック、同期コンパイル。
     - guest CRT の realloc が x64 で host_malloc/host_free (trap) を呼んでいた (Lua はオブジェクトを
@@ -300,7 +300,7 @@
     - long.rs に構造化レイアウトを試作 (structure.rs の from_succ / Nest を共用、入口は根・戻り先・
       ループ外のヘッダ、ループ内の入口はヘッダの横ディスパッチ、ジャンプテーブルは完全ハッシュ)。
       表・fib・文字列・SQLite は速く、sort/oop は merge_hot64 がほぼ効かなくなり遅いので既定オフ
-      (IPPAI_JIT64_STRUCT=1 で有効、jit64test と fuzz は両方を回す)。本命は x64 の FN モード。
+      (MASU_JIT64_STRUCT=1 で有効、jit64test と fuzz は両方を回す)。本命は x64 の FN モード。
   - 翻訳の無効化 (review P1-6): コードページへの書き込みは、そのページから作った翻訳だけを落とす
     (kura jit.rs の CHANGES 履歴 1024 件 + code_of、ほかのスレッドは check_generation で差分だけ
     drop_pages)。履歴が切れたら従来どおり全部捨てる。共有キャッシュ (P1-5) は 48 MiB・キーあたり
@@ -320,7 +320,7 @@
 
 ## どこでもセーブ (2026-11-07)
 
-実行中のプログラムをそのまま保存・復元する（ゲーム右上のボタン）。全スレッドを安全な位置で止めてメモリ全体を zstd で保存し、GPU の中身はメモリに読み戻して再構築する。ブラウザ（OPFS）と ippai serve（S3）に保存されるので別の端末からも続けられる。詳細は docs/savestate.md。
+実行中のプログラムをそのまま保存・復元する（ゲーム右上のボタン）。全スレッドを安全な位置で止めてメモリ全体を zstd で保存し、GPU の中身はメモリに読み戻して再構築する。ブラウザ（OPFS）と masu serve（S3）に保存されるので別の端末からも続けられる。詳細は docs/savestate.md。
 
 ## 16 ビット (Win16)
 
@@ -369,15 +369,15 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
 - ビルド: `bash crates/sake/build.sh` → node 用 `/home/user/work/sake-out/sake.js` と
   ページ用 `web/public/sake/` (dist に使うときは `web/dist/sake/` にコピー)。
 - node: ゲームのフォルダで `SAKE_C=<prefix>/drive_c node sake.js /abs/game.exe`。
-  `IPPAI_SCREENSHOT=out.ppm`、`IPPAI_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
+  `MASU_SCREENSHOT=out.ppm`、`MASU_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
   5/6 キー)。ボタンはホバーの移動を先に送らないと反応しないゲームが多い。
-- ページ: `ippai pack <dir> <name>` してから
+- ページ: `masu pack <dir> <name>` してから
   `play.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/ippai/game=<name>`。
   `tests/play.mjs` でヘッドレスのスクリーンショット。
-- 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`IPPAI_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、
+- 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`MASU_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、
   `SAKE_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`SAKE_API_STATS=秒`、
   `SAKE_TRACE_FAULT`、`SAKE_TRACE_FILES`、`SAKE_TRACE_LOAD`、`SAKE_TRACE_MSG`、
-  `SAKE_TRACE_INPUT`、`SAKE_TRACE_FONT`、`IPPAI_JIT_STATS` (JIT が実行ループに戻る場所)、
-  `IPPAI_D3D_SPV=<dir>` (D3D11 シェーダの SPIR-V を書き出す)。
+  `SAKE_TRACE_INPUT`、`SAKE_TRACE_FONT`、`MASU_JIT_STATS` (JIT が実行ループに戻る場所)、
+  `MASU_D3D_SPV=<dir>` (D3D11 シェーダの SPIR-V を書き出す)。
 - 確認用の小さなテスト: `ENGINE=sake node tests/gfx.mjs` (d3d11test、d2dtest、ddrawtest が通る。
   d3d8test は sake に D3D8 が無いので落ちる)。

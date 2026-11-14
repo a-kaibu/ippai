@@ -3,7 +3,7 @@
 //! the state (render, stage and sampler states set again or changed, textures of other kinds,
 //! FVFs and declarations, streams of other strides, instancing, shaders, constants, transforms,
 //! lights, targets and depth buffers, state blocks recorded, captured and applied, Reset,
-//! textures released and made again) and every kind of draw, run with IPPAI_PREP_CHECK (each
+//! textures released and made again) and every kind of draw, run with MASU_PREP_CHECK (each
 //! draw that reuses prepares again and compares): nothing may differ. The page is the model of
 //! WebGPU: no WebGPU rule may be broken either.
 

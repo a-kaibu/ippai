@@ -215,7 +215,7 @@ fn num(f: f32) -> String {
 
 /// The first line of a save state's sample copy shader (d3d/snap.rs; the model copies texels
 /// for it).
-pub(crate) const SAMPLE_COPY: &str = "// ippai: sample copy\n";
+pub(crate) const SAMPLE_COPY: &str = "// masu: sample copy\n";
 
 pub(crate) const CLEAR_SHADER: &str = r#"
 struct C { color: vec4f, z: vec4f };
@@ -287,8 +287,8 @@ const RESOLVE_SHADER: &str = r#"
 /// Depth as the bits of a texture's 32-bit texels, whose texel (0, 0) is pixel `o.xy` (see `draw_depth`).
 /// (the first line of ZWRITE_SHADER: the model writes depth for it)
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const ZWRITE: &str = "// ippai: depth from texels\n";
-const ZWRITE_SHADER: &str = r#"// ippai: depth from texels
+pub(crate) const ZWRITE: &str = "// masu: depth from texels\n";
+const ZWRITE_SHADER: &str = r#"// masu: depth from texels
 @group(0) @binding(0) var src: texture_2d<TY>;
 struct C { o: vec4f };
 @group(0) @binding(1) var<uniform> c: C;
@@ -304,8 +304,8 @@ struct C { o: vec4f };
 
 /// (the first line of BLIT_SHADER: the model samples binding 0 for it, nearest)
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const BLIT: &str = "// ippai: blit\n";
-const BLIT_SHADER: &str = r#"// ippai: blit
+pub(crate) const BLIT: &str = "// masu: blit\n";
+const BLIT_SHADER: &str = r#"// masu: blit
 struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 struct R { src: vec4f };
 @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -577,10 +577,10 @@ pub struct D3d {
     last: Option<(Vec<u32>, Vec<u8>, Vec<u8>)>,
     /// where its buffer commands are
     last_bufs: Vec<usize>,
-    /// IPPAI_SKIPCHECK: batches that would be skipped run anyway, and the frame they present is
+    /// MASU_SKIPCHECK: batches that would be skipped run anyway, and the frame they present is
     /// compared with the one before (pixels read back by token: pair, buffer, pixels)
     skip_check: bool,
-    /// IPPAI_NOSEG: segments are drawn whole every time (see segment()).
+    /// MASU_NOSEG: segments are drawn whole every time (see segment()).
     no_seg: bool,
     checks: HashMap<u32, (u32, Id, Vec<u8>)>,
     check_done: HashMap<u32, Vec<u8>>,
@@ -601,7 +601,7 @@ pub struct D3d {
     pub seg_stats: Cell<(u32, u32)>,
     /// batches not run because they were the same as the last one (for stats)
     pub skipped: Cell<u32>,
-    /// IPPAI_NOPASSOPT: clears done at once as passes of their own, depth and stencil always
+    /// MASU_NOPASSOPT: clears done at once as passes of their own, depth and stencil always
     /// loaded and stored (to compare)
     no_pass_opt: bool,
     used: Vec<u32>,
@@ -702,8 +702,8 @@ impl D3d {
             clears: HashMap::new(),
             last: None,
             last_bufs: Vec::new(),
-            skip_check: crate::env_on!("IPPAI_SKIPCHECK"),
-            no_seg: crate::env_on!("IPPAI_NOSEG"),
+            skip_check: crate::env_on!("MASU_SKIPCHECK"),
+            no_seg: crate::env_on!("MASU_NOSEG"),
             checks: HashMap::new(),
             check_done: HashMap::new(),
             stamps: HashMap::new(),
@@ -715,7 +715,7 @@ impl D3d {
             clip: None,
             seg_stats: Cell::new((0, 0)),
             skipped: Cell::new(0),
-            no_pass_opt: crate::env_on!("IPPAI_NOPASSOPT"),
+            no_pass_opt: crate::env_on!("MASU_NOPASSOPT"),
             used: Vec::new(),
             buffers: HashMap::new(),
             doomed: Vec::new(),
@@ -864,7 +864,7 @@ impl D3d {
         self.run_batch(c, data, blob);
     }
 
-    /// IPPAI_SKIPCHECK: reads texture `tex` back; the second read of a pair compares.
+    /// MASU_SKIPCHECK: reads texture `tex` back; the second read of a pair compares.
     fn snap(&mut self, tex: u32, pair: u32) {
         let Some(t) = self.textures.get(&tex) else { return };
         let (w, h, id, bpp) = (t.w, t.h, t.tex, bpp(t.format));
@@ -1460,7 +1460,7 @@ impl D3d {
             }
         }
         if self.skip_check {
-            // (IPPAI_SKIPCHECK: and drawn whole, to compare)
+            // (MASU_SKIPCHECK: and drawn whole, to compare)
             let pair = self.next_token;
             self.snap(t, pair);
             self.target = [t, level, self.target[2]];

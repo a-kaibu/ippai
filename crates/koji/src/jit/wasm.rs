@@ -17,7 +17,7 @@ pub struct Code {
     pub(crate) cpu_at: bool,
 }
 
-/// Measuring (kura: IPPAI_JIT_MEMCOUNT): every load and store the JIT emits from now on counts
+/// Measuring (kura: MASU_JIT_MEMCOUNT): every load and store the JIT emits from now on counts
 /// itself in [`MEM_COUNTS`], by whether its address came from the Cpu (local 0: a `local.get 0`
 /// since the last access or call, which is how the translators address Cpu fields) and that
 /// field's offset, or not (the guest's memory, tables). wasm32 only (the counters' addresses

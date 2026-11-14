@@ -29,7 +29,7 @@ UCUtil50.dll imports MFC140; use the corresponding official DLL.
 
 The required user experience is an Android browser with no locally installed
 companion program. The earlier localhost Node relay is a development fixture,
-not an accepted production prerequisite. The user authorized an opaque WebSocket/TCP relay in `ippai serve`; its design
+not an accepted production prerequisite. The user authorized an opaque WebSocket/TCP relay in `masu serve`; its design
 and tested protocol are documented in [tls-relay.md](tls-relay.md). Upstream TLS
 must be verified in browser/Wasm, so the relay does not terminate the connection
 or receive plaintext account credentials. The Wasm client uses rustls and the opaque relay; official HTTPS exchanges have been verified in Chromium.
@@ -47,7 +47,7 @@ Windows API dependencies in sake. Authorization decisions, signature contents,
 license expiration and battery accounting remain in the vendor code.
 
 A native Windows host running the official runtime is an alternative, but needs
-Windows and remote execution; it does not satisfy ippai's browser execution
+Windows and remote execution; it does not satisfy masu's browser execution
 model. Replacing the vendor's authorization results would not satisfy the
 requested legitimate-runtime behavior and is not part of this implementation.
 
@@ -169,7 +169,7 @@ Windows comparison isolated another startup blocker: a captioned hidden window
 receives posted WM_DWMNCRENDERINGCHANGED (enabled), which satisfies the input part
 of the game's wait for its audio initialization event. The same public Win32
 probe ran on Windows and sake; see
-[Windows reference run](https://github.com/a-kaibu/ippai/actions/runs/42493996944).
+[Windows reference run](https://github.com/a-kaibu/masu/actions/runs/42493996944).
 The window creation notification and fractional-millisecond wait rounding now
 match that regression fixture. The game subsequently creates and shows its own
 window and sends Direct3D frames.
@@ -185,7 +185,7 @@ streaming its voice is ignored by the game itself; later input advances normally
 The game's shipped `save/config.dat` places its 1280x720 window at (160,90), so
 on kura's default 1366x768 screen the window extends past the right and bottom
 edges, as it would on Windows. Add the title with
-`--env IPPAI_SCREEN=1920x1080` (any screen of at least about 1460x850 fits the
+`--env MASU_SCREEN=1920x1080` (any screen of at least about 1460x850 fits the
 window and its frame) to see the whole window.
 
 Other observed gaps include _mbsnbcpy_s, COM security, event logging,

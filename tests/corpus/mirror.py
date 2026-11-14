@@ -72,7 +72,7 @@ def fetch(out, url=MANIFEST):
     old = None
     try: old = json.load(open(out, encoding='utf-8'))
     except (OSError, ValueError): pass
-    req = urllib.request.Request(url, headers={'Accept-Encoding': 'gzip', 'User-Agent': 'ippai-corpus'})
+    req = urllib.request.Request(url, headers={'Accept-Encoding': 'gzip', 'User-Agent': 'masu-corpus'})
     if old and old.get('source') == url and old.get('etag'): req.add_header('If-None-Match', old['etag'])
     try:
         r = urllib.request.urlopen(req, timeout=300)

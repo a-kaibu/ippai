@@ -3,10 +3,10 @@ profile = "mutants"
 exclude_re = [
     # Kani proofs (formal/kani.sh), not built by cargo test
     '\bproofs::',
-    # diagnostics and test hooks driven by environment variables (IPPAI_VIDEO_STATS,
-    # IPPAI_SCREENSHOT, IPPAI_INPUT), and the frame pacing's sleeps
+    # diagnostics and test hooks driven by environment variables (MASU_VIDEO_STATS,
+    # MASU_SCREENSHOT, MASU_INPUT), and the frame pacing's sleeps
     'video\.rs:\d+:\d+: .*\bstat\b',
     'display\.rs:\d+:\d+: .*\b(start_screenshots|start_scripted_input|pace|pace_frame|nodiff)\b',
-    # ippai meta.rs: requests to ErogameScape and VNDB (network)
+    # masu meta.rs: requests to ErogameScape and VNDB (network)
     'meta\.rs:\d+:\d+: .*\b(egs_search|egs_get|egs_query|vndb_get|vndb_search|vndb_query|search|find|lookup|download_cover|agent)\b',
 ]

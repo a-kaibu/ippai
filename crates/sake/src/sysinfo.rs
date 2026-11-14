@@ -171,17 +171,17 @@ fn smbios() -> Vec<u8> {
     let mut b = vec![1, 2, 0x00, 0xe0, 3, 0];
     b.extend_from_slice(&8u64.to_le_bytes());
     b.extend_from_slice(&[0, 0, 1, 0, 0xff, 0xff]);
-    structure(&mut t, 0, 0, &b, &["ippai", "sake", "11/07/2026"]);
+    structure(&mut t, 0, 0, &b, &["masu", "sake", "11/07/2026"]);
     // system: manufacturer 1, product 2, version 3, serial 0, UUID, wake-up type (power switch),
     // SKU 0, family 0
     let mut b = vec![1, 2, 3, 0];
     b.extend_from_slice(&[0; 16]);
     b.extend_from_slice(&[6, 0, 0]);
-    structure(&mut t, 1, 1, &b, &["ippai", "sake virtual machine", "1.0"]);
+    structure(&mut t, 1, 1, &b, &["masu", "sake virtual machine", "1.0"]);
     // baseboard: manufacturer 1, product 2, version 3, serial 0, asset 0, features (hosting
     // board), location 0, chassis handle, type (motherboard), no contained objects
     let b = [1, 2, 3, 0, 0, 1, 0, 3, 0, 10, 0];
-    structure(&mut t, 2, 2, &b, &["ippai", "sake virtual board", "1.0"]);
+    structure(&mut t, 2, 2, &b, &["masu", "sake virtual board", "1.0"]);
     // memory device: one module of PHYS bytes, DDR4 DIMM, 64-bit, speed unknown
     let mb = (PHYS >> 20) as u32;
     let mut b = Vec::new();
@@ -196,7 +196,7 @@ fn smbios() -> Vec<u8> {
     b.extend_from_slice(&[2, 0, 0, 0, 0]); // manufacturer 2, serial, asset, part, attributes
     b.extend_from_slice(&mb.to_le_bytes()); // extended size in MB
     b.extend_from_slice(&0u16.to_le_bytes()); // configured speed
-    structure(&mut t, 17, 17, &b, &["DIMM 0", "ippai"]);
+    structure(&mut t, 17, 17, &b, &["DIMM 0", "masu"]);
     structure(&mut t, 127, 127, &[], &[]);
     t
 }

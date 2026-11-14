@@ -11,7 +11,7 @@
 // And with D3D 11 4x targets (host/tests/snapmsaa.c): the GPU read back in a hidden tab, the
 // samples the same after the discard.
 //
-//   node tests/hidden-browser.mjs [path to ippai]   (HEADFUL=1: a window, under xvfb-run;
+//   node tests/hidden-browser.mjs [path to masu]   (HEADFUL=1: a window, under xvfb-run;
 //   ONLY="m emulated": that one; TAB=1: also in a real tab of the full Chromium, where its GPU
 //   process keeps its device: passed on 8ee46ef, see `tab` below)
 //   (web/dist built with sake in it: crates/sake/build.sh, then pnpm build; PLAYWRIGHT as elsewhere)
@@ -23,9 +23,9 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
 const web = resolve(process.env.WEB ?? "web/dist");
-const work = mkdtempSync(join(tmpdir(), "ippai-hidden-"));
+const work = mkdtempSync(join(tmpdir(), "masu-hidden-"));
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });
 const prefix = join(work, "prefix/drive_c/windows");
@@ -50,7 +50,7 @@ const server = spawn(bin, ["serve", "--foreground", "--web", web, "--store", sto
 for (let i = 0; ; i++) {
   if (server.exitCode !== null) throw new Error(`server exited: ${server.exitCode}`);
   if (await fetch(`${base}apps/builds`).then((r) => r.ok, () => false)) break;
-  // (a debug ippai checks its RTP downloads first: a while)
+  // (a debug masu checks its RTP downloads first: a while)
   if (i > 600) throw new Error("server did not become ready");
   await new Promise((r) => setTimeout(r, 300));
 }

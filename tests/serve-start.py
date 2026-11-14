@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""ippai serve answers before it has compressed the web app (serve.rs precompress): zstd -19
+"""masu serve answers before it has compressed the web app (serve.rs precompress): zstd -19
 over a web app with several sake builds took longer than tests/winetest/run-browser.mjs waits
 for the server (winetest-gpu, run 42445713214). A stale .zst is never served: it is removed
 before the server listens; the fresh one appears later and is then sent zstd-encoded.
 
-    tests/serve-start.py [path to ippai]
+    tests/serve-start.py [path to masu]
 """
 import http.client, os, random, socket, subprocess, sys, tempfile, time
 
-BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/ippai')
+BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/masu')
 
 
 def free_port():

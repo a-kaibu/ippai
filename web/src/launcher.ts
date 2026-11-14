@@ -1,9 +1,9 @@
-// The game list's data (play.html without ?run=; shown by ui/Library.tsx): the games `ippai add` (or
-// add-game) put in the store, served as one list by ippai serve (GET /games). Picking one fills
+// The game list's data (play.html without ?run=; shown by ui/Library.tsx): the games `masu add` (or
+// add-game) put in the store, served as one list by masu serve (GET /games). Picking one fills
 // play.html's parameters (run, mount, args, env) and starts it in the same page, from the same
 // click (the audio and fullscreen need a user gesture).
 
-/** From ErogameScape (批評空間) / VNDB: `ippai meta` (crates/ippai/src/meta.rs, Info) */
+/** From ErogameScape (批評空間) / VNDB: `masu meta` (crates/masu/src/meta.rs, Info) */
 export interface GameMeta {
   source: string;
   egs_id?: number;
@@ -22,7 +22,7 @@ export interface GameMeta {
   links?: { label: string; url: string }[];
 }
 
-/** store/games/<id>.json (crates/ippai/src/pack.rs, GameEntry) */
+/** store/games/<id>.json (crates/masu/src/pack.rs, GameEntry) */
 export interface GameEntry {
   id: string;
   title: string;
@@ -30,7 +30,7 @@ export interface GameEntry {
   /** image file in store/games/ */
   cover?: string;
   /** the cover fetched with metadata from a page the user gave (server-relative, versioned:
-   * crates/ippai/src/library_api.rs); shown instead of `cover` */
+   * crates/masu/src/library_api.rs); shown instead of `cover` */
   cover_src?: string;
   run: string;
   args: string[];
@@ -39,11 +39,11 @@ export interface GameEntry {
   /** NAME=value */
   env: string[];
   /** the launcher the game was registered with, when the server starts its engine instead
-   * (a Siglus game's autorun menu: crates/ippai/src/engine_exe.rs); saves made under it are read */
+   * (a Siglus game's autorun menu: crates/masu/src/engine_exe.rs); saves made under it are read */
   launcher?: string;
   meta?: GameMeta;
-  /** what did not unpack of the download it was added from (`ippai add` of an archive a tool
-   * failed on in part: crates/ippai/src/unpack.rs) */
+  /** what did not unpack of the download it was added from (`masu add` of an archive a tool
+   * failed on in part: crates/masu/src/unpack.rs) */
   unpack_issues?: string[];
 }
 
@@ -88,7 +88,7 @@ export function applyGame(params: URLSearchParams, g: GameEntry): void {
   if (g.args.length) params.set("args", g.args.join(","));
   else params.delete("args");
   // the game's environment, then the address's own &env= (a trace asked for, as
-  // &env=IPPAI_D3D_TRACE=1: later wins, so it can also override the game's)
+  // &env=MASU_D3D_TRACE=1: later wins, so it can also override the game's)
   const asked = params.getAll("env").filter((e) => !g.env.includes(e));
   params.delete("env");
   for (const e of [...g.env, ...asked]) params.append("env", e);

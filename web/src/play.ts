@@ -5,13 +5,13 @@ let stopPlay: (() => void) | undefined;
 // composed by kura (crates/kura/src/display.rs) and shown with WebGPU. (The page ran Wine too
 // until 2026-11-02: a-kaibu/vnvm-wine.)
 //
-//   /play.html                      the game list (web/src/launcher.ts, ippai add-game)
+//   /play.html                      the game list (web/src/launcher.ts, masu add-game)
 //   /play.html?game=id              a game from the list (its run, mount, args and env)
 //   /play.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
 //   &mount=/ippai/game=tree          also mount a store tree (repeatable; Z:\ippai\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. SAKE_TRACE_FILES=1)
-//   &nosave                         no saved games (ippai serve's pre-run: its x86 regions only)
+//   &nosave                         no saved games (masu serve's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/play.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
 //   &bench                          bench.html: the program's output as "vnvm-print" events (all its threads')
@@ -127,7 +127,7 @@ interface SakeModule {
   _vnhost_net_busy?(): number;
   _vnhost_jit_late?(wasm: number, wasmLen: number, idx: number, idxLen: number): number;
   /** host/fetch-bridge.js: the game's chunks fetched onto the device (warm.ts) */
-  ippaiWarm?: Warm;
+  masuWarm?: Warm;
   _vnhost_display_view(out: number): void;
   _vnhost_display_windows?(out: number, max: number): number;
   _vnhost_display_frame(io: number): number;
@@ -290,7 +290,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // the build it is of
   let slot = params.get("state");
   // a tab the browser discarded while it was out of sight (hidden.ts): where it was then
-  const autoKey = `ippai.hidden-state.${saveName}`;
+  const autoKey = `masu.hidden-state.${saveName}`;
   const autoHash = nosave ? null : sessionGet(autoKey);
   const discarded = !!(document as { wasDiscarded?: boolean }).wasDiscarded;
   const fromHidden = slot === null && !!autoHash && discarded;
@@ -339,9 +339,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     mounts: params.getAll("mount").join(" "),
     env: params.getAll("env").join(" "),
   });
-  // the browser keeps a versioned sake.wasm with its compiled code (see ippai serve)
+  // the browser keeps a versioned sake.wasm with its compiled code (see masu serve)
   const wasmVersion = fileVersion(`${BASE}${WASM}`);
-  // x86 regions earlier runs of this program saved (ippai serve /jit), per build of sake.wasm
+  // x86 regions earlier runs of this program saved (masu serve /jit), per build of sake.wasm
   // (which has the translator); &jit=0 for none
   const jitBase = params.get("jit") ?? jitBaseOf(run);
   const jitVersion = translatorVersion(wasmVersion).then((v) => v + build.jit);
@@ -464,7 +464,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     vnvmSpawn: spawn,
     vnvmFiles,
     // (the bucket's budget of requests: the network worker and the page's save take from one, budget.ts)
-    ippaiNetBudget: netBudget(),
+    masuNetBudget: netBudget(),
     // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)
     arguments: [
       run.replace(/^z:/i, "").replaceAll("\\", "/"),
@@ -486,34 +486,34 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     )),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
-      IPPAI_MOUNTS: ["/=", "/ippai/prefix=prefix32", ...params.getAll("mount")].join(":"),
+      MASU_MOUNTS: ["/=", "/ippai/prefix=prefix32", ...params.getAll("mount")].join(":"),
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
       SAKE_C: "/ippai/prefix/drive_c",
-      ...(jitName ? { IPPAI_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
+      ...(jitName ? { MASU_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // (the chunks list: the game's own, see gameChunksName)
       ...(jitName && game
-        ? { IPPAI_CHUNKS_URL: new URL(`jit-save/${gameChunksName(game)}.chunks`, location.href).href }
+        ? { MASU_CHUNKS_URL: new URL(`jit-save/${gameChunksName(game)}.chunks`, location.href).href }
         : {}),
       // (this run's read trace, beside it: what it read when, what was foreseen; kura vfs/trace.rs)
       ...(jitName && game
-        ? { IPPAI_TRACE_URL: new URL(`jit-save/${traceName(game, Date.now())}`, location.href).href }
+        ? { MASU_TRACE_URL: new URL(`jit-save/${traceName(game, Date.now())}`, location.href).href }
         : {}),
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off
-      ...(params.has("noload") ? {} : { IPPAI_LOAD: "1" }),
+      ...(params.has("noload") ? {} : { MASU_LOAD: "1" }),
       // the page decodes sound with WebCodecs (web/src/adec.ts: from its first frame on)
-      ...(typeof AudioDecoder !== "undefined" ? { IPPAI_ADEC: "1" } : {}),
+      ...(typeof AudioDecoder !== "undefined" ? { MASU_ADEC: "1" } : {}),
       // (headless Chromium destroys a device that draws to a canvas: tests take shots instead)
-      ...(params.has("headless") ? { IPPAI_HEADLESS: "1" } : {}),
-      ...(params.has("d3dstats") ? { IPPAI_D3DSTATS: "1" } : {}),
+      ...(params.has("headless") ? { MASU_HEADLESS: "1" } : {}),
+      ...(params.has("d3dstats") ? { MASU_D3DSTATS: "1" } : {}),
       // (a small chunk cache on a device with little memory, chunkcache.ts; &env= overrides it)
-      ...((mb) => (mb ? { IPPAI_CHUNK_CACHE_MB: String(mb) } : {}))(
+      ...((mb) => (mb ? { MASU_CHUNK_CACHE_MB: String(mb) } : {}))(
         chunkCacheMb((navigator as Navigator & { deviceMemory?: number }).deviceMemory),
       ),
       // the game starts in its own folder (as from Explorer): many open their data relatively
       ...(/^z:\\/i.test(run)
-        ? { IPPAI_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }
+        ? { MASU_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }
         : {}),
       ...Object.fromEntries(
         params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),
@@ -740,14 +740,14 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   setGameBusy(() => !!sake._vnhost_net_busy?.());
   // the rest of the game's files onto the device while it plays: what earlier runs read first,
   // in that order, then the trees' others; fewer at once while it waits for a read (warm.ts)
-  if (sake.ippaiWarm && warmAllowed(conn) && params.get("warm") !== "0")
+  if (sake.masuWarm && warmAllowed(conn) && params.get("warm") !== "0")
     void Promise.all([
       chunkSizes,
       listed,
       edges,
       navigator.storage?.estimate?.().catch(() => undefined) ?? Promise.resolve(undefined),
     ]).then(([sizes, first, next, est]) => {
-      const warm = sake.ippaiWarm!;
+      const warm = sake.masuWarm!;
       const note = (l: string) => (console.log(l), recorder?.note(l));
       note(
         `fetching ahead: ${first.length} chunks earlier runs read first, then the trees' (${sizes.size}); ${busyWidth} at once while the game waits`,
@@ -888,7 +888,7 @@ type LatePart = { wasm: Uint8Array; idx: Uint8Array };
  * The saved regions `name`: the parts the start waits for, compiled while they download (the
  * browser caches each part's code: a run's save adds a part, the others stay the same), and the
  * rest, fetched once those are here. The first part is the regions runs saved first (their
- * start: ippai serve keeps it apart when it merges parts); the others are what later play
+ * start: masu serve keeps it apart when it merges parts); the others are what later play
  * reached, which a thread takes in when it first misses one of their regions (kura jit.rs
  * vnhost_jit_late; meanwhile it translates as without them). #123: a game whose parts are big
  * started only once all were downloaded and compiled.
@@ -1101,7 +1101,7 @@ async function chunksList(names: string[]): Promise<string[]> {
   return out;
 }
 
-/** What followed each chunk in earlier runs (`names` in turn: the first with any; ippai serve's
+/** What followed each chunk in earlier runs (`names` in turn: the first with any; masu serve's
  * `<name>.next`, pairs of hashes). */
 async function chunksNext(names: string[]): Promise<Uint8Array> {
   for (const n of names) {
@@ -1308,7 +1308,7 @@ function attachAuto(current: () => SakeModule): void {
 }
 
 /** bench.html: the program's threads' stdout lines (host/pre.js), as "vnvm-print" events. */
-const PRINT_CHANNEL = "ippai-print";
+const PRINT_CHANNEL = "masu-print";
 if (params.has("bench")) {
   new BroadcastChannel(PRINT_CHANNEL).onmessage = (e: MessageEvent<string>) =>
     dispatchEvent(new CustomEvent("vnvm-print", { detail: e.data }));
@@ -1472,7 +1472,7 @@ async function main(): Promise<void> {
     const g = (await fetchGames()).find((x) => x.id === id);
     if (!g) throw new Error(`ゲーム ${id} が一覧にありません`);
     applyGame(params, g);
-    document.title = `${g.title} - ippai`;
+    document.title = `${g.title} - masu`;
     setStart({ label: `${g.title} を起動` });
     splash(g);
   }

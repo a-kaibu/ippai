@@ -1,17 +1,17 @@
 #!/bin/bash
-# Installs a release binary (ippai_<version>_linux_<arch>.tar.gz from GitHub Releases, or CI's
-# ippai-<version>.tar.zst) into a server directory and restarts the server with that
+# Installs a release binary (masu_<version>_linux_<arch>.tar.gz from GitHub Releases, or CI's
+# masu-<version>.tar.zst) into a server directory and restarts the server with that
 # directory's run-server.sh. The store, jit cache and logs there are left as they are. The
-# previous binary stays as ippai.prev; `deploy.sh --rollback` puts it back.
+# previous binary stays as masu.prev; `deploy.sh --rollback` puts it back.
 #
-#   tools/ci/deploy.sh ippai_0.1.0_linux_amd64.tar.gz [dir]   (dir: default /home/kota/vnvm/vnvm-bench)
+#   tools/ci/deploy.sh masu_0.1.0_linux_amd64.tar.gz [dir]   (dir: default /home/kota/vnvm/vnvm-bench)
 #   tools/ci/deploy.sh --rollback [dir]
 #
-# run-server.sh starts the server, e.g. `./ippai serve --store store --jit jit --logs logs
-# --listen 127.0.0.1:8080` (ippai serve goes to the background by itself and returns once it
+# run-server.sh starts the server, e.g. `./masu serve --store store --jit jit --logs logs
+# --listen 127.0.0.1:8080` (masu serve goes to the background by itself and returns once it
 # serves). The web app is built into the binary: no --web unless one is to be served instead.
 set -euo pipefail
-FILES="ippai web wasm-opt VERSION"
+FILES="masu web wasm-opt VERSION"
 if [ "${1:-}" = "--rollback" ]; then
   DIR=${2:-/home/kota/vnvm/vnvm-bench}
   cd "$DIR"
@@ -28,7 +28,7 @@ else
     *) tar -xzf "$TAR" -C "$NEW" ;;
   esac
   SRC=$NEW
-  [ -e "$SRC/ippai" ] || SRC=$(echo "$NEW"/ippai-*)
+  [ -e "$SRC/masu" ] || SRC=$(echo "$NEW"/masu-*)
   for f in $FILES; do
     [ -e "$SRC/$f" ] || continue
     rm -rf "$f.prev"
@@ -37,20 +37,20 @@ else
   done
   rm -rf "$NEW"
 fi
-./ippai stop >/dev/null 2>&1 || true
-pkill -f '(^|/)(vnvm|ippai) serve' || true  # (older servers, and ones started without the socket)
-gone() { ! pgrep -f '(^|/)(vnvm|ippai) serve' >/dev/null; }
+./masu stop >/dev/null 2>&1 || true
+pkill -f '(^|/)(vnvm|masu) serve' || true  # (older servers, and ones started without the socket)
+gone() { ! pgrep -f '(^|/)(vnvm|masu) serve' >/dev/null; }
 for _ in $(seq 50); do gone && break; sleep 0.1; done
 # (a server still flushing after 5 s: 25 s more, then killed; the new one never starts beside it on
 # the same store and address)
 for _ in $(seq 250); do gone && break; sleep 0.1; done
 if ! gone; then
   echo "the old server is still running: killed"
-  pkill -9 -f '(^|/)(vnvm|ippai) serve' || true
+  pkill -9 -f '(^|/)(vnvm|masu) serve' || true
   for _ in $(seq 50); do gone && break; sleep 0.1; done
   gone || { echo "the old server did not go"; exit 1; }
 fi
 grep -q -- '--web' run-server.sh && echo "note: run-server.sh passes --web: the built-in web app is not used"
 ./run-server.sh
 sleep 1
-pgrep -f 'ippai serve' >/dev/null && echo "running $(./ippai --version)" || { echo "the server did not start"; exit 1; }
+pgrep -f 'masu serve' >/dev/null && echo "running $(./masu --version)" || { echo "the server did not start"; exit 1; }

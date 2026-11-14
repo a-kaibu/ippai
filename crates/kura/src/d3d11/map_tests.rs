@@ -292,7 +292,7 @@ fn run(seed: u64) {
 
 /// Maps.tla in Rust (the test fails here too, with the step, when TLC is not run).
 fn check(steps: &[Step], seed: u64) {
-    if std::env::var_os("IPPAI_MAP_DUMP").is_some() {
+    if std::env::var_os("MASU_MAP_DUMP").is_some() {
         for (n, t) in steps.iter().enumerate() {
             eprintln!("{n}: {} s{} d{} r{:?} p{:?} ty{} k{} {} {:?}", t.op, t.s, t.d, t.r, t.p, t.ty, t.k, t.ret, t.obs);
         }

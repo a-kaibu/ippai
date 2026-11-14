@@ -1,5 +1,5 @@
 //! Movies the page decodes with WebCodecs (web/src/video.ts), for guest code that would decode
-//! them itself in x86 (Siglus's Theora: crates/sake/src/movie.rs, crates/ippai/src/movie.rs).
+//! them itself in x86 (Siglus's Theora: crates/sake/src/movie.rs, crates/masu/src/movie.rs).
 //!
 //! A stream holds a `.vnv` file (VP9 tracks: color, and alpha when the movie has one). The
 //! guest asks for frame n with `frame`; the page, which lists the streams every frame
@@ -168,8 +168,8 @@ fn add(src: Source, i: Info) -> Option<u32> {
     let slots = (0..SLOTS)
         .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: 0, layout: [[0; 7]; 2], rows: 0 })
         .collect();
-    // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
-    let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
+    // (MASU_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
+    let failed = std::env::var_os("MASU_VIDEO_FAIL").is_some();
     with(|m| m.insert(id, Stream { src, index, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw, pts: None, keys, planned: (0, 0) }));
     Some(id)
 }
@@ -441,7 +441,7 @@ pub enum Out {
     Ycc,
     /// RGB by BT.601 (Theora's), alpha 255
     Rgb,
-    /// RGB by BT.601 from video range (Y 16-235, Cb Cr 16-240: what `ippai pack` makes of other
+    /// RGB by BT.601 from video range (Y 16-235, Cb Cr 16-240: what `masu pack` makes of other
     /// movies), alpha 255
     Rgb601,
     /// RGB by BT.709 from video range (HD H.264 as Media Foundation's video processor gives it
@@ -532,10 +532,10 @@ unsafe fn frame_now(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
     }
 }
 
-/// IPPAI_VIDEO_STATS: frames handed out and the guest's wait for them, every 5 s.
+/// MASU_VIDEO_STATS: frames handed out and the guest's wait for them, every 5 s.
 fn stat(waited: Duration, n: i32, late: bool) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("IPPAI_VIDEO_STATS").is_some()) {
+    if !*ON.get_or_init(|| std::env::var_os("MASU_VIDEO_STATS").is_some()) {
         return;
     }
     static S: Mutex<(Option<Instant>, u32, Duration, Duration, i32, u32)> = Mutex::new((None, 0, Duration::ZERO, Duration::ZERO, -1, 0));

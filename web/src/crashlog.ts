@@ -13,13 +13,13 @@
 //   memory runs out) the next page load uploads it as "<id>-unclean"
 // - at a crash (a sake fatal error, a panic, a wasm trap, an abort,
 //   an uncaught JS error): "<id>-crashN", to OPFS and to the server (PUT /log-save/<name>, kept in
-//   ippai serve's --logs directory)
+//   masu serve's --logs directory)
 // - when the page goes to the background (the way out of a hung game on a phone): "<id>-hidden"
 // - Ctrl+Shift+L or a four-finger tap: "<id>-manual"
 // - when the game ends: "<id>-end"
 // - every minute while it runs: "<id>-live" (one file, replaced)
 //
-// ippai serve keeps the server's copies under --logs (GET /log-list, /logs/<name>.txt).
+// masu serve keeps the server's copies under --logs (GET /log-list, /logs/<name>.txt).
 
 import { toast as sonner } from "sonner";
 import { meter, meterLine } from "./meter";
@@ -274,7 +274,7 @@ const KEEPALIVE_MAX = 60_000;
 /** How often the session file is rewritten (what the next page sends if this one dies). */
 const PERSIST_MS = 30_000;
 
-/** Sends a log to ippai serve (its --logs directory); true if it took it. */
+/** Sends a log to masu serve (its --logs directory); true if it took it. */
 export async function upload(name: string, text: string): Promise<boolean> {
   try {
     const r = await fetch(new URL(`log-save/${encodeURIComponent(name)}`, location.href), {

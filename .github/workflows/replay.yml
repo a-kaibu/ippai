@@ -70,7 +70,7 @@ jobs:
       # (the trial games' traces pulled from ghcr.io, kept: tests/replay/games.py)
       - uses: actions/cache@v6.1.0
         with:
-          path: ~/.cache/ippai-traces
+          path: ~/.cache/masu-traces
           key: traces-${{ hashFiles('testdata/apitrace/*.txt') }}
           restore-keys: traces-
       - name: Build the probes

@@ -11,7 +11,7 @@ SQLite のメモリ上 DB に 3 万行入れて検索・集計) を同じソー�
 
 | | 秒 |
 |---|---|
-| ネイティブ (vnbox の Wine、32bit、このマシン) | 0.73 |
+| ネイティブ (masu の Wine、32bit、このマシン) | 0.73 |
 | 直接 wasm (emcc -O2、node) | 1.0 |
 | JIT (node) | 8.0〜9.0 |
 | JIT (Chromium 153 headless) | 7.8〜9.1 |
@@ -22,7 +22,7 @@ SQLite のメモリ上 DB に 3 万行入れて検索・集計) を同じソー�
 
 ### 何に時間を使っているか
 
-- 制御の移り方 (`IPPAI_JIT_COUNT=<秒>` のカウンタ、1 秒あたり): 翻訳したブロックの実行が約 1.7 億
+- 制御の移り方 (`MASU_JIT_COUNT=<秒>` のカウンタ、1 秒あたり): 翻訳したブロックの実行が約 1.7 億
   (1 ブロック平均 2〜3 命令、1 ブロック約 6ns、ネイティブは約 1.5ns)、リージョンへの入口 2,200 万、
   ハッシュ表を引く間接ジャンプ・戻り 1,500 万、リージョン間の乗り換え 1,300〜2,700 万。
 - V8 の出した機械語のサンプル (perf + `--perf-prof`、翻訳したコードの分だけ):
@@ -32,10 +32,10 @@ SQLite のメモリ上 DB に 3 万行入れて検索・集計) を同じソー�
   - ゲストのメモリの読み書き 6%
   - 関数の入口 (先頭 0x60 バイト) 16%
 - 上限を測った実験 (どれも同じ条件で A/B):
-  - 範囲チェックを全部外す (`IPPAI_JIT_NOCHECK=1`、測定専用): -7%。
+  - 範囲チェックを全部外す (`MASU_JIT_NOCHECK=1`、測定専用): -7%。
   - 保存リージョン (1 モジュール) だけで走らせる: 差なし。
   - リージョンの大きさの上限を 150〜3000 命令に: 差なし。
-  - call/ret を wasm の call/return にする (`IPPAI_JIT_CALLS=1`、下記): 差なし。bench.exe の sort は
+  - call/ret を wasm の call/return にする (`MASU_JIT_CALLS=1`、下記): 差なし。bench.exe の sort は
     0.9 → 2.7 秒 (qsort ↔ 比較関数がマージされなくなる)。
   - 出口の多いリージョンをその後走ったブロック込みで作り直す: 約 200 回作り直して遅くなった (外した)。
 - マイクロベンチ (/tmp の hop、node): ゲストの call+ret 1 組は、今のリージョン間の末尾呼び出し
@@ -50,18 +50,18 @@ SQLite のメモリ上 DB に 3 万行入れて検索・集計) を同じソー�
 
 ## このコミットで入れたもの (既定の動作は変わらない)
 
-- リージョン関数の型を「16 引数 → 16 戻り値」に (結果の並びは引数と同じ、先頭が状態)。 (2026-11-06: `IPPAI_JIT_CALLS` と一緒に戻して、戻り値は状態だけ)
+- リージョン関数の型を「16 引数 → 16 戻り値」に (結果の並びは引数と同じ、先頭が状態)。 (2026-11-06: `MASU_JIT_CALLS` と一緒に戻して、戻り値は状態だけ)
   `RET_VALUES` を返したら状態は戻り値にある (EIP は 2 番目)。それ以外は今まで通り Cpu にある。
   ディスパッチャは `RET_VALUES` を Cpu に書いて続ける。
-- `IPPAI_JIT_CALLS=1` (直接 call)、`=2` (間接 call も): 他のリージョンへの CALL を呼び出し先の
+- `MASU_JIT_CALLS=1` (直接 call)、`=2` (間接 call も): 他のリージョンへの CALL を呼び出し先の
   リージョンの call_indirect にし、RET は状態を戻り値で返す (`RET_VALUES`)。差が出なかったので
   2026-11-06 に削除 (関数単位の翻訳が同じことをする)。
 - `jmp [index*4 + 表]` の表の飛び先 (走ったもの) をリージョンに入れる (switch、インタプリタの
   オペコード分岐)。
-- `IPPAI_JIT_COUNT=<秒>`: 生成コードが数える制御の移り方のカウンタ (call、ret、ハッシュ表、入口、
-  ブロック、トップ/サイドのディスパッチ)。`IPPAI_JIT_STATS=1` ではリージョン間の乗り換えの回数と
+- `MASU_JIT_COUNT=<秒>`: 生成コードが数える制御の移り方のカウンタ (call、ret、ハッシュ表、入口、
+  ブロック、トップ/サイドのディスパッチ)。`MASU_JIT_STATS=1` ではリージョン間の乗り換えの回数と
   多い組 (`vnjit hop pairs`) も出る。
-- `IPPAI_JIT_NOCHECK=1`: 範囲チェックを出さない (測定専用、安全でない)。
+- `MASU_JIT_NOCHECK=1`: 範囲チェックを出さない (測定専用、安全でない)。
 
 ## 新しい翻訳器 (方針)
 
@@ -79,7 +79,7 @@ SQLite のメモリ上 DB に 3 万行入れて検索・集計) を同じソー�
    flatbench と bench.exe で比べる。次に関数単位の呼び出し。各段で V8 の機械語の移動・退避の割合を
    測って次を決める。
 
-## 関数単位の翻訳 (`IPPAI_JIT_FN`、2026-11-01、2026-11-02 から既定で有効。`IPPAI_JIT_FN=0` で従来のリージョン)
+## 関数単位の翻訳 (`MASU_JIT_FN`、2026-11-01、2026-11-02 から既定で有効。`MASU_JIT_FN=0` で従来のリージョン)
 
 - 翻訳の単位をゲストの関数 (呼び出し先、または入口がミスしたアドレス) にした。1 単位が wasm の
   関数 `(cpu, block) -> status` 1 つで、状態は入口と出口で Cpu にある。表には単位ごとに
@@ -111,10 +111,10 @@ crc32 が遅い。チェックサムは全部同じ。
 12.3–12.7 秒 / 0.29–0.31 コア。既定にするのはこれを逆転させてから。
   原因はコンパイル量: 初回 50 秒で関数 約 9000 回・計 10 秒 (翻訳 98 万命令)、リージョンは
   3200 回・2.4 秒 (12 万命令)。呼び出し先ごとに別の関数になり、小さい呼び出し先を
-  走ったかに関係なく展開するため。`IPPAI_JIT_FN_CALLED=1` (呼ばれた所だけ関数) でタイトル
+  走ったかに関係なく展開するため。`MASU_JIT_FN_CALLED=1` (呼ばれた所だけ関数) でタイトル
   22 → 16 秒。段階式 (リージョンを先に作り、よく呼ばれる呼び出し先だけ関数に上げ、
   リージョンから関数を直接呼ぶ) も試したが、リージョンと関数の行き来が高く flatbench が
-  7.3–9.5 秒 (リージョン以下) になったので戻した。`IPPAI_JIT_COUNT` が 1 秒あたりの
+  7.3–9.5 秒 (リージョン以下) になったので戻した。`MASU_JIT_COUNT` が 1 秒あたりの
   コンパイル回数と時間も出す。関数はスレッド間で共有する (効果は小さい)。
 - 関数も保存する (index "VNJ2": 項目ごとに build と間接呼び出し箇所、関数は表の 2 枠 =
   アダプタと本体。アダプタは本体を `call_indirect` で次の枠として呼ぶので、他のモジュールと
@@ -148,7 +148,7 @@ crc32 が遅い。チェックサムは全部同じ。
 - 自己書き換え: JIT したページを `CODE_PAGES` に記録し、mprotect (PROT_WRITE)、munmap、
   MAP_FIXED の mmap、NtFlushInstructionCache (`vnhost_jit_code_changed`) がそこに触れたら
   世代を上げ、各スレッドの表を捨てる。`tests/smc.c`。
-- 誤翻訳の二分探索: `IPPAI_JIT_ONLY=lo-hi` (範囲外はインタプリタ)、`IPPAI_JIT_FN_ONLY=lo-hi`
+- 誤翻訳の二分探索: `MASU_JIT_ONLY=lo-hi` (範囲外はインタプリタ)、`MASU_JIT_FN_ONLY=lo-hi`
   (範囲外はリージョン)。初回だけ壊れる不具合は、保存済みの `_shared-<版>` を消してから試す。
 
 ## Android: V8's bounds checks (2026-11-02)
@@ -209,12 +209,12 @@ Each load (a region, a function's adapter and body, a batch of functions) is a m
 own, referenced only by this thread's table. A merge, a function built again, or a function
 taking a region's blocks leaves the old one unreachable: every jump into translated code reads
 its table index from the hash table or the call cache (koji never bakes one into code). Every
-64 loads (`IPPAI_JIT_RECLAIM`, 1 = every load, 0 = never) kura's `reclaim` marks the slots those
+64 loads (`MASU_JIT_RECLAIM`, 1 = every load, 0 = never) kura's `reclaim` marks the slots those
 two name and clears the slots of loads none of whose slots is named (`vnvm_jit_free`), so V8 can
 collect the module. The saved bundle stays (one instance; its regions are entered on demand).
-Slots are not reused. Counts: `IPPAI_JIT_COUNT` (`freed N (KiB)`) and the crash log's
+Slots are not reused. Counts: `MASU_JIT_COUNT` (`freed N (KiB)`) and the crash log's
 `jit modules` line. flatbench reps=3: 869 modules loaded (8.4 MB), 105 freed (1.5 MB).
-host/tests pass with `IPPAI_JIT_RECLAIM=1` (CI runs them so on sake-grow).
+host/tests pass with `MASU_JIT_RECLAIM=1` (CI runs them so on sake-grow).
 
 ## Why modules are compiled synchronously (2026-11-07)
 
@@ -225,7 +225,7 @@ one only by `postMessage`, which the same loop delivers. The compiler thread alr
 translation off the program's thread; V8 compiles each function only when it is first called
 (lazy compilation), so `vnvm_jit_load` is decoding, validation and instantiation.
 
-Measured (`IPPAI_JIT_COUNT`'s `loading N ms`, the crash log's `jit modules` line), flatbench
+Measured (`MASU_JIT_COUNT`'s `loading N ms`, the crash log's `jit modules` line), flatbench
 reps=3 in node: 844 modules (8.9 MB) loaded in 505 ms in all, about 0.6 ms each: 5 to 15% of
 each second while the code warms up (the first 5 s), nothing once the hot code is loaded. Less
 of it means fewer and smaller modules (batches, merges, the saved bundle with
@@ -235,7 +235,7 @@ of it means fewer and smaller modules (batches, merges, the saved bundle with
 
 Android's Chrome has no trap handler for wasm memory, so every load and store the JIT emits
 is bounds-checked; the review of 2026-11-13 asked for less Cpu-struct traffic.
-`IPPAI_JIT_MEMCOUNT=<secs>` (measuring only: slow) makes every load and store the JIT emits
+`MASU_JIT_MEMCOUNT=<secs>` (measuring only: slow) makes every load and store the JIT emits
 from then on count itself, by site (code, call, ret, entry, exit, call-rest, reload, flags)
 and, for Cpu fields, by offset. flatbench, one window of 4 s:
 

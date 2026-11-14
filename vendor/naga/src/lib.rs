@@ -67,7 +67,7 @@ void main() {
 ```
 */
 
-#![allow(warnings)] // (ippai: an upstream crate, as Cargo's registry lint cap would have it)
+#![allow(warnings)] // (masu: an upstream crate, as Cargo's registry lint cap would have it)
 #![allow(
     clippy::new_without_default,
     clippy::unneeded_field_pattern,

@@ -11,13 +11,13 @@
 #   Binds11   D3D11 inputs and outputs of the same subresources: what the slots hold
 #   D2dDraw   sake's D2D BeginDraw/EndDraw/Flush, drawing calls and clips: what each returns
 #
-#   formal/trace.sh       TLC=path/to/tlc; IPPAI_TRACE_SEEDS (default 20 per test);
+#   formal/trace.sh       TLC=path/to/tlc; MASU_TRACE_SEEDS (default 20 per test);
 #                         KEEP=dir copies each failing trace (and TLC's output) there
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 TLC=${TLC:-tlc}
 dir=$(mktemp -d)
-IPPAI_TRACE_DIR=$dir cargo test -q --manifest-path "$HERE/../Cargo.toml" -p kura -p sake --lib _trace || [ -n "${KEEP_GOING:-}" ] || exit 1
+MASU_TRACE_DIR=$dir cargo test -q --manifest-path "$HERE/../Cargo.toml" -p kura -p sake --lib _trace || [ -n "${KEEP_GOING:-}" ] || exit 1
 fail=0; n=0
 for t in "$dir"/*/; do
   spec=$(cat "$t/SPEC")

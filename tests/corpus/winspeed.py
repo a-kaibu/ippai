@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-Windows start-up and CPU numbers for the trials in targets.tsv (thread 起動の遅さと1コア張り付きを
 Windows実機と比べる) in tests/corpus/winspeed.tsv. For each row: download from the VN Mirror Archive (sha256 checked), unpack,
-pick the exe (ippai's tests/corpus/pickexe.py), run it with tests/corpus/winplay.py (the same
+pick the exe (masu's tests/corpus/pickexe.py), run it with tests/corpus/winplay.py (the same
 title / steps / story / CPU rules as tests/corpus.mjs on sake), RUNS times.
 
   python tests/corpus/winspeed.py WORK [ids...]
@@ -30,7 +30,7 @@ def fetch(row):
     p = os.path.join(work, 'dl', row['filename'])
     if os.path.exists(p) and sha(p) == row['sha256']: return p
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    req = urllib.request.Request(row['url'], headers={'User-Agent': 'ippai-corpus'})
+    req = urllib.request.Request(row['url'], headers={'User-Agent': 'masu-corpus'})
     with urllib.request.urlopen(req) as r, open(p + '.part', 'wb') as f:
         while True:
             b = r.read(1 << 20)

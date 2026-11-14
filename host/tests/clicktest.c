@@ -1,5 +1,5 @@
 /* Logs the mouse and key messages a window gets (for checking input delivery under vnvm:
- * IPPAI_INPUT clicks at known places, count what arrives). Quits after 120 s.
+ * MASU_INPUT clicks at known places, count what arrives). Quits after 120 s.
  * Build: i686-w64-mingw32-gcc -O2 clicktest.c -o clicktest.exe -mwindows */
 #include <windows.h>
 #include <stdio.h>

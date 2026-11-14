@@ -1,6 +1,6 @@
 //! libc entry points routed through kura with `-Wl,--wrap=<name>` (crates/sake/build.sh):
 //! stdout/stderr into the crash log, clocks without BigInts, and the per-thread CPU count
-//! (IPPAI_LOAD) around futex waits. sched_yield is in c/shim.c.
+//! (MASU_LOAD) around futex waits. sched_yield is in c/shim.c.
 
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -118,7 +118,7 @@ extern "C" {
     fn __real_emscripten_futex_wait(addr: *mut c_void, val: u32, max_ms: f64) -> c_int;
 }
 
-/// Per thread (with IPPAI_LOAD set, for web/game.html): CPU time used up to its latest wait
+/// Per thread (with MASU_LOAD set, for web/game.html): CPU time used up to its latest wait
 /// (ms, by its own clock: performance.now() differs between workers), and when it last woke by
 /// Date.now() (0: waiting), which all threads share; see [`vnhost_load_busy`].
 struct Load {
@@ -192,7 +192,7 @@ fn load_key() -> libc::pthread_key_t {
 }
 
 /// Every block of a thread here ends up in emscripten_futex_wait (pthread mutexes and condition
-/// variables, Rust's too); with IPPAI_LOAD set, the time outside it is counted per thread.
+/// variables, Rust's too); with MASU_LOAD set, the time outside it is counted per thread.
 static LOAD_ON: AtomicBool = AtomicBool::new(false);
 static LOAD_LOG: AtomicBool = AtomicBool::new(false);
 thread_local!(static IN_FUTEX_WRAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
@@ -200,8 +200,8 @@ thread_local!(static IN_FUTEX_WRAP: std::cell::Cell<bool> = const { std::cell::C
 /// Configure outside the futex wrapper: reading the environment or initializing
 /// OnceLock can itself wait on a futex (including from inside the allocator).
 pub fn load_init() {
-    let on = std::env::var_os("IPPAI_LOAD").is_some();
-    let log = std::env::var_os("IPPAI_LOAD_LOG").is_some();
+    let on = std::env::var_os("MASU_LOAD").is_some();
+    let log = std::env::var_os("MASU_LOAD_LOG").is_some();
     if on { let _ = load_key(); }
     LOAD_LOG.store(log, Ordering::Release);
     LOAD_ON.store(on, Ordering::Release);
@@ -235,7 +235,7 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
         }
         LoadSlot(l, std::cell::Cell::new(unsafe { emscripten_get_now() }))
     });
-    // IPPAI_LOAD_LOG: every 5 s, the threads running for over a second (a check of the counting)
+    // MASU_LOAD_LOG: every 5 s, the threads running for over a second (a check of the counting)
     static LOGGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if LOAD_LOG.load(Ordering::Acquire) && !LOGGER.swap(true, Ordering::Relaxed) {
         std::thread::spawn(|| loop {

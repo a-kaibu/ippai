@@ -9,7 +9,7 @@ hlslc and dxwgsl make of the same source must store the same bytes (`shaderconf 
 
 Two changes to what Slang wrote: Slang has no `min16float` (defined as `float`, the same as
 NIS_USE_HALF_PRECISION gives on D3D11 hardware without half support), and its bindings are
-moved to ippai's numbering (constant buffers 0+, textures 16+, samplers 160+, typed UAVs 200+,
+moved to masu's numbering (constant buffers 0+, textures 16+, samplers 160+, typed UAVs 200+,
 in group 0) with the UAV a write-only `rgba8unorm` storage texture:
 
     g++ -O1 -o slangwgsl tests/compute/slangwgsl.cpp -I<slang include> -L<dir of libslang-compiler.so> -lslang-compiler

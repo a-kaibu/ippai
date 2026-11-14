@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Use-case coverage: the entry points games call (IPPAI_API_COUNTS tallies in corpus logs)
+"""Use-case coverage: the entry points games call (MASU_API_COUNTS tallies in corpus logs)
 set beside what the tests call (the same tallies from the unit tests and the winref probes).
 
     usage.py --games DIR... --tests FILE_OR_DIR... [--md out.md] [--top N] [--prefix d3d,gl]
@@ -43,7 +43,7 @@ def tally(path):
 
 
 def reached(path):
-    """A tests' file: every line is a process of its own (IPPAI_API_COUNTS_OUT appends one at
+    """A tests' file: every line is a process of its own (MASU_API_COUNTS_OUT appends one at
     each exit), the keys any of them called."""
     keys = set()
     for line in lines(path):

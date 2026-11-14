@@ -48,7 +48,7 @@ function AutoPanel({ auto, close }: { auto: AutoView; close: () => void }) {
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        ippai
+        masu
         がクリックやキーを送り続けて文章を進めます。クリックはマウスを最後に置いた場所に送ります（文章の枠の上に置いてください）。選択肢では止めてください。
       </p>
       <div role="group" aria-label="送り方" className="flex flex-wrap gap-1.5">

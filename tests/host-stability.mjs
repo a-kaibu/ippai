@@ -118,7 +118,7 @@ function realm() {
     ENVIRONMENT_IS_NODE: false,
     ENVIRONMENT_IS_PTHREAD: false,
     Worker: class extends FakeWorker {},
-    location: { href: "https://ippai.test/play.html" },
+    location: { href: "https://masu.test/play.html" },
     URL,
     SharedArrayBuffer,
     Atomics,
@@ -132,8 +132,8 @@ function realm() {
   const source = `(function (Module) {
     var wasmMemory = Module.memory, wasmExports = Module.exports, HEAPU8 = new Uint8Array(64), ENV = {};
     var _malloc = () => 8, printChar = () => {}, err = () => {};
-    function ippaiFetchConnect() { return 'fetch-port'; }
-    function ippaiTlsConnect() { return 'tls-port'; }
+    function masuFetchConnect() { return 'fetch-port'; }
+    function masuTlsConnect() { return 'tls-port'; }
     ${read("pre.js")}
     for (const f of Module.preInit) f();
     return { pid: () => vnvmPid, fs: () => vnvmFs };

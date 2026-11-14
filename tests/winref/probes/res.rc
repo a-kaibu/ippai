@@ -64,7 +64,7 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "winref"
             VALUE "FileDescription", "リソースの試験"
-            VALUE "ProductName", "ippai"
+            VALUE "ProductName", "masu"
         END
     END
     BLOCK "VarFileInfo"

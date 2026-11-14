@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory() as d:
     expect("the exe's own first", gameapi.game(d, "g/game.exe"), ("d3d8", 64))
 
 # next: what run 42380412096's watcher saw (record-game.ps1's lines)
-W = "D:\\a\\ippai\\ippai\\game\\x\\g\\"
+W = "D:\\a\\masu\\masu\\game\\x\\g\\"
 S = "C:\\Windows\\SYSTEM32\\"
 suzu = [f"s: {S}d3d12.dll", f"s: {S}dxgi.dll", f"s: {S}d3d11.dll", f"s: {S}d3d8.dll", f"s: {S}d3d8thk.dll", f"s: {S}DDRAW.dll", f"s: {S}D3DIM700.DLL"]
 expect("next: d3d9 guessed, d3d8 used (suzunone7)", gameapi.next_api(suzu, {"d3d9"}), "d3d8")

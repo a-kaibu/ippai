@@ -1,12 +1,12 @@
 // What is on the device and what is being saved there (web/src/ui/Storage.tsx), in Chromium on
-// ippai serve with a small store: a game with folders (bgm, g00, koe and files outside them) is
+// masu serve with a small store: a game with folders (bgm, g00, koe and files outside them) is
 // saved from its 詳細 (端末に保存) with every chunk held back a while (the bucket's 1-2 s, cut
 // short): while it goes, 詳細 shows the bytes done of all and the file being fetched, the sidebar's
 // 保存 tab lists the game with the same progress; its 内訳 table has a row per folder (and the
 // prefix) with the folder's size from the trees' lists; at the end both say saved, every row at
 // 100%, and the 保存 tab's game data is the game's size at least. SHOTS=<dir> keeps screenshots.
 //
-//   node tests/storage-browser.mjs [path to ippai]   (web/dist built; PLAYWRIGHT as elsewhere)
+//   node tests/storage-browser.mjs [path to masu]   (web/dist built; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -15,8 +15,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-storage-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-storage-"));
 const web = join(work, "web");
 cpSync(resolve("web/dist"), web, { recursive: true });
 if (!existsSync(join(web, "sake/sake.wasm"))) {

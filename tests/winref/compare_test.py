@@ -10,7 +10,7 @@ import unittest
 import compare
 
 HERE = Path(__file__).resolve().parent
-ISSUE = "https://github.com/a-kaibu/ippai/issues/105"
+ISSUE = "https://github.com/a-kaibu/masu/issues/105"
 
 
 class Quarantine(unittest.TestCase):

@@ -6,7 +6,7 @@ index 4f02bca..aaf8aab 100644
  
          DllTracer.implementWrapperInterfaceMethodBody(self, interface, base, method)
  
-+        # ippai (tests/replay): what GDI drew on a surface through GetDC is not in the calls;
++        # masu (tests/replay): what GDI drew on a surface through GetDC is not in the calls;
 +        # after ReleaseDC the surface is locked and unlocked through this wrapper, so the
 +        # trace holds its pixels as they are then (a Lock, the fake memcpy, an Unlock). Not the
 +        # primary's: in a window that is the screen.

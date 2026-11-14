@@ -31,7 +31,7 @@ before
   extra.txt: missing
   sub\: missing
   \: missing
-  HKCU\Software\ippai\msitest: missing (2)
+  HKCU\Software\masu\msitest: missing (2)
   state -1
   VersionString: 1605 "" 0
   InstalledProductName: 1605 "" 0
@@ -53,8 +53,8 @@ install: 0
   found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
-  InstalledProductName: 0 "ippai msi test" 14
-  Publisher: 0 "ippai" 5
+  InstalledProductName: 0 "masu msi test" 14
+  Publisher: 0 "masu" 5
   related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
   feature Complete: 3
   feature Extras: 2
@@ -72,8 +72,8 @@ add Extras: 0
   found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
-  InstalledProductName: 0 "ippai msi test" 14
-  Publisher: 0 "ippai" 5
+  InstalledProductName: 0 "masu msi test" 14
+  Publisher: 0 "masu" 5
   related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
   feature Complete: 3
   feature Extras: 3
@@ -91,8 +91,8 @@ remove Extras: 0
   found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
-  InstalledProductName: 0 "ippai msi test" 14
-  Publisher: 0 "ippai" 5
+  InstalledProductName: 0 "masu msi test" 14
+  Publisher: 0 "masu" 5
   related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
   feature Complete: 3
   feature Extras: 2
@@ -105,7 +105,7 @@ uninstall: 0
   extra.txt: missing
   sub\: missing
   \: missing
-  HKCU\Software\ippai\msitest: missing (2)
+  HKCU\Software\masu\msitest: missing (2)
   state -1
   VersionString: 1605 "" 0
   InstalledProductName: 1605 "" 0
@@ -123,7 +123,7 @@ before
   extra.txt: missing
   sub\: missing
   \: missing
-  HKCU\Software\ippai\msitest: missing (2)
+  HKCU\Software\masu\msitest: missing (2)
   state -1
   VersionString: 1605 "" 0
   InstalledProductName: 1605 "" 0
@@ -145,8 +145,8 @@ install: 0
   found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
-  InstalledProductName: 0 "ippai msi test" 14
-  Publisher: 0 "ippai" 5
+  InstalledProductName: 0 "masu msi test" 14
+  Publisher: 0 "masu" 5
   related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
   feature Complete: 3
   feature Extras: 2
@@ -164,8 +164,8 @@ add Extras: 0
   found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
-  InstalledProductName: 0 "ippai msi test" 14
-  Publisher: 0 "ippai" 5
+  InstalledProductName: 0 "masu msi test" 14
+  Publisher: 0 "masu" 5
   related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
   feature Complete: 3
   feature Extras: 3
@@ -183,8 +183,8 @@ remove Extras: 0
   found: "sz=##hash dw=#-10 dir=<PF>\MsiSearch\ file=<PF>\MsiSearch\deep\probe.txt none="
   state 5
   VersionString: 0 "1.2.3" 5
-  InstalledProductName: 0 "ippai msi test" 14
-  Publisher: 0 "ippai" 5
+  InstalledProductName: 0 "masu msi test" 14
+  Publisher: 0 "masu" 5
   related: 0 {6A0F2E9B-5C1D-4E7A-9B3C-1D2E3F405162}
   feature Complete: 3
   feature Extras: 2
@@ -197,7 +197,7 @@ uninstall: 0
   extra.txt: missing
   sub\: missing
   \: missing
-  HKCU\Software\ippai\msitest: missing (2)
+  HKCU\Software\masu\msitest: missing (2)
   state -1
   VersionString: 1605 "" 0
   InstalledProductName: 1605 "" 0

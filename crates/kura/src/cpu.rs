@@ -60,7 +60,7 @@ const GUEST_END: u64 = koji::jit::GUEST_HI as u64;
 /// [`create`]'s trap range, for [`check`]'s slow path.
 static TRAP_LO: AtomicU32 = AtomicU32::new(0);
 static TRAP_HI: AtomicU32 = AtomicU32::new(0);
-/// IPPAI_UPPER_OPEN: the old rule (writes too, up to the end of the memory), as an off-switch.
+/// MASU_UPPER_OPEN: the old rule (writes too, up to the end of the memory), as an off-switch.
 static UPPER_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether the guest may access `addr..addr + len` (`end`: the memory's size): below
@@ -93,7 +93,7 @@ fn upper_ok(addr: u32, len: u32, write: bool) -> bool {
 fn refused(addr: u32, len: u32) -> Fault {
     if addr as u64 + len as u64 > GUEST_END && addr >= NULL_PAGES {
         static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| eprintln!("kura: guest write to {addr:#x} (+{len}) is in sake's memory, not the guest's: access violation (IPPAI_UPPER_OPEN=1 allows it)"));
+        ONCE.call_once(|| eprintln!("kura: guest write to {addr:#x} (+{len}) is in sake's memory, not the guest's: access violation (MASU_UPPER_OPEN=1 allows it)"));
     }
     Fault { addr, write: false }
 }
@@ -255,11 +255,11 @@ pub fn tid() -> i32 {
 
 /// A new CPU (kept until [`destroy`]: the crash log reads it).
 pub fn create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
-    // IPPAI_CPUID_AVX: CPUID reports AVX/AVX2/FMA3/BMI (koji::CPUID_AVX)
-    koji::CPUID_AVX.store(crate::env_on!("IPPAI_CPUID_AVX"), Ordering::Relaxed);
-    // IPPAI_X87_80: the x87 in its 80-bit format (koji::fpu::X87_80: interpreted, slower)
-    koji::fpu::X87_80.store(crate::env_on!("IPPAI_X87_80"), Ordering::Relaxed);
-    UPPER_OPEN.store(crate::env_on!("IPPAI_UPPER_OPEN"), Ordering::Relaxed);
+    // MASU_CPUID_AVX: CPUID reports AVX/AVX2/FMA3/BMI (koji::CPUID_AVX)
+    koji::CPUID_AVX.store(crate::env_on!("MASU_CPUID_AVX"), Ordering::Relaxed);
+    // MASU_X87_80: the x87 in its 80-bit format (koji::fpu::X87_80: interpreted, slower)
+    koji::fpu::X87_80.store(crate::env_on!("MASU_X87_80"), Ordering::Relaxed);
+    UPPER_OPEN.store(crate::env_on!("MASU_UPPER_OPEN"), Ordering::Relaxed);
     TRAP_LO.store(trap_lo, Ordering::Relaxed);
     TRAP_HI.store(trap_hi, Ordering::Relaxed);
     let mut cpu = Box::new(Cpu::default());
@@ -289,9 +289,9 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
         }
         Exit::Fault(f) => {
             exception(cpu, "access violation", Some((f.addr, f.write)), from_jit);
-            // IPPAI_TRACE_FAULT: where the interpreter (or a region's step) faulted
+            // MASU_TRACE_FAULT: where the interpreter (or a region's step) faulted
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *ON.get_or_init(|| std::env::var_os("IPPAI_TRACE_FAULT").is_some()) {
+            if *ON.get_or_init(|| std::env::var_os("MASU_TRACE_FAULT").is_some()) {
                 let r = &cpu.regs;
                 let ok = (koji::jit::GUEST_LO..koji::jit::GUEST_HI - 8).contains(&cpu.eip);
                 let code: Vec<String> = (0..if ok { 8 } else { 0 }).map(|i| unsafe { *((cpu.eip as usize + i) as *const u8) }).map(|b| format!("{b:02x}")).collect();
@@ -300,12 +300,12 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
                     if f.write { "write" } else { "read" }, f.addr, cpu.eip, code.join(" "), r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], cpu.eflags
                 );
             }
-            // IPPAI_DUMP_FAULT=<eip, hex>: 64-bit registers and the memory they point at when a
+            // MASU_DUMP_FAULT=<eip, hex>: 64-bit registers and the memory they point at when a
             // fault happens there
             // ("null": any fault below 64K)
             static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
             let at = *AT.get_or_init(|| {
-                std::env::var("IPPAI_DUMP_FAULT").ok().and_then(|v| if v == "null" { Some(0) } else { u32::from_str_radix(v.trim_start_matches("0x"), 16).ok() })
+                std::env::var("MASU_DUMP_FAULT").ok().and_then(|v| if v == "null" { Some(0) } else { u32::from_str_radix(v.trim_start_matches("0x"), 16).ok() })
             });
             if at == Some(cpu.eip) || (at == Some(0) && (f.addr < 0x10000 || f.addr >= 0x8000_0000)) {
                 eprintln!("vnfault at {:x}:{:08x} addr {:x} write {}", cpu.rip_hi, cpu.eip, f.addr, f.write);
@@ -334,7 +334,7 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
         }
         Exit::InvalidOpcode => {
             exception(cpu, "invalid opcode", None, from_jit);
-            if crate::env_on!("IPPAI_TRACE_UD") {
+            if crate::env_on!("MASU_TRACE_UD") {
                 let mut b = [0u8; 16];
                 let n = mem.fetch(cpu.eip, &mut b);
                 eprintln!("kura: invalid opcode at {:#x}: {:02x?}", cpu.eip, &b[..n]);
@@ -363,7 +363,7 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
     }
 }
 
-/// IPPAI_TRACE_EIP=<seconds>: every so often, print where each thread's guest code is (the
+/// MASU_TRACE_EIP=<seconds>: every so often, print where each thread's guest code is (the
 /// EIP of its latest exit from the JIT or interpreter step) and whether it is in guest code
 /// or in sake (a syscall, an API call). For finding what a hung or spinning program does.
 fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
@@ -375,7 +375,7 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
     static ON: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
     static CPUS: Mutex<Vec<(i32, Arc<Entry>)>> = Mutex::new(Vec::new());
     let secs = (*ON.get_or_init(|| {
-        let s = std::env::var("IPPAI_TRACE_EIP").ok()?.parse().ok()?;
+        let s = std::env::var("MASU_TRACE_EIP").ok()?.parse().ok()?;
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs_f64(s));
             let list = CPUS.lock().unwrap();
@@ -491,7 +491,7 @@ fn progressed() {
 fn cpu_run(cpu: &mut Cpu) -> Stop {
     let mut mem = Linear;
     let mut stepped = 0u32;
-    // long mode: IPPAI_JIT64=0 leaves it to the interpreter
+    // long mode: MASU_JIT64=0 leaves it to the interpreter
     let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && (cpu.mode16 == 0 || crate::jit::enabled16());
     crate::jit::count_entry(cpu.eip);
     loop {
@@ -563,12 +563,12 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
     }
 }
 
-/// IPPAI_TRACE_CALL=<hex eip>: each time a thread gets to that address, print EAX ECX EDX ESI
+/// MASU_TRACE_CALL=<hex eip>: each time a thread gets to that address, print EAX ECX EDX ESI
 /// EDI ESP and a hash of the EDX..EDX+ECX bytes of its previous arrival (a register-call
 /// memcpy's destination: compare JIT and interpreter runs to find the first copy that differs).
 fn trace_call(cpu: &Cpu) {
     static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
-    let Some(at) = *AT.get_or_init(|| u32::from_str_radix(&std::env::var("IPPAI_TRACE_CALL").ok()?, 16).ok()) else { return };
+    let Some(at) = *AT.get_or_init(|| u32::from_str_radix(&std::env::var("MASU_TRACE_CALL").ok()?, 16).ok()) else { return };
     if cpu.eip != at {
         return;
     }
@@ -618,7 +618,7 @@ mod tests {
             assert!(!allowed(0, 1, end, LO, HI, false));
             assert!(!allowed(NULL_PAGES - 1, 1, end, LO, HI, false));
             assert!(allowed(NULL_PAGES, 1, end, LO, HI, false));
-            // the old rule, for IPPAI_UPPER_OPEN
+            // the old rule, for MASU_UPPER_OPEN
             assert!(allowed(0x8100_0000, 4, end, LO, HI, true));
         }
         // API entry points: read and patched like code (where the memory reaches them)

@@ -1,7 +1,7 @@
-// Real browser: store chunks fetched from the bucket itself (host/fetch-bridge.js ippaiDirect,
-// ippai serve's /store-direct). The page is cross-origin isolated like ippai's; the bucket is
+// Real browser: store chunks fetched from the bucket itself (host/fetch-bridge.js masuDirect,
+// masu serve's /store-direct). The page is cross-origin isolated like masu's; the bucket is
 // another origin that redirects (s3.hf.co to its CDN) and answers with CORS; objects are sealed
-// as crates/ippai/src/envelope.rs seals them and zstd-coded by sake's own snapz. Every way back
+// as crates/masu/src/envelope.rs seals them and zstd-coded by sake's own snapz. Every way back
 // to the server is checked too: a wrong key, a chunk the bucket lacks, a damaged body, a server
 // without S3.
 import assert from 'node:assert/strict';
@@ -12,10 +12,10 @@ const pw = await import(process.env.PLAYWRIGHT ?? 'playwright');
 const { chromium } = pw.default ?? pw;
 const root = new URL('..', import.meta.url);
 // (the server's answer to /store-direct waited for 1 s, not 10: the test of a stuck server)
-const source = (await readFile(new URL('host/fetch-bridge.js', root), 'utf8')).replace('var IPPAI_DIRECT_ASK_MS = 10000;', 'var IPPAI_DIRECT_ASK_MS = 1000;');
-assert.ok(source.includes('IPPAI_DIRECT_ASK_MS = 1000;'));
+const source = (await readFile(new URL('host/fetch-bridge.js', root), 'utf8')).replace('var MASU_DIRECT_ASK_MS = 10000;', 'var MASU_DIRECT_ASK_MS = 1000;');
+assert.ok(source.includes('MASU_DIRECT_ASK_MS = 1000;'));
 const sakeDir = new URL(process.env.SAKE_WEB ?? 'web/public/sake/', root);
-const blake3 = new Function(`${source}; return ippaiBlake3;`)();
+const blake3 = new Function(`${source}; return masuBlake3;`)();
 const z = await (await import(new URL('snapz.mjs', sakeDir))).default();
 
 /** `n` bytes from an LCG seeded with `seed` (with runs, so zstd has something to do). */
@@ -131,11 +131,11 @@ try {
   const read = (page, paths) =>
     page.evaluate(
       async ([source, paths]) => {
-        const connect = new Function(source + '; return ippaiFetchConnect;')();
+        const connect = new Function(source + '; return masuFetchConnect;')();
         const one = (path) =>
           new Promise((resolve, reject) => {
             const port = connect();
-            const script = source + `\nself.onmessage=e=>{ippaiFetchPort=e.data.port;try{const d=ippaiFetchSync(...ippaiRange(e.data.url));self.postMessage({length:d.length,hash:ippaiBlake3(d)});}catch(e){self.postMessage({error:e.message});}};`;
+            const script = source + `\nself.onmessage=e=>{masuFetchPort=e.data.port;try{const d=masuFetchSync(...masuRange(e.data.url));self.postMessage({length:d.length,hash:masuBlake3(d)});}catch(e){self.postMessage({error:e.message});}};`;
             const blob = URL.createObjectURL(new Blob([script], { type: 'text/javascript' }));
             const worker = new Worker(blob);
             const timer = setTimeout(() => (worker.terminate(), reject(new Error(`worker stalled: ${path}`))), 60000);
@@ -208,7 +208,7 @@ try {
   assert.ok(Date.now() - t4 < 8000, `not held: ${Date.now() - t4} ms`);
   assert.deepEqual([d.store, d.bucket], [1, 1], 'the stuck one from /store, the next from the bucket');
 
-  // the game's chunks fetched onto the device while it plays (ippaiWarm, web/src/warm.ts): none
+  // the game's chunks fetched onto the device while it plays (masuWarm, web/src/warm.ts): none
   // while the game waits for a read of its own, then all of them, from the bucket (the server for
   // one it lacks), kept where the game's reads look; one already on the device not again
   noS3 = false;
@@ -219,13 +219,13 @@ try {
   const warm = (paths, { busyFirst, stopFirst, busyWidth } = {}) =>
     page3.evaluate(
       async ([source, paths, busyFirst, stopFirst, busyWidth]) => {
-        const ippaiWarm = new Function(source + '; return ippaiWarm;')();
+        const masuWarm = new Function(source + '; return masuWarm;')();
         const flag = new SharedArrayBuffer(8);
         const f = new Int32Array(flag);
         if (busyFirst || busyWidth) Atomics.store(f, 0, 1);
         if (stopFirst) Atomics.store(f, 1, 1);
         const reports = [];
-        const end = new Promise((resolve) => ippaiWarm(paths.map((p) => location.origin + p), flag, 3, (r) => (reports.push(r), r.end && resolve()), busyWidth));
+        const end = new Promise((resolve) => masuWarm(paths.map((p) => location.origin + p), flag, 3, (r) => (reports.push(r), r.end && resolve()), busyWidth));
         let early = 0;
         if (busyFirst) {
           await new Promise((r) => setTimeout(r, 400));
@@ -283,8 +283,8 @@ try {
   const counted = make('counted', 120000, 19);
   const got = await page3.evaluate(
     async ([source, url]) => {
-      const ippaiDirect = new Function(source + '; return ippaiDirect;')();
-      const d = await ippaiDirect(url);
+      const masuDirect = new Function(source + '; return masuDirect;')();
+      const d = await masuDirect(url);
       return { wire: d.wire, cached: d.cached, length: d.data.length };
     },
     [source, `http://127.0.0.1:${app.address().port}${counted}`],

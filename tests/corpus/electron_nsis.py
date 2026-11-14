@@ -2,7 +2,7 @@
 """The app of an electron-builder NSIS installer, unpacked as its installer would put it in the
 game's folder (for tests/corpus-prep.sh): such an installer carries the whole app as one 7z,
 $PLUGINSDIR/app-64.7z (app-32.7z, app-arm64.7z), that its nsis7z.dll unpacks. With it unpacked
-the page runs resources/app.asar as a web game (ippai pack unpacks it: crates/ippai/src/asar.rs)
+the page runs resources/app.asar as a web game (masu pack unpacks it: crates/masu/src/asar.rs)
 instead of running the installer and then Electron's Chromium in sake (#234).
 
   electron_nsis.py INSTALLER OUT   exit 0: unpacked into OUT (prints the 7z's name);

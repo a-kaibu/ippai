@@ -1,4 +1,4 @@
-; 吉里吉里ベンチ: ippai のベンチマーク (tests/bench, グループ kirikiri) が遊ぶ小さなノベル。
+; 吉里吉里ベンチ: masu のベンチマーク (tests/bench, グループ kirikiri) が遊ぶ小さなノベル。
 ; tests/bench/scenario.mjs がプレイヤーとしてクリックして進める。合図は Debug.message の行
 ; (krkrz は標準出力に出す):
 ;   BENCH-STATE <何> <番号>   何かを表示し終えた (title, scene, line, saved, restored, end)

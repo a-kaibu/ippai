@@ -9,7 +9,7 @@
 #define E(expr) do { SetLastError(0xdead); long long r_ = (long long)(expr); printf("%-80s = %lld err %lu\n", #expr, r_, GetLastError()); } while (0)
 
 int main(void) {
-    const char *n = "ippai-winref-map";
+    const char *n = "masu-winref-map";
     E(OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, n) != NULL);
     SetLastError(0xdead);
     HANDLE h = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, n);
@@ -28,19 +28,19 @@ int main(void) {
     printf("again %d err %lu\n", h3 != NULL, GetLastError());
     DWORD *v3 = MapViewOfFile(h3, FILE_MAP_ALL_ACCESS, 0, 0, 0);
     printf("third view +0x18 %08lx\n", v3 ? v3[6] : 0);
-    HANDLE hw = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, L"ippai-winref-map");
+    HANDLE hw = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, L"masu-winref-map");
     printf("open wide %d\n", hw != NULL);
     E(OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, NULL) != NULL);
-    E(OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "ippai-winref-none") != NULL);
+    E(OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "masu-winref-none") != NULL);
     E(CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "bad\\name") != NULL);
     /* one namespace with events */
-    HANDLE ev = CreateEventA(NULL, TRUE, FALSE, "ippai-winref-mapev");
-    E(OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "ippai-winref-mapev") != NULL);
-    E(CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "ippai-winref-mapev") != NULL);
+    HANDLE ev = CreateEventA(NULL, TRUE, FALSE, "masu-winref-mapev");
+    E(OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, "masu-winref-mapev") != NULL);
+    E(CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "masu-winref-mapev") != NULL);
     CloseHandle(ev);
-    HANDLE m = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "ippai-winref-mapev");
+    HANDLE m = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 0x20, "masu-winref-mapev");
     printf("mapping after the event closed %d\n", m != NULL);
-    E(OpenEventA(EVENT_ALL_ACCESS, FALSE, "ippai-winref-mapev") != NULL);
+    E(OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-mapev") != NULL);
     CloseHandle(m);
     /* every handle closed (the views stay mapped): the name is gone */
     UnmapViewOfFile(v); UnmapViewOfFile(v2); UnmapViewOfFile(v3);

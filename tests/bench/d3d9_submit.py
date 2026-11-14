@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """tests/bench/d3d9-submit.c in CI: built (build EXE), then run on sake in the browser
-(check EXE OUT, with run-browser.mjs's IPPAI / WEB / PLAYWRIGHT): it must end with exit 0,
+(check EXE OUT, with run-browser.mjs's MASU / WEB / PLAYWRIGHT): it must end with exit 0,
 print all six rounds, and every round's non-timing output must be the same (the draws and
 readbacks give the same pixels each time). The timings are printed, not judged.
 """

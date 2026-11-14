@@ -1,5 +1,5 @@
-//! The `.vnv` movie file, read here (video.rs) and written by `ippai pack`
-//! (crates/ippai/src/movie.rs includes this file): no dependencies.
+//! The `.vnv` movie file, read here (video.rs) and written by `masu pack`
+//! (crates/masu/src/movie.rs includes this file): no dependencies.
 //!
 //! ```text
 //! "VNV1" w h tracks                                  (u32 little endian)
@@ -21,7 +21,7 @@ pub struct Info {
     pub h: u32,
     /// per track: its codec and frames (offset, size, key frame)
     pub tracks: Vec<(String, Frames)>,
-    /// from the trailer (movies other than Siglus's, crates/ippai/src/movie.rs): frames per
+    /// from the trailer (movies other than Siglus's, crates/masu/src/movie.rs): frames per
     /// second as a fraction, the movie's length in 100 ns units, and where its sound (Ogg
     /// Vorbis) is in the file
     pub rate: Option<(u32, u32)>,

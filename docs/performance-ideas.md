@@ -52,7 +52,7 @@ HTTP キャッシュで再通信を避けられても、展開やコピーの負
 細分化しすぎるとリクエスト数やモジュール管理の負担が増える。
 追加ロード時のコード登録と実行中スレッドの整合性も設計が必要。
 
-変更候補: `web/src/play.ts`、`host/vnjit.js`、`crates/kura/src/jit.rs`、`crates/ippai/src/serve.rs`。
+変更候補: `web/src/play.ts`、`host/vnjit.js`、`crates/kura/src/jit.rs`、`crates/masu/src/serve.rs`。
 
 ## 4. 静止画面での CPU と GPU 負荷
 
@@ -79,7 +79,7 @@ HTTP キャッシュで再通信を避けられても、展開やコピーの負
 可変サイズ化にはストア形式と VFS の変更が必要。
 ゲームがアーカイブをどう読むかによって効果が変わるため、拡張子だけで判断しない。
 
-変更候補: `crates/ippai/src/pack.rs`、`crates/kura/src/vfs.rs`。
+変更候補: `crates/masu/src/pack.rs`、`crates/kura/src/vfs.rs`。
 
 ## 6. 不変の JIT パーツを事前圧縮
 
@@ -90,7 +90,7 @@ JIT 配信は動的圧縮を使っている。
 - 既存のキャッシュとバージョン管理を保つ。
 - 同時利用時の CPU と応答時間、追加の保存容量を比較する。
 
-変更候補: `crates/ippai/src/serve.rs`。
+変更候補: `crates/masu/src/serve.rs`。
 
 ## 7. 重いライブラリ処理の置き換え
 

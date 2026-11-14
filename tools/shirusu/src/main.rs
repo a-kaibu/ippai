@@ -4,7 +4,7 @@
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let mut pos = Vec::new();
-    let mut opt = sake_shirusu::Options { arch: "x86".into(), created_by: format!("sake (ippai) sake-shirusu {}", env!("CARGO_PKG_VERSION")), target: String::new() };
+    let mut opt = sake_shirusu::Options { arch: "x86".into(), created_by: format!("sake (masu) sake-shirusu {}", env!("CARGO_PKG_VERSION")), target: String::new() };
     let mut i = 0;
     while i < a.len() {
         match a[i].as_str() {

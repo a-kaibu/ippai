@@ -1,5 +1,5 @@
-// Real Chromium: the network worker's reads of saved chunks (host/fetch-bridge.js ippaiOpfsStore,
-// web/src/chunkstore.ts), as ippaiFetchPart reads them: 256 KiB blocks of 4 MiB chunks at
+// Real Chromium: the network worker's reads of saved chunks (host/fetch-bridge.js masuOpfsStore,
+// web/src/chunkstore.ts), as masuFetchPart reads them: 256 KiB blocks of 4 MiB chunks at
 // random places, from OPFS through read-only synchronous access handles, against Cache Storage
 // (match, then a slice of the body's blob) as before. Checks the bytes, that OPFS is not slower,
 // that the old entries in Cache Storage still read through the store, and that a page's delete
@@ -37,7 +37,7 @@ self.onmessage = async () => {
   await root.removeEntry('ippai-chunks', { recursive: true }).catch(() => {});
   await caches.delete('ippai-chunks-v1');
   const old = await caches.open('ippai-chunks-v1');
-  const store = ippaiOpfsStore(await root.getDirectoryHandle('ippai-chunks', { create: true }), old);
+  const store = masuOpfsStore(await root.getDirectoryHandle('ippai-chunks', { create: true }), old);
   const resp = (d) => new Response(d, { headers: { 'x-ippai-checked': '1', 'x-ippai-size': String(d.length) } });
   // N chunks in OPFS (through the store), N others in Cache Storage as an older page kept them
   for (let i = 0; i < N; i++) await store.put(url(i), resp(data(i)));

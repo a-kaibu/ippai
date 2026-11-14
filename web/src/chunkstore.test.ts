@@ -97,7 +97,7 @@ class FakeCache {
   }
 }
 
-const BASE = "https://ippai.test/store/chunks/";
+const BASE = "https://masu.test/store/chunks/";
 const hex = (i: number) => i.toString(16).padStart(32, "0");
 const url = (i: number, block?: number) =>
   `${BASE}${hex(i).slice(0, 2)}/${hex(i)}${block === undefined ? "" : `?b=${block}&s=262144`}`;
@@ -108,8 +108,8 @@ const resp = (d: Uint8Array, checked = true) =>
 
 // the network worker's copy, run as the worker runs it
 interface BridgeStore {
-  ippaiChunkFile(u: string): string;
-  ippaiOpfsStore(
+  masuChunkFile(u: string): string;
+  masuOpfsStore(
     dir: unknown,
     old: unknown,
   ): ChunkStore & {
@@ -119,7 +119,7 @@ interface BridgeStore {
 }
 const bridge = (): BridgeStore =>
   // oxlint-disable-next-line typescript/no-implied-eval -- (the worker's script, as the worker runs it)
-  new Function(`${source}; return { ippaiOpfsStore, ippaiChunkFile };`)() as BridgeStore;
+  new Function(`${source}; return { masuOpfsStore, masuChunkFile };`)() as BridgeStore;
 
 test("file names: a chunk's hex, a block's hex and place; nothing else", () => {
   expect(chunkFileName(url(5))).toBe(hex(5));
@@ -128,10 +128,10 @@ test("file names: a chunk's hex, a block's hex and place; nothing else", () => {
   expect(chunkFileName(hex(7))).toBe(hex(7));
   // (a folder that is not the name's first two digits: not a chunk's place)
   expect(chunkFileName(`${BASE}cd/${hex(5)}`)).toBe("");
-  expect(bridge().ippaiChunkFile(`${BASE}cd/${hex(5)}`)).toBe("");
+  expect(bridge().masuChunkFile(`${BASE}cd/${hex(5)}`)).toBe("");
   for (const u of [url(5), url(5, 3), `opfs:/ippai-chunks/${hex(7)}`, hex(7), `${BASE}xx`])
-    expect(bridge().ippaiChunkFile(u), u).toBe(chunkFileName(u));
-  for (const bad of [`${BASE}xx`, `${BASE}${hex(1)}.tmp`, `${BASE}../${hex(1)}x`, "https://ippai.test/"])
+    expect(bridge().masuChunkFile(u), u).toBe(chunkFileName(u));
+  for (const bad of [`${BASE}xx`, `${BASE}${hex(1)}.tmp`, `${BASE}../${hex(1)}x`, "https://masu.test/"])
     expect(chunkFileName(bad), bad).toBe("");
 });
 
@@ -156,7 +156,7 @@ test("the page's and the worker's stores over one folder agree with a model (dif
       model.set(url(i), { d, checked: true });
     }
     const page = opfsStore(dir as unknown as FileSystemDirectoryHandle, old as unknown as Cache);
-    const worker = bridge().ippaiOpfsStore(dir, old);
+    const worker = bridge().masuOpfsStore(dir, old);
     for (let step = 0; step < 80; step++) {
       const s = rnd(2) ? page : worker;
       const k = rnd(3) ? url(rnd(10)) : url(rnd(10), rnd(4));
@@ -211,7 +211,7 @@ test("the page's and the worker's stores over one folder agree with a model (dif
 test("a file being written reads as not there; a write cut short leaves none", async () => {
   const dir = new FakeDir();
   const page = opfsStore(dir as unknown as FileSystemDirectoryHandle, null);
-  const worker = bridge().ippaiOpfsStore(dir, null);
+  const worker = bridge().masuOpfsStore(dir, null);
   // (created, not closed yet: empty)
   await dir.getFileHandle(hex(1), { create: true });
   expect(await page.match(url(1))).toBeUndefined();
@@ -227,7 +227,7 @@ test("a file being written reads as not there; a write cut short leaves none", a
 
 test("the worker's handles: kept a while for the next reads, closed so a delete goes through", async () => {
   const dir = new FakeDir();
-  const worker = bridge().ippaiOpfsStore(dir, null);
+  const worker = bridge().masuOpfsStore(dir, null);
   await worker.put(url(3), resp(new Uint8Array(1000).fill(7)));
   for (let i = 0; i < 5; i++)
     expect(await worker.read(url(3), i * 100, 100)).toEqual(new Uint8Array(100).fill(7));

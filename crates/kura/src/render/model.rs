@@ -2220,7 +2220,7 @@ impl Model {
                     }
                     Entry::View(v) => {
                         let vw = self.view_of(*v).unwrap().clone();
-                        if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
+                        if std::env::var_os("MASU_MODEL_SIGS").is_some() {
                             { let t = self.tex(vw.tex); eprintln!("    view {gi}/{binding}: tex {} {}x{} mips {} (view mip {} n {}) {:x}", vw.tex, t.w, t.h, t.mips, vw.mip, vw.mips, self.view_hash(&vw)); }
                         }
                         h = mix(h, self.view_hash(&vw));
@@ -2299,7 +2299,7 @@ impl Model {
         if p.uses_stencil {
             h = mix(h, d.st.stencil_ref as u64);
         }
-        if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
+        if std::env::var_os("MASU_MODEL_SIGS").is_some() {
             eprintln!("    sig parts: pipe {:x} after groups/verts/args {:x}", p.hash, h);
         }
         (h, clear)
@@ -2312,7 +2312,7 @@ impl Model {
             let t = m.tex(v.tex);
             (v.tex, t.sub(v.mip, v.layer), t.size(v.mip))
         };
-        if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
+        if std::env::var_os("MASU_MODEL_SIGS").is_some() {
             eprintln!("  model pass {:?}", colors.iter().chain(depth.iter()).map(|a| (self.view_of(a.view).map(|v| (v.tex, v.mip)), a.load_clear, a.store)).collect::<Vec<_>>());
         }
         for a in colors.iter().chain(depth.iter()) {
@@ -2337,7 +2337,7 @@ impl Model {
                 self.prim_states.as_mut().unwrap().push(s);
             }
             let (sig, clear) = self.draw_sig(d);
-            if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
+            if std::env::var_os("MASU_MODEL_SIGS").is_some() {
                 eprintln!("  model draw into {:?} {sig:x} vp {:?} sc {:?} bounds {:?} load {:?} zload {:?}", colors.iter().chain(depth.iter()).map(|a| self.view_of(a.view).map(|v| v.tex)).collect::<Vec<_>>(), d.st.viewport, d.st.scissor, d.bounds, colors.iter().map(|a| a.load_clear).collect::<Vec<_>>(), depth.as_ref().map(|a| a.load_clear));
             }
             let Obj::Pipeline(p) = self.objs[d.st.pipeline.unwrap()].clone() else { continue };

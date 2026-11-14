@@ -3,7 +3,7 @@
 //! the `step` import), from the same state; registers, flags, x87/MMX/SSE state and memory must
 //! match. The translations are entered through koji's own dispatcher module, as in the browser.
 //! Each test picks a mode: regions (of 1, 2, 3 or any number of blocks: exits chain through the
-//! hash table) or function mode (IPPAI_JIT_FN: calls as wasm calls through the call cache), and
+//! hash table) or function mode (MASU_JIT_FN: calls as wasm calls through the call cache), and
 //! the loop knobs (range check hoisting, stack slots in locals).
 //!
 //!   cargo run --release -- [count] [seed]

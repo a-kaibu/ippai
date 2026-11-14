@@ -1,6 +1,6 @@
 # The game database
 
-`crates/ippai/src/gamedb.rs` publishes ErogameScape games and Japanese-language VNDB VNs as
+`crates/masu/src/gamedb.rs` publishes ErogameScape games and Japanese-language VNDB VNs as
 separate compact SQLite files in `ghcr.io/a-kaibu/ippai-gamedb`, tagged `egs` / `vndb` and
 by date (e.g. `egs-20261112`). Servers keep `<store>/gamedb-{egs,vndb}.sqlite` and check for
 new published copies once a day. Runtime queries and the distribution format are unchanged.
@@ -15,15 +15,15 @@ Updates remain **manual**, as requested:
 - Actions → Game database → Run workflow: choose `all` (default), `egs`, or `vndb`.
   Both sources work on the GitHub runner. The workflow builds main and uses its package token.
 - `tools/gamedb/update.sh [work dir]`: update EGS with the GitHub CLI token. Set
-  `IPPAI=/path/to/ippai` to a binary built from main until a mirror-capable release exists.
-- Directly: `ippai gamedb update --part egs <dir>` (or `vndb`). Authentication uses
+  `MASU=/path/to/masu` to a binary built from main until a mirror-capable release exists.
+- Directly: `masu gamedb update --part egs <dir>` (or `vndb`). Authentication uses
   `GHCR_TOKEN`, otherwise `gh auth token`.
 
 `build` and `update` accept `--mirror /path/to/downloaded.sqlite3` to avoid another download,
 or `--live` to explicitly use the old websites/API. Example:
 
 ```sh
-ippai gamedb build --part vndb --mirror vndb.sqlite3 gamedb-vndb.sqlite
+masu gamedb build --part vndb --mirror vndb.sqlite3 gamedb-vndb.sqlite
 ```
 
 EGS's mirror has game/brand data but **no POV tags or series**. The importer preserves those
@@ -41,4 +41,4 @@ Imports check SQLite integrity, export completion, source row counts and minimum
 counts (over 20,000 EGS PC games including 30345 = LOOPERS; over 10,000 Japanese VNs).
 A staged output is validated before replacing an existing file. A failed part is not published;
 the workflow still attempts the other selected part. No scheduled rebuild is installed.
-The individual commands remain `ippai gamedb build|pull|check|push --part`.
+The individual commands remain `masu gamedb build|pull|check|push --part`.

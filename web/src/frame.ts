@@ -1,9 +1,9 @@
 // A web game's frame (NW.js or Electron pages: TyranoScript, RPG Maker MV/MZ), built as
-// frame.js and loaded first by each of its pages (crates/ippai/src/treefiles.rs adds the
-// <script>). The frame is on another origin than the app (ippai serve's game listener): its
+// frame.js and loaded first by each of its pages (crates/masu/src/treefiles.rs adds the
+// <script>). The frame is on another origin than the app (masu serve's game listener): its
 // scripts reach the app only through the messages of frame-protocol.ts, which the app's page
 // (html.ts) checks. Before any script of the game this gives the page a localStorage kept with
-// ippai's saved games and the Node stand-ins NW.js games reach for; the saves come from the
+// masu's saved games and the Node stand-ins NW.js games reach for; the saves come from the
 // app's page, and until they do the page's DOMContentLoaded and load wait.
 import { FILE, type FromFrame, type Init } from "./frame-protocol";
 import { toApp } from "./skynovel";
@@ -195,13 +195,13 @@ let app: string | null = null;
 const post = (m: FromFrame) => parent.postMessage(m, app ?? "*");
 /** false once the page went on without the app's saves: then what it writes is not kept */
 let keep = true;
-const changed: Changed = (key) => keep && post({ ippai: "set", key, value: items.get(key) ?? null });
+const changed: Changed = (key) => keep && post({ masu: "set", key, value: items.get(key) ?? null });
 
 // Electron games' pages are under resources/app/ (they run without Node: contextIsolation,
 // and a global `process` stops a PixiJS game's title buttons), unless the game asks for Node
-// (nodeIntegration, as older Electron did by default: #ippai-node); NW.js ones beside the exe
+// (nodeIntegration, as older Electron did by default: #masu-node); NW.js ones beside the exe
 const node =
-  !/\/resources\/app\//i.test(decodeURIComponent(location.pathname)) || location.hash === "#ippai-node";
+  !/\/resources\/app\//i.test(decodeURIComponent(location.pathname)) || location.hash === "#masu-node";
 Object.defineProperty(window, "localStorage", { value: storage(items, changed) });
 if (node) Object.assign(window, { require: nodeRequire(folder, items, changed), process: nodeProcess() });
 else
@@ -222,7 +222,7 @@ addEventListener("DOMContentLoaded", hold, true);
 addEventListener("load", hold, true);
 addEventListener("message", (e: MessageEvent) => {
   const m = e.data as Init | undefined;
-  if (e.source !== parent || m?.ippai !== "init" || ready) return;
+  if (e.source !== parent || m?.masu !== "init" || ready) return;
   app = e.origin;
   for (const [k, v] of m.items) items.set(k, v);
   // (only a folder on this frame's own origin: the reads go nowhere else)
@@ -239,14 +239,14 @@ const go = () => {
     if (ev.type === "load") dispatchEvent(new Event("load"));
     else document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
 };
-post({ ippai: "hello" });
+post({ masu: "hello" });
 // (the app's page may not have heard the first: its listener came late, or the frame was put
 // back from the back-forward cache; before, the game stayed blank for good)
-const again = HELLO_AGAIN.map((ms) => setTimeout(() => ready || post({ ippai: "hello" }), ms));
+const again = HELLO_AGAIN.map((ms) => setTimeout(() => ready || post({ masu: "hello" }), ms));
 again.push(
   setTimeout(() => {
     if (ready) return;
-    console.error(`ippai: no saves from the app after ${HELLO_WAIT_MS} ms; the game goes on without them`);
+    console.error(`masu: no saves from the app after ${HELLO_WAIT_MS} ms; the game goes on without them`);
     keep = false;
     go();
   }, HELLO_WAIT_MS),

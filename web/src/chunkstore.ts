@@ -2,7 +2,7 @@
 // chunk (or a block of one) in the folder CHUNK_DIR, named as the last part of its URL (its hex
 // name; a block's "<hex>?b=<k>&s=<block>"). Cache Storage before (net.ts CHUNKS) is still read
 // and its entries go when they are put or deleted again, so a game saved to the device before
-// stays saved. The network worker has its own copy (host/fetch-bridge.js ippaiOpfsStore), which
+// stays saved. The network worker has its own copy (host/fetch-bridge.js masuOpfsStore), which
 // reads with synchronous access handles: 4-5x quicker a read than Cache Storage there
 // (docs/s3-reads.md), and Cache Storage sometimes did not answer at all.
 //

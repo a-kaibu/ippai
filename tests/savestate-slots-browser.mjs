@@ -1,5 +1,5 @@
 // Save state slots from two devices at once (web/src/savestate.ts putState/getState), in real
-// Chromium against a real ippai serve: the same slot saved from a PC and a phone, their uploads
+// Chromium against a real masu serve: the same slot saved from a PC and a phone, their uploads
 // interleaved in every order (one device's requests held back by a route). Whatever the order,
 // the slot ends with the newer state, the server's index names a file that is that state's bytes
 // (files are named by their content and never written over), and a third device loads exactly
@@ -7,7 +7,7 @@
 // Then the server starts again with every save a week and more old: the files no index names
 // are gone (Saves::prune_states, issue #90), the ones it names and the old layout's still load.
 //
-//   node tests/savestate-slots-browser.mjs [path to ippai]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
+//   node tests/savestate-slots-browser.mjs [path to masu]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -18,14 +18,14 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-slots-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-slots-"));
 const vp = await import(createRequire(resolve("web/package.json")).resolve("vite-plus"));
 const build = vp.build ?? vp.default.build;
 const built = await build({
   configFile: false,
   logLevel: "silent",
-  build: { write: false, minify: false, lib: { entry: resolve("web/src/savestate.ts"), formats: ["iife"], name: "ippaiStates" } },
+  build: { write: false, minify: false, lib: { entry: resolve("web/src/savestate.ts"), formats: ["iife"], name: "masuStates" } },
 });
 const script = (Array.isArray(built) ? built[0] : built).output[0].code;
 
@@ -64,15 +64,15 @@ const put = (page, slot, text, created) =>
     async ([slot, text, created]) => {
       const file = new TextEncoder().encode(text);
       const info = { slot, created, size: file.length, build: "b", thumb: "" };
-      const { uploaded } = await window.ippaiStates.putState("g", info, file);
+      const { uploaded } = await window.masuStates.putState("g", info, file);
       await uploaded;
     },
     [slot, text, created],
   );
 const load = (page, slot) =>
   page.evaluate(async (slot) => {
-    const info = (await window.ippaiStates.listStates("g")).find((s) => s.slot === slot);
-    return info ? { info, text: new TextDecoder().decode(await window.ippaiStates.getState("g", info)) } : null;
+    const info = (await window.masuStates.listStates("g")).find((s) => s.slot === slot);
+    return info ? { info, text: new TextDecoder().decode(await window.masuStates.getState("g", info)) } : null;
   }, slot);
 
 try {

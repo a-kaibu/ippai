@@ -1,10 +1,10 @@
-// The browser's back button on ippai's pages (web/src/play.ts backToList): a game picked from the
+// The browser's back button on masu's pages (web/src/play.ts backToList): a game picked from the
 // list, or opened at its own address (a bookmark, a link), goes back to the game list, and the
-// list is under the game only once (one more back leaves ippai). The list's 一覧に戻る button
+// list is under the game only once (one more back leaves masu). The list's 一覧に戻る button
 // (after a game that could not start: the test's games are not real programs) goes back to the
 // same entry instead of adding a second list over it. Forward comes to the game again.
 //
-//   node tests/back-browser.mjs [path to ippai]   (web/dist built; PLAYWRIGHT as elsewhere)
+//   node tests/back-browser.mjs [path to masu]   (web/dist built; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -13,8 +13,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-back-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-back-"));
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });
 const TITLES = { sakura: "さくらの詩", tsuki: "月の光" };
@@ -38,7 +38,7 @@ for (let i = 0; i < 100; i++) {
   if (await fetch(base).then((r) => r.ok, () => false)) break;
   await new Promise((r) => setTimeout(r, 300));
 }
-// a page before ippai's: one back too many lands here
+// a page before masu's: one back too many lands here
 const before = `${base}manifest.webmanifest`;
 
 const browser = await chromium.launch();

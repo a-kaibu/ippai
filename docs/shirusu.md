@@ -13,7 +13,7 @@ compares a trial game on real Windows with the same game on sake.
   (CreateFileW's path, WriteFile's and ReadFile's buffers up to 4096 bytes, the I/O counts).
 - **tools/shirusu** (`sake-shirusu LOG OUT.trace --arch x86|x86_64`): those lines into a
   Trace. Schemas come from shirusu's API catalog and values from shirusu-hook's capture
-  functions, so both sides hash and encode alike. Outside ippai's workspace, pinned to one
+  functions, so both sides hash and encode alike. Outside masu's workspace, pinned to one
   shirusu commit (`SHIRUSU_REV` in the workflow is the same).
 - **.github/workflows/shirusu.yml**: each title of `tests/shirusu/games.txt` played on
   windows-2025 under `shirusu capture --mode filtered --follow-children --api ...` (winplay.py

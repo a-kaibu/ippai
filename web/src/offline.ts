@@ -370,7 +370,7 @@ export const PRIME_WINDOW = 256;
 /** `f()` holding chunk `hex`'s Web Lock (the network worker's fetches ahead hold it too), or just `f()`. */
 function withChunkLock(hex: string, f: () => Promise<void>): Promise<void> {
   const locks = (navigator as { locks?: LockManager }).locks;
-  return locks ? (locks.request(`ippai-chunk:${hex}`, f) as unknown as Promise<void>) : f();
+  return locks ? (locks.request(`masu-chunk:${hex}`, f) as unknown as Promise<void>) : f();
 }
 
 /**
@@ -388,7 +388,7 @@ export function withFreeChunkLocks<T>(hexes: string[], f: (mine: string[]) => Pr
     i === hexes.length
       ? f(mine)
       : // (the callback's promise is what request's resolves with, not a promise of it)
-        (locks.request(`ippai-chunk:${hexes[i]}`, { ifAvailable: true }, async (lock) => {
+        (locks.request(`masu-chunk:${hexes[i]}`, { ifAvailable: true }, async (lock) => {
           if (lock) mine.push(hexes[i]!);
           return take(i + 1);
         }) as unknown as Promise<T>);
@@ -549,7 +549,7 @@ export async function saveOffline(
     /** Chunk `h` alone: from the bucket, else the server. */
     const alone = (h: string) => {
       const url = new URL(chunkPath(h), base).href;
-      // (one fetch of a chunk the game's network worker fetches too: its Web Lock, host/fetch-bridge.js ippaiWhole)
+      // (one fetch of a chunk the game's network worker fetches too: its Web Lock, host/fetch-bridge.js masuWhole)
       return withChunkLock(h, async () => {
         if (await cache.match(url).catch(() => undefined)) return;
         const data = await direct.get(h, { signal, request: opt.request });

@@ -1,10 +1,10 @@
-// Web apps kept for older builds' save states (crates/ippai/src/apps.rs, web/src/savestate.ts
-// keptApps/appRoot), in real Chromium against real ippai serves: a server with web app A, then
+// Web apps kept for older builds' save states (crates/masu/src/apps.rs, web/src/savestate.ts
+// keptApps/appRoot), in real Chromium against real masu serves: a server with web app A, then
 // the same store served with app B (an update). A's files stay at /apps/<A>/, cross-origin
 // isolated as the root's; its relative URLs reach the same server's saves; /apps/builds names
 // both builds; the page code finds the app of a state's build from either app.
 //
-//   node tests/apps-browser.mjs [path to ippai]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
+//   node tests/apps-browser.mjs [path to masu]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
@@ -14,14 +14,14 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-apps-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-apps-"));
 const vp = await import(createRequire(resolve("web/package.json")).resolve("vite-plus"));
 const build = vp.build ?? vp.default.build;
 const built = await build({
   configFile: false,
   logLevel: "silent",
-  build: { write: false, minify: false, lib: { entry: resolve("web/src/savestate.ts"), formats: ["iife"], name: "ippaiStates" } },
+  build: { write: false, minify: false, lib: { entry: resolve("web/src/savestate.ts"), formats: ["iife"], name: "masuStates" } },
 });
 const script = (Array.isArray(built) ? built[0] : built).output[0].code;
 
@@ -46,7 +46,7 @@ async function serve(web) {
     if (await fetch(`${base}apps/builds`).then((r) => r.ok, () => false)) return s;
     await new Promise((r) => setTimeout(r, 300));
   }
-  throw new Error("ippai serve did not start");
+  throw new Error("masu serve did not start");
 }
 let server = await serve(A);
 const oldStamp = (await fetch(`${base}sake/build-id.txt`)).headers.get("last-modified");
@@ -82,9 +82,9 @@ try {
   // the page code: from app A, the root is the server's and B's build is B's app; from the root too
   await page.addScriptTag({ content: script });
   const found = await page.evaluate(async () => ({
-    root: window.ippaiStates.appRoot(),
-    b: (await window.ippaiStates.keptApps()).get("000000000000000b"),
-    a: (await window.ippaiStates.keptApps()).get("000000000000000a"),
+    root: window.masuStates.appRoot(),
+    b: (await window.masuStates.keptApps()).get("000000000000000b"),
+    a: (await window.masuStates.keptApps()).get("000000000000000a"),
   }));
   assert.equal(found.root, base);
   assert.equal(found.a, `${base}apps/${keyA}/`);

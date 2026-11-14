@@ -75,7 +75,7 @@ static void show(const char *what, HBITMAP h) {
 int main(void) {
     char dir[MAX_PATH];
     GetTempPathA(MAX_PATH, dir);
-    strcat(dir, "ippai-loadimage");
+    strcat(dir, "masu-loadimage");
     CreateDirectoryA(dir, NULL);
     SetCurrentDirectoryA(dir);
     HINSTANCE me = GetModuleHandleA(NULL);

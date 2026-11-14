@@ -4,8 +4,8 @@
 //! The page shows `vnhost_display_frame` (one BGRA buffer of the whole screen) and sends input
 //! with `vnhost_input_push`; the program's input thread takes them with `input_take`.
 //!
-//! Under node, `IPPAI_SCREENSHOT=<file.ppm>` writes the screen out (see `start_screenshots`) and
-//! `IPPAI_INPUT="<seconds>:<kind>,<x>,<y>,<data>;..."` sends input that many seconds after the
+//! Under node, `MASU_SCREENSHOT=<file.ppm>` writes the screen out (see `start_screenshots`) and
+//! `MASU_INPUT="<seconds>:<kind>,<x>,<y>,<data>;..."` sends input that many seconds after the
 //! first window shows up (see `start_scripted_input`).
 
 use std::collections::{HashMap, VecDeque};
@@ -94,7 +94,7 @@ static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 fn with<R>(f: impl FnOnce(&mut Display) -> R) -> R {
     let mut g = DISPLAY.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(|| {
-        let (w, h) = std::env::var("IPPAI_SCREEN")
+        let (w, h) = std::env::var("MASU_SCREEN")
             .ok()
             .and_then(|s| {
                 let (w, h) = s.split_once('x')?;
@@ -117,10 +117,10 @@ fn with<R>(f: impl FnOnce(&mut Display) -> R) -> R {
     }))
 }
 
-/// `IPPAI_SCREENSHOT`: a thread writes the screen out whenever it has changed, once a second.
+/// `MASU_SCREENSHOT`: a thread writes the screen out whenever it has changed, once a second.
 fn start_screenshots() {
     static STARTED: std::sync::Once = std::sync::Once::new();
-    let Ok(path) = std::env::var("IPPAI_SCREENSHOT") else { return };
+    let Ok(path) = std::env::var("MASU_SCREENSHOT") else { return };
     STARTED.call_once(|| {
         std::thread::spawn(move || {
             let mut written = 0;
@@ -149,10 +149,10 @@ fn start_screenshots() {
     });
 }
 
-/// `IPPAI_INPUT`: input records sent at given times (for tests without a page).
+/// `MASU_INPUT`: input records sent at given times (for tests without a page).
 fn start_scripted_input() {
     static STARTED: std::sync::Once = std::sync::Once::new();
-    let Ok(script) = std::env::var("IPPAI_INPUT") else { return };
+    let Ok(script) = std::env::var("MASU_INPUT") else { return };
     STARTED.call_once(|| {
         std::thread::spawn(move || {
             let t0 = std::time::Instant::now();
@@ -163,7 +163,7 @@ fn start_scripted_input() {
                 let wait = std::time::Duration::from_secs_f64(at).saturating_sub(t0.elapsed());
                 std::thread::sleep(wait);
                 vnhost_input_push(kind as u32, x as i32, y as i32, data as u32);
-                if crate::env_on!("IPPAI_INPUT_TRACE") {
+                if crate::env_on!("MASU_INPUT_TRACE") {
                     let n = input_queued() * 16;
                     // and the windows there, top first
                     let under: Vec<String> = with(|d| {
@@ -618,9 +618,9 @@ pub fn add_rect(v: &mut Vec<[i32; 4]>, r: [i32; 4]) {
     }
 }
 
-/// `IPPAI_NODIFF`: every draw goes to the screen as it is (no compare; for measuring).
+/// `MASU_NODIFF`: every draw goes to the screen as it is (no compare; for measuring).
 fn nodiff() -> bool {
-    crate::env_on!("IPPAI_NODIFF")
+    crate::env_on!("MASU_NODIFF")
 }
 
 /// Where `a` and `b` first differ (None: the same).

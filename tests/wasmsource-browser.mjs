@@ -1,10 +1,10 @@
 // Real Chromium: where the page gets sake's wasm (web/src/wasmsource.ts). The page is cross-origin
-// isolated like ippai's; the bucket is another origin answering with CORS, its object sealed as
-// crates/ippai/src/envelope.rs seals it. Checked, in order:
+// isolated like masu's; the bucket is another origin answering with CORS, its object sealed as
+// crates/masu/src/envelope.rs seals it. Checked, in order:
 // 1. nothing kept: /sake-direct answers, the wasm comes from the bucket (not the server's line),
 //    compiles, and instantiateWasm hands emscripten an instance; it is kept in OPFS;
 // 2. a new page: the wasm read from OPFS, the bucket not asked again;
-// 3. the server's file fetched once (immutable, as ippai serve sends a ?v= file): the next page
+// 3. the server's file fetched once (immutable, as masu serve sends a ?v= file): the next page
 //    leaves it to the browser's HTTP cache (only-if-cached), neither /sake-direct nor the bucket asked;
 // 4. a damaged bucket object or a server without S3: null (emscripten loads the server's file).
 //   node tests/wasmsource-browser.mjs        (web's pnpm install done; PLAYWRIGHT as elsewhere)

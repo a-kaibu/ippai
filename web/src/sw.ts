@@ -38,10 +38,10 @@ interface WorkerScope {
 const sw = self as unknown as WorkerScope;
 
 /** the build's id and shell files (vite.config.ts, relative to the scope) */
-declare const IPPAI_BUILD: string;
-declare const IPPAI_SHELL: string[];
+declare const MASU_BUILD: string;
+declare const MASU_SHELL: string[];
 
-const CACHE = "ippai-app-v1";
+const CACHE = "masu-app-v1";
 /** how long a request may take while there is a copy (ms) */
 const PATIENCE = 4000;
 /** after a failed request, misses count as offline this long (the server out of reach) */
@@ -60,7 +60,7 @@ sw.addEventListener("install", (e) => {
       // (each on its own: one missing file must not keep the build from installing)
       // (and the game list: the library's first load came before this worker)
       Promise.all(
-        [...IPPAI_SHELL, "games"].map((p) =>
+        [...MASU_SHELL, "games"].map((p) =>
           fetch(at(p), { cache: "reload" })
             .then((r) => (r.ok ? c.put(key(at(p)), r) : undefined))
             .catch(() => undefined),
@@ -76,7 +76,7 @@ sw.addEventListener("activate", (e) => {
       await sw.clients.claim();
       // assets/ of older builds (content-hashed, so a page of this build never asks for them)
       const c = await caches.open(CACHE);
-      const keep = new Set(IPPAI_SHELL.map(at));
+      const keep = new Set(MASU_SHELL.map(at));
       for (const r of await c.keys())
         if (new URL(r.url).pathname.startsWith(`${scope().pathname}assets/`) && !keep.has(r.url))
           await c.delete(r);
@@ -87,7 +87,7 @@ sw.addEventListener("activate", (e) => {
 // pwa.ts asks whether the server was out of reach (the page then says it is offline)
 sw.addEventListener("message", (e) => {
   if (e.data === "state")
-    e.ports[0]?.postMessage({ build: IPPAI_BUILD, unreachable: Date.now() - failedAt < UNREACHABLE_MS });
+    e.ports[0]?.postMessage({ build: MASU_BUILD, unreachable: Date.now() - failedAt < UNREACHABLE_MS });
 });
 
 sw.addEventListener("fetch", (e) => {
@@ -97,7 +97,7 @@ sw.addEventListener("fetch", (e) => {
   if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) return;
   if ((req.method !== "GET" && req.method !== "HEAD") || req.headers.has("range")) return;
   const path = url.pathname.slice(base.pathname.length);
-  // (a kept app's requests for the server's own routes, crates/ippai/src/apps.rs: as at the root)
+  // (a kept app's requests for the server's own routes, crates/masu/src/apps.rs: as at the root)
   if (PASS.test(path.replace(/^apps\/[0-9a-f]{16}\//, "")) || path === "sw.js") return;
   const done = (p: Promise<unknown>) => e.waitUntil(p.catch(() => undefined));
   if (req.method === "HEAD") e.respondWith(head(req, done));
@@ -207,10 +207,10 @@ async function stale(req: Request, done: (p: Promise<unknown>) => void): Promise
   return (await caches.match(req.url, { cacheName: CACHE })) ?? got.catch(miss);
 }
 
-/** HEAD: the network (its headers kept under `?ippai-head`), else the headers last seen. */
+/** HEAD: the network (its headers kept under `?masu-head`), else the headers last seen. */
 async function head(req: Request, done: (p: Promise<unknown>) => void): Promise<Response> {
   const u = new URL(req.url);
-  u.searchParams.set("ippai-head", "1");
+  u.searchParams.set("masu-head", "1");
   const k = u.href;
   const got = network(req).then(async (r) => {
     if (r.ok) {

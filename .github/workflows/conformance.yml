@@ -170,8 +170,8 @@ jobs:
         run: python3 -m unittest tests/winetest/test_run.py
       - name: Wine's tests on sake (shard ${{ matrix.shard }} of 4)
         env:
-          IPPAI_API_COUNTS: "1"
-          IPPAI_API_COUNTS_OUT: ${{ github.workspace }}/target/winetest/api-counts-${{ matrix.arch }}-${{ matrix.shard }}.txt
+          MASU_API_COUNTS: "1"
+          MASU_API_COUNTS_OUT: ${{ github.workspace }}/target/winetest/api-counts-${{ matrix.arch }}-${{ matrix.shard }}.txt
         run: python3 tests/winetest/run.py --arch ${{ matrix.arch }} --shard ${{ matrix.shard }}/4 -j 2 --timeout 120
       # The no-font baseline is useful too. Run this separate fixture once per
       # architecture so missing fonts cannot mask the x64 font regression (#99).
@@ -206,7 +206,7 @@ jobs:
           retention-days: 14
 
   # the dlls of tests/winetest/browser.txt (Direct3D, DXGI, Direct2D, DirectDraw, OpenGL) need
-  # WebGPU: headless Chromium through play.html, served by ippai
+  # WebGPU: headless Chromium through play.html, served by masu
   winetest-gpu:
     needs: [sake, winetest-build]
     runs-on: ubuntu-24.04
@@ -242,10 +242,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/release
-          key: conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
+          key: conformance-masu-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
-            conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-
+            conformance-masu-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            conformance-masu-${{ runner.os }}-${{ env.RUST_KEY }}-
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
       - id: cache-4
         uses: actions/cache/restore@v6.1.0
@@ -263,7 +263,7 @@ jobs:
         with:
           path: ~/.pip-wheels
           key: pip-${{ runner.os }}-fonttools==4.59.0
-      - name: Browser, fonts, the page and ippai
+      - name: Browser, fonts, the page and masu
         run: |
           mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
@@ -272,7 +272,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
           mkdir -p web/public/sake && cp target/sake-web/* web/public/sake/
           (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
-          cargo build --release -p ippai
+          cargo build --release -p masu
       - if: steps.cache-4.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:

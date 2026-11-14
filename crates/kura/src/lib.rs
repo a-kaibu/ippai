@@ -19,11 +19,11 @@ macro_rules! env_on {
 }
 
 
-/// `IPPAI_NOPACE` (tests/bench): frames as fast as the guest makes them. The first time it skips a
+/// `MASU_NOPACE` (tests/bench): frames as fast as the guest makes them. The first time it skips a
 /// wait it says so, so the benchmark harness knows this build honors it.
 pub fn nopace() -> bool {
     static SAID: std::sync::Once = std::sync::Once::new();
-    if !env_on!("IPPAI_NOPACE") {
+    if !env_on!("MASU_NOPACE") {
         return false;
     }
     SAID.call_once(|| eprintln!("BENCH-HOST nopace"));

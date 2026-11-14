@@ -1,7 +1,7 @@
 // A game not yet on the device is saved to it whole before it starts (web/src/ui/SaveFirst.tsx,
-// offline.ts saveOffline, direct.ts), in Chromium on ippai serve with a small store and a bucket
+// offline.ts saveOffline, direct.ts), in Chromium on masu serve with a small store and a bucket
 // stood in by the test (page.route: /store-direct answers, many at once, with a URL on https://bucket.test and
-// the object's key; the bucket answers objects sealed as crates/ippai/src/envelope.rs seals them,
+// the object's key; the bucket answers objects sealed as crates/masu/src/envelope.rs seals them,
 // in zstd frames, each held back 300 ms as the real one holds them ~2 s):
 // - picking the game opens the dialog, which saves it: the bucket gets many at once (more than the
 //   server's 4), the chunks only on the server come through /store at most 4 at once, every chunk
@@ -11,7 +11,7 @@
 // SHOTS=<dir> keeps screenshots of the dialog. With web/dist/sake/snapz.mjs (sake built) the real zstd decodes the objects; without, a stand-in
 // that reads the frames' raw blocks.
 //
-//   node tests/save-first-browser.mjs [path to ippai]   (web/dist built; PLAYWRIGHT as elsewhere)
+//   node tests/save-first-browser.mjs [path to masu]   (web/dist built; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
@@ -23,8 +23,8 @@ import { zstdDecompressSync } from "node:zlib";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-savefirst-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-savefirst-"));
 const web = join(work, "web");
 cpSync(resolve("web/dist"), web, { recursive: true });
 if (!existsSync(join(web, "sake/sake.wasm"))) {
@@ -180,7 +180,7 @@ try {
     }
     return sealed.get(h);
   };
-  // (a delivery pack of the game's last PACKED chunks, in its order: crates/ippai/src/storage.rs
+  // (a delivery pack of the game's last PACKED chunks, in its order: crates/masu/src/storage.rs
   // pack_objects; the save reads them with ranged GETs of it, several a GET)
   const PACK = "0f0e0d0c-0b0a-4908-8706-050403020100";
   const PACKED = 20;
@@ -213,7 +213,7 @@ try {
       headers: { "access-control-allow-origin": "*", "access-control-expose-headers": "content-range", ...(m ? { "content-range": `bytes ${m[1]}-${+m[1] + body.length - 1}/${packBody.length}` } : {}) },
     });
   });
-  // (many at once, as ippai serve's POST /store-direct answers: the server's own left out)
+  // (many at once, as masu serve's POST /store-direct answers: the server's own left out)
   await page.route(/\/store-direct$/, async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     count.many++;

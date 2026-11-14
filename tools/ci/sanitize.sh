@@ -11,13 +11,13 @@ cd "$(dirname "$0")/../.."
 kind=${1:-address}
 shift || true
 pkgs=("$@")
-[ ${#pkgs[@]} -gt 0 ] || pkgs=(-p koji -p kura -p sake -p crt -p vorbis -p hlslc -p dxwgsl -p glwgsl -p shaderconf -p ippai -p waits -p wmcodec -p ippai-tls)
+[ ${#pkgs[@]} -gt 0 ] || pkgs=(-p koji -p kura -p sake -p crt -p vorbis -p hlslc -p dxwgsl -p glwgsl -p shaderconf -p masu -p waits -p wmcodec -p masu-tls)
 export RUSTFLAGS="-Zsanitizer=$kind" RUSTDOCFLAGS="-Zsanitizer=$kind"
 if [ "$kind" = address ]; then
   # Guest test arenas are mmap'd and hold pointers into the normal heap. Their
   # dlsym-based root registration needs this symbol in .dynsym, not just .symtab.
   export RUSTFLAGS="$RUSTFLAGS -Clink-arg=-Wl,--export-dynamic-symbol=__lsan_register_root_region"
-  export RUSTDOCFLAGS="$RUSTFLAGS" IPPAI_REQUIRE_LSAN_ROOTS=1
+  export RUSTDOCFLAGS="$RUSTFLAGS" MASU_REQUIRE_LSAN_ROOTS=1
 fi
 export LSAN_OPTIONS="suppressions=$PWD/tools/ci/lsan.supp:print_suppressions=0"
 # (no fake stacks: the d3d tests run on a stack mapped below 4 GiB, trace_tests on_low_stack,

@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Builds a shirusu Trace from sake's SAKE_SHIRUSU=1 lines (crates/sake/src/shirusu.rs)"
 
-# (outside ippai's workspace: shirusu's crates are a test tool's, not the release's)
+# (outside masu's workspace: shirusu's crates are a test tool's, not the release's)
 [workspace]
 
 [[bin]]

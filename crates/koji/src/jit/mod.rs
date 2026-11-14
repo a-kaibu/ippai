@@ -123,7 +123,7 @@ pub fn mx_modes(mxcsr: u32, at: u32) {
         mx_read(at);
     }
 }
-/// Debugging (IPPAI_JIT_COUNT): counters of control transfers the generated code bumps
+/// Debugging (MASU_JIT_COUNT): counters of control transfers the generated code bumps
 /// (wasm32 only: their addresses are i32 constants). See [`COUNTER_NAMES`].
 pub static COUNT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub static COUNTERS: [core::sync::atomic::AtomicU32; 15] = [const { core::sync::atomic::AtomicU32::new(0) }; 15];
@@ -134,12 +134,12 @@ fn bump(c: &mut Code, i: usize) {
         c.i32c(at).i32c(at).load32(0).i32c(1).add().store32(0);
     }
 }
-/// Functions entered in the middle too (IPPAI_JIT_FN_ENTRIES=0: at their root only).
+/// Functions entered in the middle too (MASU_JIT_FN_ENTRIES=0: at their root only).
 pub static FN_ENTRIES: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-/// Debugging (IPPAI_JIT_PROBE): instructions run by the interpreter (which prints the state
+/// Debugging (MASU_JIT_PROBE): instructions run by the interpreter (which prints the state
 /// before them), 0 = none.
 pub static PROBES: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
-/// Function-level translation (IPPAI_JIT_FN=1): a guest function (an address CALLs go to)
+/// Function-level translation (MASU_JIT_FN=1): a guest function (an address CALLs go to)
 /// becomes one wasm function ([`T_FN`]: the registers in and out as arguments and results, the
 /// state in the Cpu at its exits to the dispatcher). Its blocks are the ones its own jumps reach (never a call's target); a CALL is a
 /// wasm call of the callee's function when it has one (found in the hash table, entries
@@ -225,7 +225,7 @@ const L_MXR: u32 = L_RAIN + 16;
 /// f64: x87 products and quotients at most this large take the slow path (f64::INFINITY when
 /// L_MX, else the largest subnormal: those are rounded twice)
 const L_MXT: u32 = L_RAIN + 17;
-/// How many slots a loop keeps (at most N_SLOTS; IPPAI_JIT_SLOTS, default 0: slower on x64,
+/// How many slots a loop keeps (at most N_SLOTS; MASU_JIT_SLOTS, default 0: slower on x64,
 /// where the extra live locals spill)
 pub static SLOTS_MAX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -789,7 +789,7 @@ struct FCache {
 
 /// See [`Gen::safe`].
 const SAFE_MARGIN: i32 = 0x8000;
-/// Measuring only (IPPAI_JIT_NOCHECK=1): no range checks on memory accesses (unsafe).
+/// Measuring only (MASU_JIT_NOCHECK=1): no range checks on memory accesses (unsafe).
 pub static NOCHECK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Pushes what a jump to another region hands over (registers, lazy flags, budget).
 fn push_state(c: &mut Code) {
@@ -5406,7 +5406,7 @@ fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -
     }
 }
 
-/// Hoisting range checks out of loops (IPPAI_JIT_HOIST=0: off; see [`safe_in`]).
+/// Hoisting range checks out of loops (MASU_JIT_HOIST=0: off; see [`safe_in`]).
 pub static HOIST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Adds a region starting at `roots` to `module` (one function, exported as "f<n>"),

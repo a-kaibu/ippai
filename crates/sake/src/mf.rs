@@ -3,7 +3,7 @@
 //! its movies: SetSource, the events its IMFMediaEngineNotify gets, OnVideoStreamTick and
 //! TransferVideoFrame into the game's D3D11 texture.
 //!
-//! A movie with a `.vnv` next to it (`ippai pack`) plays through dshow_play's movie thread
+//! A movie with a `.vnv` next to it (`masu pack`) plays through dshow_play's movie thread
 //! (its clock and sound; no window of its own: the game draws the frames it takes); any other
 //! source fails to load (MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED), so the game goes on past it.
 //! The Media Session plays MP4 movies (mf/session.rs, mf/topology.rs, mf/movie.rs). The Source
@@ -1270,7 +1270,7 @@ fn load(b: u32) {
     let Some(movie) = movie else {
         let there = !w.is_empty() && crate::files::resolve(&w).is_some();
         if there {
-            eprintln!("sake: movie {w}: not played (no .vnv to decode, see ippai pack)");
+            eprintln!("sake: movie {w}: not played (no .vnv to decode, see masu pack)");
         }
         engine(b, |e| e.st.failed(if there { MF_E_UNSUPPORTED_BYTESTREAM_TYPE } else { 0x8007_0002 }));
         return;

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Downloads artifacts of this workflow run as soon as another job of the run uploads them, so a
-# job can start before that one ends (release.yml: bin builds ippai while web builds the page,
+# job can start before that one ends (release.yml: bin builds masu while web builds the page,
 # and takes the page when it is there). Fails when the uploading job ended without them.
 #   tools/ci/wait-artifacts.sh <job name> <artifact>=<dir>...
 # (GH_TOKEN with actions: read; GITHUB_REPOSITORY and GITHUB_RUN_ID from Actions)

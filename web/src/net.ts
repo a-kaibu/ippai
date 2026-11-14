@@ -305,7 +305,7 @@ export function trimOrder<T extends { time: number }>(kept: readonly T[]): T[] {
 /** Of the quota, what the origin may fill in all before chunks go (trimChunks). */
 const SHARE = 0.8;
 
-/** The store chunk hashes (hex) of a tree's file list (trees/<name>.tsv, crates/ippai/src/pack.rs). */
+/** The store chunk hashes (hex) of a tree's file list (trees/<name>.tsv, crates/masu/src/pack.rs). */
 export function treeChunks(tsv: string): string[] {
   const out: string[] = [];
   for (const line of tsv.split("\n").slice(1)) {
@@ -338,7 +338,7 @@ export function watchRetries(on: (retrying: number, error: string) => void): () 
   const by = new Map<string, number>();
   const tell = (error: string) => on(page.retrying + [...by.values()].reduce((a, b) => a + b, 0), error);
   page.listeners.add(tell);
-  const ch = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("ippai-net");
+  const ch = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("masu-net");
   if (ch)
     ch.onmessage = (e: MessageEvent<{ id: string; retrying: number; error: string }>) => {
       by.set(e.data.id, e.data.retrying);

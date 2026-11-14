@@ -1,5 +1,5 @@
 // Shader conformance on WebGPU: runs the cases crates/shaderconf writes (each a pixel shader one
-// of ippai's translators made, the uniform data of each pixel, and what the Direct3D / OpenGL
+// of masu's translators made, the uniform data of each pixel, and what the Direct3D / OpenGL
 // rules say the pixel must be) in headless Chromium (Dawn; SwiftShader unless CHROME_ARGS picks
 // another adapter), one draw per pixel into an rgba32float target, and compares.
 //

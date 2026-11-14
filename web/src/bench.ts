@@ -1,4 +1,4 @@
-// The device benchmark (/bench.html): measures a phone (or any browser) the way ippai uses it,
+// The device benchmark (/bench.html): measures a phone (or any browser) the way masu uses it,
 // and keeps every device's results on the server so devices can be compared
 // (web/src/devbench.ts has the suite and the arithmetic).
 //
@@ -9,8 +9,8 @@
 //   (other play.html parameters pass through to the program steps, e.g. &headless for tests)
 //
 // Program steps run the bench tree's programs (tests/bench/src and bench.exe, packed as the store
-// tree "bench": `ippai bench install`) through sake and the JIT. Each run's results go to
-// `PUT /bench-log` (ippai serve keeps them in <jit>/bench-results.jsonl) when it ends, and
+// tree "bench": `masu bench install`) through sake and the JIT. Each run's results go to
+// `PUT /bench-log` (masu serve keeps them in <jit>/bench-results.jsonl) when it ends, and
 // `GET /bench-results` gives them all back for the comparison.
 
 import { getUi, setBench, setStart, setUi } from "./ui/store";
@@ -41,7 +41,7 @@ import {
 const MICRO =
   "AGFzbQEAAAABCAFgBH9/f38AAgsBAWUBbQIDgAKAAgMDAgAABw8CBGNvcHkAAARsb29wAAEKjwECKgADQCAAIAEgAvwKAAAgAUEBaiAAIAJBAWv8CgAAIANBAWshAyADDQALC2IBAX8DQEEAIQQDQCAAIARqIAEgBGopAwA3AwAgBEEIaiEEIAQgAkkNAAtBACEEA0AgAUEBaiAAIARqKQMANwMAIARBCGohBCAEIAJBCGtJDQALIANBAWshAyADDQALCw==";
 
-const STORE = "ippai-devbench";
+const STORE = "masu-devbench";
 const SUSTAIN_S = 60;
 
 const params = new URLSearchParams(location.search);
@@ -215,7 +215,7 @@ async function begin(profile: Profile): Promise<void> {
     version: VERSION,
     profile,
     started: Date.now(),
-    build: document.querySelector('meta[name="ippai-version"]')?.getAttribute("content") ?? "",
+    build: document.querySelector('meta[name="masu-version"]')?.getAttribute("content") ?? "",
     device: await deviceInfo(),
     steps: {},
   };
@@ -348,7 +348,7 @@ async function exeStep(step: Step, made: (p: OutputParser) => void): Promise<voi
   params.set("run", `Z:\\ippai\\game\\${step.exe}`);
   params.set("mount", "/ippai/game=bench");
   params.set("args", step.args ?? "");
-  params.append("env", "IPPAI_NOPACE=1");
+  params.append("env", "MASU_NOPACE=1");
   if (step.env) {
     params.append("env", step.env);
     // (its own saved translations: they depend on it)

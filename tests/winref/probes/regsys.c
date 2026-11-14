@@ -26,13 +26,13 @@ int main(void) {
         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
         "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\",
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\no such key for ippai",
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\no such key for masu",
     };
     static const char *cu[] = {
         "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
         "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
         "Control Panel\\Desktop",
-        "Control Panel\\no such key for ippai",
+        "Control Panel\\no such key for masu",
     };
     for (int i = 0; i < (int)(sizeof lm / sizeof *lm); i++) open1(HKEY_LOCAL_MACHINE, "HKLM", lm[i]);
     for (int i = 0; i < (int)(sizeof cu / sizeof *cu); i++) open1(HKEY_CURRENT_USER, "HKCU", cu[i]);

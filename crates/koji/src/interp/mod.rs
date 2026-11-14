@@ -1689,7 +1689,7 @@ pub fn cpuid(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
 /// Whether CPUID reports AVX, AVX2, FMA3, BMI1/BMI2 and the OS's YMM state (OSXSAVE, leaf 7).
 /// The interpreter runs all of them, but the JITs translate no 256-bit instruction, so a program
 /// that picks its code path by CPUID (memcpy, codecs) runs faster on its SSE path: off unless the
-/// embedder sets it (kura: IPPAI_CPUID_AVX). Code built for AVX that uses it unconditionally runs
+/// embedder sets it (kura: MASU_CPUID_AVX). Code built for AVX that uses it unconditionally runs
 /// either way.
 pub static CPUID_AVX: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 

@@ -7,7 +7,7 @@
 // along, let go when stopped; Enter連打 presses Enter; a state taken while it runs; the mode and
 // the speed kept across a reload. SHOTS=<dir> keeps screenshots.
 //
-//   node tests/autoadvance-browser.mjs [path to ippai] [autoadvance.exe]
+//   node tests/autoadvance-browser.mjs [path to masu] [autoadvance.exe]
 //   (web/dist built with sake in it: crates/sake/build.sh, then pnpm build; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -17,8 +17,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-auto-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-auto-"));
 assert.ok(existsSync("web/dist/sake/sake.wasm"), "web/dist has no sake build");
 const shots = process.env.SHOTS && resolve(process.env.SHOTS);
 if (shots) mkdirSync(shots, { recursive: true });

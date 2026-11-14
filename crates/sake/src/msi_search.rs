@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(raw_value(4, &42u32.to_le_bytes()).as_deref(), Some("#42"));
         assert_eq!(raw_value(4, &(-42i32).to_le_bytes()).as_deref(), Some("#-42"));
         assert_eq!(raw_value(3, &[0x12, 0x34, 0xab, 0xcd]).as_deref(), Some("#x1234ABCD"));
-        assert_eq!(raw_value(2, &w("my%NOVAR_IPPAI%\0")).as_deref(), Some("my%NOVAR_IPPAI%"));
+        assert_eq!(raw_value(2, &w("my%NOVAR_MASU%\0")).as_deref(), Some("my%NOVAR_MASU%"));
         assert_eq!(raw_value(7, &w("one\0two\0\0")).as_deref(), Some("\0one\0two\0\0"));
         assert_eq!(raw_value(11, &[0; 8]), None);
     }

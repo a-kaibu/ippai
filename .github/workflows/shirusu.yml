@@ -305,7 +305,7 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: ippai
+          name: masu
           path: dist
           run-id: ${{ steps.build.outputs.run_id }}
           github-token: ${{ github.token }}
@@ -352,7 +352,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
           mkdir -p "$RUNNER_TEMP/dist"
-          TARS=(dist/ippai-*.tar.zst)
+          TARS=(dist/masu-*.tar.zst)
           [ ${#TARS[@]} = 1 ] && [ -f "${TARS[0]}" ] || { echo "want one build in the artifact: ${TARS[*]}"; ls -la dist; exit 1; }
           tar -I zstd -xf "${TARS[0]}" -C "$RUNNER_TEMP/dist" --strip-components=1
           read -r V BUILT < "$RUNNER_TEMP/dist/VERSION"
@@ -361,7 +361,7 @@ jobs:
           grep -qa 'shirusu E ' "$RUNNER_TEMP/dist/sake-node/sake.wasm" || { echo "build $V has no SAKE_SHIRUSU"; exit 1; }
           echo "build $V ($BUILT)"
           python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
-          "$RUNNER_TEMP/dist/ippai" --store "$RUNNER_TEMP/rtp-store" rtp --out "$RUNNER_TEMP/rtp" --cache ~/.rtp-downloads
+          "$RUNNER_TEMP/dist/masu" --store "$RUNNER_TEMP/rtp-store" rtp --out "$RUNNER_TEMP/rtp" --cache ~/.rtp-downloads
           wait
       - if: steps.cache-1.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0

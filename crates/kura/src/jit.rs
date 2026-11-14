@@ -3,14 +3,14 @@
 //! (`vnhost_jit_step`, `vnhost_jit_eflags`, `vnhost_jit_status`). The modules themselves are
 //! compiled and instantiated by vnjit.js; each thread has its own funcref table.
 //!
-//! IPPAI_JIT=0 turns the JIT off (the interpreter runs everything). IPPAI_JIT_DUMP=dir writes every
-//! region module to dir/<first root>-<roots>.wasm. IPPAI_JIT_LAYOUT=1 prints the block order, loops
-//! and wasm bytes per mnemonic of new regions (of merged ones too with IPPAI_JIT_STATS).
+//! MASU_JIT=0 turns the JIT off (the interpreter runs everything). MASU_JIT_DUMP=dir writes every
+//! region module to dir/<first root>-<roots>.wasm. MASU_JIT_LAYOUT=1 prints the block order, loops
+//! and wasm bytes per mnemonic of new regions (of merged ones too with MASU_JIT_STATS).
 //! Functions (jit::FN) are translated on a compiler thread while the interpreter goes on;
-//! only loading the module stays on the guest thread (IPPAI_JIT_ASYNC=0: all of it there).
+//! only loading the module stays on the guest thread (MASU_JIT_ASYNC=0: all of it there).
 //!
-//! Regions are kept across runs: with IPPAI_JIT_URL set, the regions built since the last save are
-//! sent there now and then (see [`maybe_save`]; ippai serve merges them into what it has), and the
+//! Regions are kept across runs: with MASU_JIT_URL set, the regions built since the last save are
+//! sent there now and then (see [`maybe_save`]; masu serve merges them into what it has), and the
 //! page (or pre.js under node) hands the next run that module and index (`jit::saved`). A
 //! saved region goes in when its first root first misses, if the guest code is still the same:
 //! no interpreter warm-up and no translation, and in Chromium the browser's code cache of the
@@ -27,16 +27,16 @@ use koji::{Cpu, Exit};
 
 mod park;
 
-/// Misses at an address before its block is compiled (IPPAI_JIT_THRESHOLD overrides).
+/// Misses at an address before its block is compiled (MASU_JIT_THRESHOLD overrides).
 const THRESHOLD: u32 = 50;
 
 fn threshold() -> u32 {
     use std::sync::OnceLock;
     static T: OnceLock<u32> = OnceLock::new();
-    *T.get_or_init(|| std::env::var("IPPAI_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
+    *T.get_or_init(|| std::env::var("MASU_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
 }
-/// Debugging a miscompile by bisection: IPPAI_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
-/// IPPAI_JIT_ONLY=!lo-hi all but that.
+/// Debugging a miscompile by bisection: MASU_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
+/// MASU_JIT_ONLY=!lo-hi all but that.
 fn debug_allowed(a: u32) -> bool {
     if interpreted_page(a) {
         return false;
@@ -112,31 +112,31 @@ fn page_set(map: &[AtomicU32], a: u32) -> bool {
 /// W|X pages outside the exe, where runtimes (Mono, .NET, script JITs, protectors) put code
 /// and rewrite it from code elsewhere, unseen: translated with their code checked on entry
 /// (koji's jit::set_fresh), a block whose code changed going to the interpreter and translated
-/// again ([`stale_hit`]). IPPAI_JIT_WX=0: the interpreter runs them instead.
+/// again ([`stale_hit`]). MASU_JIT_WX=0: the interpreter runs them instead.
 fn wx_page(a: u32) -> bool {
     page_set(&WX_PAGES, a) && !page_set(&EXE_PAGES, a)
 }
 /// Pages the interpreter keeps: rewritten by their own translated code, or W|X ones with
-/// IPPAI_JIT_WX=0.
+/// MASU_JIT_WX=0.
 fn interpreted_page(a: u32) -> bool {
     page_set(&SMC_PAGES, a) || (wx_page(a) && !wx_checked())
 }
 /// Whether code on W|X pages outside the exe is translated (checked on entry): by both
 /// translators (koji::jit's Gen::fresh_entry, jit::long's: a 64-bit process's Mono code too),
-/// not with IPPAI_JIT_WX=0.
+/// not with MASU_JIT_WX=0.
 fn wx_checked() -> bool {
     !wx_interpreted()
 }
 fn wx_interpreted() -> bool {
     static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENV.get_or_init(|| std::env::var("IPPAI_JIT_WX").is_ok_and(|v| v == "0"))
+    *ENV.get_or_init(|| std::env::var("MASU_JIT_WX").is_ok_and(|v| v == "0"))
 }
 /// Whether W|X pages outside the exe also have their translations' stores watched like the
-/// exe's ([`translate_wx_pages`], IPPAI_JIT_WX=1: for programs that rewrite code there in
+/// exe's ([`translate_wx_pages`], MASU_JIT_WX=1: for programs that rewrite code there in
 /// place from code there, ASProtect's decryptors).
 fn wx_jit() -> bool {
     static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    WX_JIT.load(Ordering::Relaxed) || *ENV.get_or_init(|| std::env::var("IPPAI_JIT_WX").is_ok_and(|v| v != "0"))
+    WX_JIT.load(Ordering::Relaxed) || *ENV.get_or_init(|| std::env::var("MASU_JIT_WX").is_ok_and(|v| v != "0"))
 }
 static WX_JIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn translate_wx_pages() {
@@ -314,7 +314,7 @@ fn debug_range(a: u32) -> bool {
     static R: OnceLock<(u32, u32, bool)> = OnceLock::new();
     let (lo, hi, not) = *R.get_or_init(|| {
         // ("!lo-hi": everything but [lo, hi))
-        let v = std::env::var("IPPAI_JIT_ONLY").unwrap_or_default();
+        let v = std::env::var("MASU_JIT_ONLY").unwrap_or_default();
         let not = v.starts_with('!');
         let mut it = v.trim_start_matches('!').split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
         match (it.next().flatten(), it.next().flatten()) {
@@ -324,13 +324,13 @@ fn debug_range(a: u32) -> bool {
     });
     (a >= lo && a < hi) != not
 }
-/// IPPAI_JIT_FN_ONLY=lo-hi[_lo-hi...] (hex): function mode only for entries in those ranges,
+/// MASU_JIT_FN_ONLY=lo-hi[_lo-hi...] (hex): function mode only for entries in those ranges,
 /// regions elsewhere.
 fn fn_allowed(a: u32) -> bool {
     use std::sync::OnceLock;
     static R: OnceLock<Vec<(u32, u32)>> = OnceLock::new();
     let r = R.get_or_init(|| {
-        let v = std::env::var("IPPAI_JIT_FN_ONLY").unwrap_or_default();
+        let v = std::env::var("MASU_JIT_FN_ONLY").unwrap_or_default();
         v.split('_')
             .filter_map(|r| {
                 let mut it = r.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
@@ -420,7 +420,7 @@ struct State {
     translated: HashSet<u32>,
 }
 
-/// Loads between two looks for modules nothing refers to any more (reclaim); IPPAI_JIT_RECLAIM
+/// Loads between two looks for modules nothing refers to any more (reclaim); MASU_JIT_RECLAIM
 /// sets it (1: after every load, the tests' stress), 0 never.
 static RECLAIM_EVERY: AtomicU32 = AtomicU32::new(64);
 
@@ -498,10 +498,10 @@ fn hop_share(hops: u32, n: usize, len: usize) -> u32 {
 }
 
 /// Hops out of a long-mode region that make merge_hot64 merge it with where they go
-/// (IPPAI_JIT_MERGE_HOPS).
+/// (MASU_JIT_MERGE_HOPS).
 fn merge_hops64() -> u32 {
     static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *N.get_or_init(|| std::env::var("IPPAI_JIT_MERGE_HOPS").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 18))
+    *N.get_or_init(|| std::env::var("MASU_JIT_MERGE_HOPS").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 18))
 }
 
 /// A region module any thread built, kept for the others: every thread (and every process,
@@ -600,7 +600,7 @@ fn share_seq() -> u64 {
 /// Shared regions by their roots.
 static SHARED: Mutex<Option<HashMap<Vec<u32>, Vec<Arc<Shared>>>>> = Mutex::new(None);
 
-/// What the translations hold (IPPAI_JIT_COUNT prints it, jit_modules): modules loaded (each
+/// What the translations hold (MASU_JIT_COUNT prints it, jit_modules): modules loaded (each
 /// thread's own), their bytes, the highest table index they took (all threads), modules freed
 /// (reclaim) and their bytes.
 static MODULES: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
@@ -688,14 +688,14 @@ thread_local! {
 pub fn enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| cfg!(target_os = "emscripten") && std::env::var("IPPAI_JIT").map_or(true, |v| v != "0"))
+    *ON.get_or_init(|| cfg!(target_os = "emscripten") && std::env::var("MASU_JIT").map_or(true, |v| v != "0"))
 }
 
-/// 16-bit code (Win16) through the JIT too (IPPAI_JIT16=0: the interpreter only).
+/// 16-bit code (Win16) through the JIT too (MASU_JIT16=0: the interpreter only).
 pub fn enabled16() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("IPPAI_JIT16").map_or(true, |v| v != "0"))
+    *ON.get_or_init(|| std::env::var("MASU_JIT16").map_or(true, |v| v != "0"))
 }
 
 /// 16-bit code runs translated with `cpu.eip` the linear CS:IP (see koji's `jit::SEG16`):
@@ -710,7 +710,7 @@ pub fn from_linear16(cpu: &mut Cpu) {
 pub fn enabled64() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("IPPAI_JIT64").map_or(true, |v| v != "0"))
+    *ON.get_or_init(|| std::env::var("MASU_JIT64").map_or(true, |v| v != "0"))
 }
 
 pub enum Ran {
@@ -1038,7 +1038,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     })
 }
 
-/// Compiles and their time (µs) for IPPAI_JIT_COUNT: regions, functions.
+/// Compiles and their time (µs) for MASU_JIT_COUNT: regions, functions.
 static COMPILES: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
 
 /// Compiles since the start: regions, functions, rebuilt functions (the crash log).
@@ -1054,32 +1054,32 @@ fn count_compile(k: usize, t0: Instant) {
     COMPILES[2 * k + 1].fetch_add(t0.elapsed().as_micros() as u32, Ordering::Relaxed);
 }
 
-/// Switches read once: IPPAI_JIT_COUNT=<secs> (transfer counters),
-/// IPPAI_JIT_NOCHECK=1 (measuring only: no range checks).
+/// Switches read once: MASU_JIT_COUNT=<secs> (transfer counters),
+/// MASU_JIT_NOCHECK=1 (measuring only: no range checks).
 fn init_flags() {
     // (once: this runs on every entry into translated code, and std::env::var takes a lock
     // and walks the environment)
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         // (the MXCSR flag checks from the start, not from the program's first read of them)
-        if crate::env_on!("IPPAI_MX_EXACT") {
+        if crate::env_on!("MASU_MX_EXACT") {
             jit::MX_EXACT.store(true, Ordering::SeqCst);
         }
-        if std::env::var("IPPAI_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
+        if std::env::var("MASU_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
             jit::FN_ENTRIES.store(false, Ordering::Relaxed);
         }
-        if let Ok(v) = std::env::var("IPPAI_JIT_PROBE") {
+        if let Ok(v) = std::env::var("MASU_JIT_PROBE") {
             for (p, a) in jit::PROBES.iter().zip(v.split('_').filter_map(|a| u32::from_str_radix(a.trim_start_matches("0x"), 16).ok())) {
                 p.store(a, Ordering::Relaxed);
             }
         }
-        if let Some(n) = std::env::var("IPPAI_JIT_RECLAIM").ok().and_then(|v| v.parse().ok()) {
+        if let Some(n) = std::env::var("MASU_JIT_RECLAIM").ok().and_then(|v| v.parse().ok()) {
             RECLAIM_EVERY.store(n, Ordering::Relaxed);
         }
-        if std::env::var("IPPAI_JIT_HOIST").is_ok_and(|v| v == "0") {
+        if std::env::var("MASU_JIT_HOIST").is_ok_and(|v| v == "0") {
             jit::HOIST.store(false, Ordering::Relaxed);
         }
-        if let Some(secs) = std::env::var("IPPAI_JIT_COUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if let Some(secs) = std::env::var("MASU_JIT_COUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
             use std::sync::atomic::Ordering::Relaxed;
             if !jit::COUNT.swap(true, Relaxed) {
                 std::thread::spawn(move || loop {
@@ -1097,7 +1097,7 @@ fn init_flags() {
         }
         // measuring: every load/store the JIT emits counts itself, the top ones printed every
         // <secs> (Cpu fields by offset, the rest together; koji::jit::wasm::MEMCOUNT)
-        if let Some(secs) = std::env::var("IPPAI_JIT_MEMCOUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if let Some(secs) = std::env::var("MASU_JIT_MEMCOUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
             use jit::wasm::{MEM_COUNTS, MEM_CPU_SLOTS, MEM_SITES, MEM_SITE_SLOTS};
             use std::sync::atomic::Ordering::Relaxed;
             if !jit::wasm::MEMCOUNT.swap(true, Relaxed) {
@@ -1122,27 +1122,27 @@ fn init_flags() {
             }
         }
         // CALL/RET as wasm calls: 1 direct calls, 2 indirect ones too
-        // debugging the long-mode translator: IPPAI_JIT64_INS / _BLOCKS (limits), IPPAI_JIT64_OFF
+        // debugging the long-mode translator: MASU_JIT64_INS / _BLOCKS (limits), MASU_JIT64_OFF
         // (mnemonics, as iced names them, left to the interpreter)
         let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-        jit::long::DEBUG_INS.store(num("IPPAI_JIT64_INS"), std::sync::atomic::Ordering::Relaxed);
-        jit::long::DEBUG_BLOCKS.store(num("IPPAI_JIT64_BLOCKS"), std::sync::atomic::Ordering::Relaxed);
-        jit::long::DEBUG_CHECK.store(num("IPPAI_JIT64_CHECK") != 0, std::sync::atomic::Ordering::Relaxed);
-        // (IPPAI_JIT64_STRUCT=1: a region's blocks nested (jit::long::STRUCTURED), for A/B)
-        jit::long::STRUCTURED.store(num("IPPAI_JIT64_STRUCT") != 0, std::sync::atomic::Ordering::Relaxed);
-        jit::long::DEBUG_NO_SIDE.store(num("IPPAI_JIT64_NO_SIDE") != 0, std::sync::atomic::Ordering::Relaxed);
-        for name in std::env::var("IPPAI_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        jit::long::DEBUG_INS.store(num("MASU_JIT64_INS"), std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_BLOCKS.store(num("MASU_JIT64_BLOCKS"), std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_CHECK.store(num("MASU_JIT64_CHECK") != 0, std::sync::atomic::Ordering::Relaxed);
+        // (MASU_JIT64_STRUCT=1: a region's blocks nested (jit::long::STRUCTURED), for A/B)
+        jit::long::STRUCTURED.store(num("MASU_JIT64_STRUCT") != 0, std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_NO_SIDE.store(num("MASU_JIT64_NO_SIDE") != 0, std::sync::atomic::Ordering::Relaxed);
+        for name in std::env::var("MASU_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
             if !jit::long::debug_off_named(name) {
-                eprintln!("IPPAI_JIT64_OFF: no mnemonic {name}");
+                eprintln!("MASU_JIT64_OFF: no mnemonic {name}");
             }
         }
         jit::set_watch(exe_wx_page);
         jit::set_fresh(wx_page);
         jit::set_deny(interpreted_page);
-        // function mode by default (IPPAI_JIT_FN=0: regions)
+        // function mode by default (MASU_JIT_FN=0: regions)
         // (a constant stored: the wasm build stored false for this flag when the value was
         // the expression's, and FN mode was off by default)
-        if !std::env::var("IPPAI_JIT_FN").is_ok_and(|v| v == "0") {
+        if !std::env::var("MASU_JIT_FN").is_ok_and(|v| v == "0") {
             jit::FN.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
@@ -1183,7 +1183,7 @@ pub fn run(cpu: &mut Cpu) -> Ran {
     let depth = cpu.jit_depth;
     #[cfg(target_os = "emscripten")]
     let expect = {
-        // IPPAI_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
+        // MASU_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
         // now and then, checked against the interpreter
         thread_local! { static VN: Cell<u32> = const { Cell::new(0) }; }
         let mode = if cpu.mode64 != 0 { verify64() } else { 0 };
@@ -1231,7 +1231,7 @@ fn verify64() -> u32 {
     use std::sync::OnceLock;
     static ON: OnceLock<u32> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = std::env::var("IPPAI_JIT64_VERIFY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let on = std::env::var("MASU_JIT64_VERIFY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         if on == 1 {
             jit::long::DEBUG_INS.store(1, Ordering::Relaxed);
             jit::long::DEBUG_BLOCKS.store(1, Ordering::Relaxed);
@@ -1612,7 +1612,7 @@ fn load_saved_fn(st: &mut State, i: usize) -> bool {
     true
 }
 
-/// Sends the regions built since the last save to IPPAI_JIT_URL (as one module and its index)
+/// Sends the regions built since the last save to MASU_JIT_URL (as one module and its index)
 /// once the run is past its start, at most every SAVE_EVERY and only when there are enough to
 /// be worth it: each save changes the module, and Chromium then forgets its compiled code.
 /// What the page said of a save (`vnhost_jit_saved`; host/vnjit.js): taken (2xx), refused for
@@ -1777,10 +1777,10 @@ mod due_tests {
     }
 }
 
-/// IPPAI_JIT_DUMP, read once (it was read from the environment at every module load).
+/// MASU_JIT_DUMP, read once (it was read from the environment at every module load).
 fn jit_dump() -> Option<&'static std::ffi::OsString> {
     static DIR: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| std::env::var_os("IPPAI_JIT_DUMP")).as_ref()
+    DIR.get_or_init(|| std::env::var_os("MASU_JIT_DUMP")).as_ref()
 }
 
 fn maybe_save() {
@@ -1791,7 +1791,7 @@ fn maybe_save() {
     // (looked at once a second at most: called after every compile, each look walked all of
     // SHARED and copied the chunk list, on the game's thread, for the whole long tail of a run)
     static LOOKED: Mutex<Option<Instant>> = Mutex::new(None);
-    let Some(url) = URL.get_or_init(|| std::env::var("IPPAI_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
+    let Some(url) = URL.get_or_init(|| std::env::var("MASU_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
         return;
     };
     if profiling() || jit::mx_exact() {
@@ -1901,7 +1901,7 @@ fn save((url, id, new, chunks): Save) {
         return;
     };
     let idx = jit::saved::encode(&entries);
-    if stats() || crate::env_on!("IPPAI_JIT_SAVE_LOG") {
+    if stats() || crate::env_on!("MASU_JIT_SAVE_LOG") {
         eprintln!("vnjit: saving {} regions ({} bytes)", entries.len(), wasm.len());
     }
     let mut body = (wasm.len() as u32).to_le_bytes().to_vec();
@@ -1917,16 +1917,16 @@ fn save((url, id, new, chunks): Save) {
     let _ = (url, body);
 }
 
-/// Where the chunks list goes: IPPAI_CHUNKS_URL (the page's, per game: games that start the same
+/// Where the chunks list goes: MASU_CHUNKS_URL (the page's, per game: games that start the same
 /// program, all SiglusEngine.exe at Z:\ippai\game, read different chunks), else beside the
 /// regions (`<url>.chunks`).
 fn chunks_url(url: &std::ffi::CStr) -> std::ffi::CString {
-    let u = std::env::var("IPPAI_CHUNKS_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| format!("{}.chunks", url.to_str().unwrap_or("")));
+    let u = std::env::var("MASU_CHUNKS_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| format!("{}.chunks", url.to_str().unwrap_or("")));
     std::ffi::CString::new(u).unwrap_or_default()
 }
 
 /// Sends the chunks list `c` (save `id`; the page answers it as any save), and with it the run's
-/// read trace so far to IPPAI_TRACE_URL (the page's, one per run: vfs/trace.rs), answered to no
+/// read trace so far to MASU_TRACE_URL (the page's, one per run: vfs/trace.rs), answered to no
 /// save (NO_ACK: a lost one goes again with the next list, longer).
 fn save_chunks(url: &std::ffi::CStr, id: u32, c: &[u8]) {
     let u = chunks_url(url);
@@ -1935,7 +1935,7 @@ fn save_chunks(url: &std::ffi::CStr, id: u32, c: &[u8]) {
         vnvm_jit_save(u.as_ptr(), c.as_ptr(), c.len(), id);
     }
     let _ = (u, id, c);
-    if let Some(t) = std::env::var("IPPAI_TRACE_URL").ok().filter(|u| !u.is_empty()).and_then(|u| std::ffi::CString::new(u).ok()) {
+    if let Some(t) = std::env::var("MASU_TRACE_URL").ok().filter(|u| !u.is_empty()).and_then(|u| std::ffi::CString::new(u).ok()) {
         let text = crate::vfs::trace::text();
         #[cfg(target_os = "emscripten")]
         unsafe {
@@ -2102,10 +2102,10 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
         return merge_long(st, cpu, roots, from, to);
     }
     let mut m = Module { name: Some(format!("x86_{:08x}_{}", roots[0], roots.len())), ..Module::default() };
-    if let Some(n) = std::env::var("IPPAI_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
+    if let Some(n) = std::env::var("MASU_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
         jit::SLOTS_MAX.store(n.min(6), std::sync::atomic::Ordering::Relaxed);
     }
-    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if crate::env_on!("MASU_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let (misses, known) = (&st.misses, &st.known);
@@ -2211,7 +2211,7 @@ fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
         return; // too big already
     }
     st.merges += 1;
-    if stats() || crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if stats() || crate::env_on!("MASU_JIT_LAYOUT") {
         eprintln!("vnjit64 merge {from:#x} -> {to:#x}: {} blocks, roots {:x?}\n{}", region.starts.len(), roots, region.layout);
     }
     let bytes = m.finish();
@@ -2294,7 +2294,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         // the block and what it statically reaches, as one function
         let mut m = Module { name: Some(format!("x86_{eip:08x}")), ..Module::default() };
-        if crate::env_on!("IPPAI_JIT_LAYOUT") {
+        if crate::env_on!("MASU_JIT_LAYOUT") {
             jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
@@ -2310,7 +2310,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             st.known.insert(eip);
             return false;
         };
-        if crate::env_on!("IPPAI_JIT_LAYOUT") {
+        if crate::env_on!("MASU_JIT_LAYOUT") {
             eprintln!("vnjit fresh {eip:#x}\n{}", region.layout);
         }
         let bytes = m.finish();
@@ -2318,7 +2318,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         mark_code(&region.code);
         let ok = load(st, &bytes, vec![eip], &region.starts, &region.code);
         count_compile(0, t0);
-        if crate::env_on!("IPPAI_JIT_TIME") {
+        if crate::env_on!("MASU_JIT_TIME") {
             eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
         }
         if ok {
@@ -2338,7 +2338,7 @@ fn compile16(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let mut m = Module { name: Some(format!("x16_{eip:08x}")), ..Module::default() };
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
     let (misses, known) = (&st.misses, &st.known);
-    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if crate::env_on!("MASU_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let t0 = std::time::Instant::now();
@@ -2348,7 +2348,7 @@ fn compile16(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
         st.known.insert(eip);
         return false;
     };
-    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if crate::env_on!("MASU_JIT_LAYOUT") {
         eprintln!("vnjit16 region {eip:#x}\n{}", region.layout);
     }
     let bytes = m.finish();
@@ -2369,7 +2369,7 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
     let (misses, known, hash) = (&st.misses, &st.known, &st.hash);
     let entry = eip as u64 | (cpu.rip_hi as u64) << 32;
-    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if crate::env_on!("MASU_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let t0 = std::time::Instant::now();
@@ -2381,13 +2381,13 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
         st.known.insert(eip);
         return false;
     };
-    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if crate::env_on!("MASU_JIT_LAYOUT") {
         eprintln!("vnjit64 region {entry:#x}\n{}", region.layout);
     }
     let bytes = m.finish();
     let t1 = std::time::Instant::now();
     let ok = load(st, &bytes, vec![eip], &region.starts, &region.code);
-    if crate::env_on!("IPPAI_JIT_TIME") {
+    if crate::env_on!("MASU_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
     }
     if ok {
@@ -2440,7 +2440,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         let tc = Instant::now();
         let maps = st.job_maps.get(&st.misses, &st.known, &st.hints, st.maps_rev);
         let job = Job { eip, lo, hi, part, build, maps, state: st.id, done: st.done_tx.clone() };
-        if crate::env_on!("IPPAI_JIT_TIME") {
+        if crate::env_on!("MASU_JIT_TIME") {
             eprintln!("vnjit job {eip:#x}: misses {} known {} hints {}, copied in {:?}", st.misses.len(), st.known.len(), st.hints.len(), tc.elapsed());
         }
         crate::snap::drain_add();
@@ -2593,7 +2593,7 @@ fn take_batch<T, K: PartialEq>(first: T, waiting: &mut std::collections::VecDequ
     jobs
 }
 
-/// The compiler thread's queue (IPPAI_JIT_ASYNC=0: none, functions are translated where they
+/// The compiler thread's queue (MASU_JIT_ASYNC=0: none, functions are translated where they
 /// are needed).
 fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
     // (one per save-state epoch: a restored copy has none of the old thread)
@@ -2603,7 +2603,7 @@ fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
         *q = (crate::snap::epoch(), None);
     }
     q.1.get_or_insert_with(|| {
-        if std::env::var("IPPAI_JIT_ASYNC").is_ok_and(|v| v == "0") {
+        if std::env::var("MASU_JIT_ASYNC").is_ok_and(|v| v == "0") {
             return None;
         }
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
@@ -2669,7 +2669,7 @@ fn take_built(st: &mut State, mem: &mut Linear) {
                 #[cfg(not(target_os = "emscripten"))]
                 let b = { let _ = (&m, n); -1 };
                 note_load(st, b, n as u32, m.len());
-                if crate::env_on!("IPPAI_JIT_TIME") {
+                if crate::env_on!("MASU_JIT_TIME") {
                     eprintln!("vnjit time batch of {}: load {:?}", n / 2, t0.elapsed());
                 }
                 (b >= 0).then_some(b as u32)
@@ -2691,16 +2691,16 @@ fn take_built(st: &mut State, mem: &mut Linear) {
 
 fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build: u32, misses: &HashMap<u32, u32>, known: &HashSet<u32>, hints: &HashMap<u32, u32>) -> Built {
     let t0 = Instant::now();
-    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if crate::env_on!("MASU_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     profiling();
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
     // a function built again (it left its blocks often) may take more: twice per build
-    // (big interpreters' loops, a C library's long switch), from IPPAI_JIT_FN_INS
-    let base = *FN_INS.get_or_init(|| std::env::var("IPPAI_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
+    // (big interpreters' loops, a C library's long switch), from MASU_JIT_FN_INS
+    let base = *FN_INS.get_or_init(|| std::env::var("MASU_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
     let region = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, base << (build.min(4) - 1), (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) }))?;
-    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+    if crate::env_on!("MASU_JIT_LAYOUT") {
         eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
     }
     if stats() {
@@ -2710,7 +2710,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
     if let Some(dir) = jit_dump() {
         let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
     }
-    if crate::env_on!("IPPAI_JIT_TIME") {
+    if crate::env_on!("MASU_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?} build {build} part {part}", region.instructions, t0.elapsed());
     }
     let text = region_text(mem, &region)?;
@@ -2732,7 +2732,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>
         }
         None => install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code),
     };
-    if at.is_none() && crate::env_on!("IPPAI_JIT_TIME") {
+    if at.is_none() && crate::env_on!("MASU_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, load {:?}", region.instructions, t1.elapsed());
     }
     count_compile(1, t0);
@@ -2904,26 +2904,26 @@ pub unsafe extern "C" fn vnhost_jit_x87(cpu: u32, top: u32, info: u32, a: f64, b
 #[no_mangle]
 pub extern "C" fn vnhost_jit_status(op: u32, a: u32, b: u32, r: u32, c: u32) -> u32 {
     if op == 0xdead {
-        // (jit::long's IPPAI_JIT64_CHECK: a lazy condition that disagrees with the flags)
+        // (jit::long's MASU_JIT64_CHECK: a lazy condition that disagrees with the flags)
         eprintln!("vnjit64 check: condition {b} at {a:#x}: lazy {r}, eflags {c:#x}");
         return 0;
     }
     koji::lazy::Lazy { op, a: a as u64, b: b as u64, r: r as u64, c }.status()
 }
 
-/// IPPAI_JIT_PROFILE: every region's blocks (address, entry counter, instruction keys).
+/// MASU_JIT_PROFILE: every region's blocks (address, entry counter, instruction keys).
 static PROF: Mutex<Vec<(u32, u32, Vec<String>)>> = Mutex::new(Vec::new());
 
 fn profiling() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = crate::env_on!("IPPAI_JIT_PROFILE");
+        let on = crate::env_on!("MASU_JIT_PROFILE");
         jit::PROFILE.store(on, std::sync::atomic::Ordering::Relaxed);
-        // IPPAI_JIT_PROFILE=<seconds> (> 1): print the counts every that many seconds after the
+        // MASU_JIT_PROFILE=<seconds> (> 1): print the counts every that many seconds after the
         // first region (under node, where no page asks for them; counts add up, so the difference
         // of two prints is that window)
-        if let Some(secs) = std::env::var("IPPAI_JIT_PROFILE").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 1) {
+        if let Some(secs) = std::env::var("MASU_JIT_PROFILE").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 1) {
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(secs));
                 vnhost_jit_profile();
@@ -2984,8 +2984,8 @@ pub extern "C" fn vnhost_jit_profile() {
     for (k, n) in keys.iter().take(200) {
         o += &format!("PROF key {k} {n}\n");
     }
-    // IPPAI_PROF_BLOCKS=<n>: more of the hottest blocks (default 40)
-    let nblocks = std::env::var("IPPAI_PROF_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    // MASU_PROF_BLOCKS=<n>: more of the hottest blocks (default 40)
+    let nblocks = std::env::var("MASU_PROF_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
     for (n, a, len) in blocks.iter().take(nblocks) {
         o += &format!("PROF block {a:08x} {len} {n}\n");
     }
@@ -3026,10 +3026,10 @@ fn category(k: &str) -> &'static str {
 fn stats() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("IPPAI_JIT_STATS").is_some())
+    *ON.get_or_init(|| std::env::var_os("MASU_JIT_STATS").is_some())
 }
 
-/// IPPAI_JIT_STATS: which instructions blocks hand to the interpreter, printed every 2^22.
+/// MASU_JIT_STATS: which instructions blocks hand to the interpreter, printed every 2^22.
 fn count_step(cpu: &Cpu) {
     thread_local! {
         static COUNTS: RefCell<(u64, HashMap<String, u64>)> = RefCell::new((0, HashMap::new()));
@@ -3060,7 +3060,7 @@ fn count_step(cpu: &Cpu) {
     });
 }
 
-/// IPPAI_JIT_STATS: where the JIT hands back to the run loop, printed every 2^20.
+/// MASU_JIT_STATS: where the JIT hands back to the run loop, printed every 2^20.
 pub(crate) fn count_miss(eip: u32) {
     if !stats() {
         return;
@@ -3081,7 +3081,7 @@ pub(crate) fn count_miss(eip: u32) {
     });
 }
 
-/// IPPAI_JIT_STATS: entries into the run loop per thread (a guest spinning on system calls
+/// MASU_JIT_STATS: entries into the run loop per thread (a guest spinning on system calls
 /// shows up here), printed every 2^16 with the addresses seen most.
 pub(crate) fn count_entry(eip: u32) {
     if !stats() {
@@ -3283,16 +3283,16 @@ mod save_tests {
     }
 
     /// Games that start the same program (every SiglusEngine.exe at Z:\ippai\game) keep lists
-    /// of their own: the page's IPPAI_CHUNKS_URL, else beside the regions.
+    /// of their own: the page's MASU_CHUNKS_URL, else beside the regions.
     #[test]
     fn chunks_url_is_the_pages() {
         let url = std::ffi::CString::new("http://h/jit-save/sake-x-1").unwrap();
         // (one test changes the variable: no other reads it)
-        std::env::remove_var("IPPAI_CHUNKS_URL");
+        std::env::remove_var("MASU_CHUNKS_URL");
         assert_eq!(chunks_url(&url).to_str().unwrap(), "http://h/jit-save/sake-x-1.chunks");
-        std::env::set_var("IPPAI_CHUNKS_URL", "http://h/jit-save/sake-x-1.kinkoi.chunks");
+        std::env::set_var("MASU_CHUNKS_URL", "http://h/jit-save/sake-x-1.kinkoi.chunks");
         assert_eq!(chunks_url(&url).to_str().unwrap(), "http://h/jit-save/sake-x-1.kinkoi.chunks");
-        std::env::remove_var("IPPAI_CHUNKS_URL");
+        std::env::remove_var("MASU_CHUNKS_URL");
     }
 
     /// A trace's answer (NO_ACK) takes no save's slot.

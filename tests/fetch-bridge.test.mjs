@@ -5,7 +5,7 @@ import { Worker } from 'node:worker_threads';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../host/fetch-bridge.js', import.meta.url), 'utf8');
-// chunk names of i % 251 inputs from the blake3 crate (crates/ippai/src/pack.rs makes the file)
+// chunk names of i % 251 inputs from the blake3 crate (crates/masu/src/pack.rs makes the file)
 const vectors = (await readFile(new URL('../testdata/blake3.tsv', import.meta.url), 'utf8')).trim().split('\n').slice(1).map((l) => l.split('\t'));
 const names = Object.fromEntries(vectors.filter((v) => v[0] === 'p').map(([, n, h]) => [h, +n]));
 /** The inputs testdata/blake3.tsv names: `p` i % 251, `r` an LCG seeded with the length. */
@@ -23,13 +23,13 @@ globalThis.Worker = class {
   constructor() {
     this.w = new NodeWorker(workerData.source + '\\n' + \`
       const {parentPort} = require('node:worker_threads');
-      IPPAI_STALL_MS = 200;
-      IPPAI_GIVE_UP_MS = 1500;
+      MASU_STALL_MS = 200;
+      MASU_GIVE_UP_MS = 1500;
       const tries = new Map();
       const body = (length) => Uint8Array.from({length}, (_, i) => i % 251).buffer;
       const NAMES = ${JSON.stringify(names)};
       // Cache Storage as the browser's: bodies kept, Blob.slice reading only its bytes (counted)
-      IPPAI_RECENT_BYTES = 1;
+      MASU_RECENT_BYTES = 1;
       const kept = new Map();
       let fetches = 0, slices = 0;
       globalThis.caches = {open: async () => ({
@@ -55,7 +55,7 @@ globalThis.Worker = class {
         if (chunk) {
           const length = NAMES[chunk[1]] ?? 1000;
           const data = new Uint8Array(body(length));
-          // ranges of the decoded chunk (ippai serve's store_api.rs), but from "old" (a server
+          // ranges of the decoded chunk (masu serve's store_api.rs), but from "old" (a server
           // without them: the whole chunk); "bad" answers the wrong place the first time
           const range = /^bytes=([0-9]+)-([0-9]+)$/.exec(init?.headers?.range ?? '');
           // "warm": the page's read-ahead fetched the whole chunk (200, zstd-coded) into the
@@ -83,7 +83,7 @@ globalThis.Worker = class {
         })}};
         return {ok: url !== '404', status: 404, arrayBuffer: async () => body(url === 'empty' ? 0 : url === 'big' ? 700001 : url === 'exact' ? 262144 * 2 : 150000)};
       };
-      parentPort.on('message', data => ippaiFetchWorker({data}));
+      parentPort.on('message', data => masuFetchWorker({data}));
     \`, {eval:true});
   }
   postMessage(m) { this.w.postMessage(m); }
@@ -92,9 +92,9 @@ globalThis.Worker = class {
 globalThis.Blob = class {};
 globalThis.URL = {createObjectURL: () => '', revokeObjectURL: () => {}};
 eval(workerData.source);
-try { const all = workerData.url.split('|').map((u) => Array.from(ippaiFetchSync(...ippaiRange(u)))); parentPort.postMessage({data: all.length === 1 ? all[0] : all}); }
+try { const all = workerData.url.split('|').map((u) => Array.from(masuFetchSync(...masuRange(u)))); parentPort.postMessage({data: all.length === 1 ? all[0] : all}); }
 catch(e) { parentPort.postMessage({error: e.message}); }
-finally { ippaiFetchDispose(); }
+finally { masuFetchDispose(); }
 `;
 
 function request(url) {
@@ -138,8 +138,8 @@ test('a 404 fails at once, without retries', async () => {
 });
 
 test('BLAKE3 chunk names as the blake3 crate makes them', () => {
-  const ippaiBlake3 = new Function(`${source}; return ippaiBlake3;`)();
-  for (const [kind, n, h] of vectors) assert.equal(ippaiBlake3(input(kind, +n)), h, `${kind} ${n}`);
+  const masuBlake3 = new Function(`${source}; return masuBlake3;`)();
+  for (const [kind, n, h] of vectors) assert.equal(masuBlake3(input(kind, +n)), h, `${kind} ${n}`);
 });
 test('a chunk is checked against its name: fetched again when damaged, a failure when it never matches', async () => {
   const name = (n) => vectors.find((v) => v[0] === 'p' && +v[1] === n)[2];
@@ -214,14 +214,14 @@ test('ranges of a chunk the HTTP cache holds whole (read ahead by the page) keep
   assert.ok(Date.now() - t < 1000, 'no retries');
 });
 test('ranges parse only at the end of a name', () => {
-  const ippaiRange = new Function(`${source}; return ippaiRange;`)();
+  const masuRange = new Function(`${source}; return masuRange;`)();
   // (the last: the request's class, 0 the game's, 1 a fetcher thread's "!a")
-  assert.deepEqual(ippaiRange('chunks/ab/x#0+5'), ['chunks/ab/x', 0, 5, undefined, 0]);
-  assert.deepEqual(ippaiRange('chunks/ab/x#262144+5/262144'), ['chunks/ab/x', 262144, 5, 262144, 0]);
-  assert.deepEqual(ippaiRange('chunks/ab/x#262144+5/262144!a'), ['chunks/ab/x', 262144, 5, 262144, 1]);
-  assert.deepEqual(ippaiRange('chunks/ab/x!a'), ['chunks/ab/x!a']);
-  assert.deepEqual(ippaiRange('trees/a#b.tsv'), ['trees/a#b.tsv']);
-  assert.deepEqual(ippaiRange('chunks/ab/x#12+'), ['chunks/ab/x#12+']);
+  assert.deepEqual(masuRange('chunks/ab/x#0+5'), ['chunks/ab/x', 0, 5, undefined, 0]);
+  assert.deepEqual(masuRange('chunks/ab/x#262144+5/262144'), ['chunks/ab/x', 262144, 5, 262144, 0]);
+  assert.deepEqual(masuRange('chunks/ab/x#262144+5/262144!a'), ['chunks/ab/x', 262144, 5, 262144, 1]);
+  assert.deepEqual(masuRange('chunks/ab/x!a'), ['chunks/ab/x!a']);
+  assert.deepEqual(masuRange('trees/a#b.tsv'), ['trees/a#b.tsv']);
+  assert.deepEqual(masuRange('chunks/ab/x#12+'), ['chunks/ab/x#12+']);
 });
 
 // ---- review b11 ----
@@ -231,7 +231,7 @@ test('ranges parse only at the end of a name', () => {
 const scope = (extra, ret) => new Function(`${source}; ${extra}; return ${ret};`)();
 
 test('a zstd frame header gives its decoded size, every field layout (RFC 8878)', () => {
-  const size = scope('', 'ippaiZstdSize');
+  const size = scope('', 'masuZstdSize');
   // (single segment, 1-byte FCS; 2-byte FCS (+256); 4- and 8-byte; with a window byte and dict ids)
   const head = (fhd, mid, fcs) => Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd, fhd, ...mid, ...fcs, 0, 0, 0]);
   assert.equal(size(head(0x20, [], [200])), 200);
@@ -262,7 +262,7 @@ test('the zstd CLI\'s frames say the sizes they hold (differential, when zstd is
   const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const size = scope('', 'ippaiZstdSize');
+  const size = scope('', 'masuZstdSize');
   // (from a file: from stdin the CLI does not know the size and leaves it out of the frame)
   const dir = mkdtempSync(join(tmpdir(), 'zstd-'));
   try {
@@ -275,8 +275,8 @@ test('the zstd CLI\'s frames say the sizes they hold (differential, when zstd is
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a chunk whose put never settles leaves after IPPAI_PUT_MS, and the fetches ahead go on', async () => {
-  const s = scope('IPPAI_PUT_MS = 30', '{ keep: ippaiKeep, held: ippaiHeld, bytes: () => ippaiSavingBytes, saving: () => ippaiSaving.size }');
+test('a chunk whose put never settles leaves after MASU_PUT_MS, and the fetches ahead go on', async () => {
+  const s = scope('MASU_PUT_MS = 30', '{ keep: masuKeep, held: masuHeld, bytes: () => masuSavingBytes, saving: () => masuSaving.size }');
   const stuck = { put: () => new Promise(() => {}) };
   globalThis.Response ??= class { constructor(b, o) { this.b = b; this.o = o; } };
   for (let i = 0; i < 8; i++) s.keep(stuck, `u${i}`, new Uint8Array(1000));
@@ -294,10 +294,10 @@ test('a chunk whose put never settles leaves after IPPAI_PUT_MS, and the fetches
 test('waiters of one chunk the bucket did not give share one fallback download', async () => {
   const s = scope(`
     var robust = 0;
-    ippaiCache = async () => undefined;
-    ippaiDirect = async () => null;
-    ippaiFetchRobust = async (url) => { robust++; await new Promise((r) => setTimeout(r, 20)); return { data: new Uint8Array([1, 2, 3]), wire: 3 }; };
-  `, '{ whole: ippaiWhole, robust: () => robust }');
+    masuCache = async () => undefined;
+    masuDirect = async () => null;
+    masuFetchRobust = async (url) => { robust++; await new Promise((r) => setTimeout(r, 20)); return { data: new Uint8Array([1, 2, 3]), wire: 3 }; };
+  `, '{ whole: masuWhole, robust: () => robust }');
   const got = await Promise.all([0, 0, 2, 1, 0].map((cls) => s.whole('chunks/ab/x', { cls })));
   assert.equal(s.robust(), 1);
   for (const g of got) assert.deepEqual(Array.from(g.data), [1, 2, 3]);
@@ -306,8 +306,8 @@ test('waiters of one chunk the bucket did not give share one fallback download',
 });
 
 test('the network worker\'s script has every function and variable the bridge uses', () => {
-  const src = scope('', 'ippaiFetchWorkerSource("")');
-  for (const name of ['ippaiRobustOnce', 'ippaiZstdSize', 'IPPAI_PUT_MS', 'ippaiRobustInflight', 'ippaiKeys']) assert.ok(src.includes(name), name);
+  const src = scope('', 'masuFetchWorkerSource("")');
+  for (const name of ['masuRobustOnce', 'masuZstdSize', 'MASU_PUT_MS', 'masuRobustInflight', 'masuKeys']) assert.ok(src.includes(name), name);
   // (it runs: every name it mentions is defined in it)
-  assert.doesNotThrow(() => new Function(`${src}; ippaiZstdSize(new Uint8Array(8)); ippaiRobustOnce;`)());
+  assert.doesNotThrow(() => new Function(`${src}; masuZstdSize(new Uint8Array(8)); masuRobustOnce;`)());
 });

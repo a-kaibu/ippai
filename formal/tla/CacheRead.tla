@@ -1,5 +1,5 @@
 ---------------------------- MODULE CacheRead ----------------------------
-(* A read of a chunk's bytes in the network worker (host/fetch-bridge.js ippaiFetchPart), and
+(* A read of a chunk's bytes in the network worker (host/fetch-bridge.js masuFetchPart), and
    the game's read that waits behind it (kura's fetcher thread fetches a chunk's blocks ahead,
    "!a"; the game's read of those blocks waits for that fetch: crates/kura/src/vfs.rs).
 
@@ -7,8 +7,8 @@
    blocks one after another (kept alone, NBlocks of them; a short block is the chunk's last).
    Cache Storage may answer a step, fail it, or never answer it at all (Chromium left a cached
    body's read pending for good under load, 2026-11-13). A step it fails, or one past
-   IPPAI_CACHE_MS (`Timeout`: ippaiCacheStep), is a miss: the bytes come from the network,
-   which answers in the end (its own retries, ippaiFetchRobust).
+   MASU_CACHE_MS (`Timeout`: masuCacheStep), is a miss: the bytes come from the network,
+   which answers in the end (its own retries, masuFetchRobust).
 
    Correct: a read that ends has every block (the bytes asked for). Ends: the game's read ends.
    Timeout = FALSE is the reader as it was, each step awaited for good: one step that is never
@@ -51,7 +51,7 @@ Fail == Waiting /\ step = "wait" /\ Miss(ShortBug)
 \* Cache Storage will never answer the step
 Stall == Waiting /\ step = "wait" /\ step' = "hung" /\ UNCHANGED <<pc, got, game>>
 
-\* the step took IPPAI_CACHE_MS
+\* the step took MASU_CACHE_MS
 Tick == Timeout /\ Waiting /\ Miss(FALSE)
 
 \* the network's answer: the whole range

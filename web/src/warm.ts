@@ -1,4 +1,4 @@
-// The game's files fetched onto the device while it plays (host/fetch-bridge.js ippaiWarm). A
+// The game's files fetched onto the device while it plays (host/fetch-bridge.js masuWarm). A
 // store chunk the game reads first waits 1-5 s for the bucket (worker2's games from a Mac:
 // 俺の姿が､透明に!'s CG mode and mode changes waited that long for each file read first); the
 // chunks fetched ahead (what earlier runs of the game read first, in that order, then the trees'
@@ -71,7 +71,7 @@ export interface WarmReport {
   bytes: number;
   failed: number;
   end?: boolean;
-  /** Where the game's reads found their chunks (host/fetch-bridge.js ippaiReads): [count, ms]. */
+  /** Where the game's reads found their chunks (host/fetch-bridge.js masuReads): [count, ms]. */
   reads?: Record<"device" | "saving" | "coming" | "none", [number, number]> & {
     followed: number;
     hinted?: number;
@@ -83,7 +83,7 @@ export const READS_MS = 60000;
 
 const unhex = (h: string) => Uint8Array.from(h.match(/../g)!, (x) => parseInt(x, 16));
 
-/** What followed each chunk (host/fetch-bridge.js ippaiNextAdd's pairs): ippai serve's `.next`
+/** What followed each chunk (host/fetch-bridge.js masuNextAdd's pairs): masu serve's `.next`
  * (`edges`: every branch earlier runs took), then the list's own order (`first`: the way the
  * newest run went, for a list from before there were edges). */
 export function nextPairs(edges: Uint8Array, first: string[]): Uint8Array {
@@ -115,7 +115,7 @@ export type Warm = (
 ) => unknown;
 
 /**
- * Starts fetching ahead (`warm`: the module's ippaiWarm) the chunks of `sizes` under `store`,
+ * Starts fetching ahead (`warm`: the module's masuWarm) the chunks of `sizes` under `store`,
  * those of `first` first; `busy()` says while the game waits for a read of its own (then only
  * `busyWidth` go on). Returns a stop.
  */

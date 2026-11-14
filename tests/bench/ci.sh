@@ -1,10 +1,10 @@
 #!/bin/bash
 # One benchmark group as .github/workflows/bench.yml runs it (and runnable anywhere with the same
-# tools): builds the programs, serves each build of ippai from its own store (fonts as C:\, the
+# tools): builds the programs, serves each build of masu from its own store (fonts as C:\, the
 # programs as the tree "bench"), and runs tests/bench/run.mjs on them, alternating.
 #
 #   tests/bench/ci.sh OUT.json FONTS GROUP...
-#   env: NEW=unpacked build (ippai, web/: tools/ci/build.sh), OLD=the build to compare with
+#   env: NEW=unpacked build (masu, web/: tools/ci/build.sh), OLD=the build to compare with
 #        (optional), WORK (default $RUNNER_TEMP or /tmp/bench), ROUNDS, PLAYWRIGHT, EXE (the
 #        programs tests/bench/build.sh built; default: build them here)
 set -euo pipefail
@@ -25,17 +25,17 @@ for name in new old; do
   [ -n "$dist" ] || continue
   dist=$(realpath "$dist")
   store=$WORK/store-$name
-  "$dist/ippai" --store "$store" pack "$WORK/prefix" prefix32 >/dev/null
-  "$dist/ippai" --store "$store" pack "$WORK/exe" bench >/dev/null
+  "$dist/masu" --store "$store" pack "$WORK/prefix" prefix32 >/dev/null
+  "$dist/masu" --store "$store" pack "$WORK/exe" bench >/dev/null
   mkdir -p "$WORK/jit-$name"
   # (an older build trusts loopback without the flag, and does not know it)
-  trust=$("$dist/ippai" serve --help | grep -q -- --trust-loopback && echo --trust-loopback || true)
-  "$dist/ippai" serve --foreground --web "$dist/web" --store "$store" --jit "$WORK/jit-$name" \
+  trust=$("$dist/masu" serve --help | grep -q -- --trust-loopback && echo --trust-loopback || true)
+  "$dist/masu" serve --foreground --web "$dist/web" --store "$store" --jit "$WORK/jit-$name" \
     --listen "127.0.0.1:$port" --no-prerun $trust > "$WORK/server-$name.log" 2>&1 &
   PIDS+=("$!")
   for _ in $(seq 60); do curl -fs "http://127.0.0.1:$port/play.html" >/dev/null && break; sleep 1; done
   curl -fs "http://127.0.0.1:$port/play.html" >/dev/null || { cat "$WORK/server-$name.log"; exit 1; }
   BUILDS="$BUILDS $name=http://127.0.0.1:$port"
-  port=$((port + 10)) # (ippai serve also takes the next port, for web games)
+  port=$((port + 10)) # (masu serve also takes the next port, for web games)
 done
 BUILDS=$BUILDS node "$ROOT/tests/bench/run.mjs" "$OUT" "$@"

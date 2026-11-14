@@ -67,9 +67,9 @@ Wine (it has no `wine_server_call`), so the tests expect Windows' results everyw
 - The dlls in `tests/winetest/browser.txt` (ddraw, d3d8/9/10/11, dxgi, d2d1, opengl32) need a GPU,
   which the node build lacks: `run.py --browser` runs them in headless Chromium (WebGPU)
   through play.html (`tests/winetest/run-browser.mjs`: the programs packed into a scratch
-  store, served by `ippai serve`, one browser context per test, the program's console lines
+  store, served by `masu serve`, one browser context per test, the program's console lines
   parsed as for node). Results in `expected-i386-browser.tsv`; CI job `winetest-gpu`. Needs
-  the web build with sake in it (`web/dist`), `target/release/ippai` and Playwright.
+  the web build with sake in it (`web/dist`), `target/release/masu` and Playwright.
 
 CI also runs `gdiplus:font` with the IPA stand-ins made by `tools/ci/sake-fonts.py`, once
 per architecture. `expected-gdiplus-fonts.tsv` records this fixture's results: 588 checks,
@@ -78,8 +78,8 @@ x64 instead crashes before its summary; that crash must fail the fonts fixture. 
 remaining failures and the separate metafile crash are tracked in #99.
 
 ```sh
-python3 tools/ci/sake-fonts.py /tmp/ippai-fonts
-python3 tests/winetest/run.py --arch x86_64 --fonts /tmp/ippai-fonts \
+python3 tools/ci/sake-fonts.py /tmp/masu-fonts
+python3 tests/winetest/run.py --arch x86_64 --fonts /tmp/masu-fonts \
   --expected tests/winetest/expected-gdiplus-fonts.tsv gdiplus:font
 ```
 
@@ -198,7 +198,7 @@ functions checking for the default modes, 449 of the 600 STMXCSR in 27 corpus ex
 what made 8 of them switch at startup) and kura drops every translation (also the
 shared and saved ones, which are kept per mode). Before that read SSE float loops run without
 the checks (2-3x faster), and what they raised is missing from MXCSR: a program that reads the
-flags once without clearing them first may see fewer. IPPAI_MX_EXACT=1 keeps them from the
+flags once without clearing them first may see fewer. MASU_MX_EXACT=1 keeps them from the
 start. Tested: jit32test/jit64test run every program both ways (random clears of the flags,
 STMXCSR-AND-LDMXCSR, inside loops; fixed programs that read them after and inside a hot loop,
 also through FXSAVE), comparing the flags in full once the program read them; the fuzz target

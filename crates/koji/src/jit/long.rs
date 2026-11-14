@@ -2383,7 +2383,7 @@ fn decode<M: Memory>(mem: &mut M, ip: u64, trap: (u32, u32)) -> Vec<Instruction>
 /// jump between their blocks on a block number at the top of one loop. Off by default: on
 /// flatbench x64 (2026-11-14) the jump tables, fib, strings and SQLite got 10-30% faster but
 /// sort and the objects case 20-70% slower, as merges of hot regions stopped happening
-/// (IPPAI_JIT64_STRUCT=1 in kura; tools/jit64test runs two tests in three so).
+/// (MASU_JIT64_STRUCT=1 in kura; tools/jit64test runs two tests in three so).
 pub static STRUCTURED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Debugging and A/B: no entries inside loops (structure64's side dispatches).
 pub static DEBUG_NO_SIDE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);

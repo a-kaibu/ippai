@@ -4,7 +4,7 @@
 //! context, recorded as a trace for TLC to check against formal/tla/GlPrograms.tla
 //! (formal/trace.sh).
 //!
-//! `IPPAI_TRACE_DIR=dir` writes `dir/glp-<seed>/`; `IPPAI_TRACE_SEEDS=n` (default 20).
+//! `MASU_TRACE_DIR=dir` writes `dir/glp-<seed>/`; `MASU_TRACE_SEEDS=n` (default 20).
 
 use super::*;
 use crate::d3d9::trace_tests::{alloc, seeds, write_module, Rng, SERIAL};

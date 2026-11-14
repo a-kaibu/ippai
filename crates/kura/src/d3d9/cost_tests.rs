@@ -1,4 +1,4 @@
-//! What a Direct3D 9 draw costs the guest thread (`IPPAI_D3D_COST=1 cargo test --release -p kura
+//! What a Direct3D 9 draw costs the guest thread (`MASU_D3D_COST=1 cargo test --release -p kura
 //! d3d9_draw_cost -- --ignored --nocapture`): frames of the shapes games draw, timed per draw on
 //! the guest side (the page is the model of WebGPU: its time is printed apart and is not the
 //! browser's). Not a pass/fail test: it prints, for comparing builds.
@@ -66,7 +66,7 @@ fn case(name: &str, frames: u32, draws: u32, mut frame: impl FnMut(u32)) {
 #[ignore]
 fn d3d9_draw_cost() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let page = std::env::var_os("IPPAI_D3D_COST_PAGE").is_some();
+    let page = std::env::var_os("MASU_D3D_COST_PAGE").is_some();
     if page {
         attach_page();
     }

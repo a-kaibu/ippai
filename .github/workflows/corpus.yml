@@ -1,4 +1,4 @@
-# Trial-game corpus on sake: tests/corpus/titles.tsv (vnbox's trials, downloaded on the runner
+# Trial-game corpus on sake: tests/corpus/titles.tsv (masu's trials, downloaded on the runner
 # from the VN Mirror Archive when it has them, tests/corpus/mirror.py, else from their original
 # sites; no game file is ever stored on GitHub) run in headless Chromium
 # against the build CI made, sharded over parallel jobs. Each title must reach its `expect`
@@ -8,7 +8,7 @@
 #   - after CI succeeds on main: the smoke rows (smoke=1)
 #   - nightly and by hand (workflow_dispatch): every title, 10 jobs at most at once
 # sake's C:\ is only fonts (tools/ci/sake-fonts.py, IPA fonts renamed) and the official RPG Maker
-# RTPs (`ippai rtp`: downloaded from their publisher, cached, never uploaded), no Wine DLLs.
+# RTPs (`masu rtp`: downloaded from their publisher, cached, never uploaded), no Wine DLLs.
 name: Corpus
 
 on:
@@ -35,7 +35,7 @@ on:
         description: "the CI run whose build is tested (a bisect; default the newest successful one of main)"
         default: ""
       env:
-        description: "more of sake's environment, NAME=value separated by spaces (e.g. IPPAI_JIT=0: the interpreter alone)"
+        description: "more of sake's environment, NAME=value separated by spaces (e.g. MASU_JIT=0: the interpreter alone)"
         default: ""
 
 permissions:
@@ -104,7 +104,7 @@ jobs:
       - run: tools/ci/cache-keys.sh
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: ippai
+          name: masu
           path: dist
           run-id: ${{ needs.plan.outputs.run_id }}
           github-token: ${{ github.token }}
@@ -140,8 +140,8 @@ jobs:
         with:
           path: ~/.pip-wheels
           key: pip-${{ runner.os }}-fonttools==4.59.0
-      # (the official RPG Maker RTPs' zips, as downloaded from their publisher by `ippai rtp`:
-      # kept in the cache only, never uploaded; their hashes are fixed in crates/ippai/src/rtp.rs)
+      # (the official RPG Maker RTPs' zips, as downloaded from their publisher by `masu rtp`:
+      # kept in the cache only, never uploaded; their hashes are fixed in crates/masu/src/rtp.rs)
       - id: cache-rtp
         uses: actions/cache/restore@v6.1.0
         with:
@@ -158,17 +158,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
           mkdir -p "$RUNNER_TEMP/dist"
-          # (tools/ci/build.sh names it by git describe, ippai-v0.1.1-35-g900cc23 or a bare
+          # (tools/ci/build.sh names it by git describe, masu-v0.1.1-35-g900cc23 or a bare
           # short sha before any tag, and empties target/dist first: the artifact holds one build;
           # its VERSION file carries the full commit, checked against the run's)
-          TARS=(dist/ippai-*.tar.zst)
+          TARS=(dist/masu-*.tar.zst)
           [ ${#TARS[@]} = 1 ] && [ -f "${TARS[0]}" ] || { echo "want one build in the artifact: ${TARS[*]}"; ls -la dist; exit 1; }
           tar -I zstd -xf "${TARS[0]}" -C "$RUNNER_TEMP/dist" --strip-components=1
           read -r V BUILT < "$RUNNER_TEMP/dist/VERSION"
           [ "$BUILT" = "$SHA" ] || { echo "artifact is $V ($BUILT), CI run was $SHA"; exit 1; }
           echo "build $V ($BUILT)"
           python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
-          "$RUNNER_TEMP/dist/ippai" --store "$RUNNER_TEMP/rtp-store" rtp --out "$RUNNER_TEMP/rtp" --cache ~/.rtp-downloads
+          "$RUNNER_TEMP/dist/masu" --store "$RUNNER_TEMP/rtp-store" rtp --out "$RUNNER_TEMP/rtp" --cache ~/.rtp-downloads
           wait
       - name: Extraction of zips unar fails on (tests/test_unzip_cp932.py)
         run: python3 tests/test_unzip_cp932.py
@@ -256,7 +256,7 @@ jobs:
           retention-days: 30
 
   # Use-case coverage (tests/coverage/usage.py): the entry points the games of a full run called
-  # (IPPAI_API_COUNTS tallies in their console logs) beside the ones kura's and sake's unit tests
+  # (MASU_API_COUNTS tallies in their console logs) beside the ones kura's and sake's unit tests
   # call; the report goes to tests/coverage/usage.md on main (text only)
   usage:
     needs: [plan, run]
@@ -275,8 +275,8 @@ jobs:
       - name: Tallies of the unit tests
         run: |
           mkdir -p "$RUNNER_TEMP/tests"
-          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT="$RUNNER_TEMP/tests/kura.txt" cargo test -q --release -p kura --lib -- --skip f16_bits
-          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT="$RUNNER_TEMP/tests/sake.txt" cargo test -q --release -p sake --lib
+          MASU_API_COUNTS=1 MASU_API_COUNTS_OUT="$RUNNER_TEMP/tests/kura.txt" cargo test -q --release -p kura --lib -- --skip f16_bits
+          MASU_API_COUNTS=1 MASU_API_COUNTS_OUT="$RUNNER_TEMP/tests/sake.txt" cargo test -q --release -p sake --lib
       # (the unit tests call sake's functions directly, never through a guest's import: the
       # api: keys come from programs on sake, host/tests in CI and Wine's tests in Conformance,
       # their newest tallies on main)

@@ -34,7 +34,7 @@ const wasmExports = {
   vnhost_render_frame: () => {
     frames++;
     // (a frame's drawing: a pass into a texture of the device; headless Chromium loses the
-    // device that presents a canvas, so not into the canvas, as IPPAI_HEADLESS runs)
+    // device that presents a canvas, so not into the canvas, as MASU_HEADLESS runs)
     const enc = VG.device.createCommandEncoder();
     if (VG.frameTex?.device !== VG.device) VG.frameTex = { device: VG.device, tex: VG.device.createTexture({ size: [4, 4], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT }) };
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: VG.frameTex.tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0.5, 1, 1] }] });

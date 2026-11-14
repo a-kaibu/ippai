@@ -1,5 +1,5 @@
 # Benchmarks on every commit to main (tests/bench): after CI builds a commit, each group runs on
-# its own runner with this build and the previous commit's build (CI's "ippai" artifacts) side by
+# its own runner with this build and the previous commit's build (CI's "masu" artifacts) side by
 # side, alternating round by round, so a slow runner slows both alike. The report (job summary,
 # artifact bench-report) says what got faster or slower; the history (artifact bench-history,
 # carried from run to run) keeps the medians of the last 300 commits. No game files and no
@@ -56,7 +56,7 @@ jobs:
           # successful CI runs of main, newest first, whose build artifact is still there
           runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
             --limit 30 --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')
-          has_build() { gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1/artifacts" --jq '[.artifacts[] | select(.name == "ippai" and (.expired | not))] | length' | grep -qx 1; }
+          has_build() { gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1/artifacts" --jq '[.artifacts[] | select(.name == "masu" and (.expired | not))] | length' | grep -qx 1; }
           if [ "$EVENT" != workflow_run ]; then read -r RUN_ID SHA <<< "$(echo "$runs" | head -1)"; fi
           OLD_RUN_ID="" OLD_SHA=""
           while read -r id sha; do
@@ -160,14 +160,14 @@ jobs:
           ref: ${{ needs.plan.outputs.sha }}
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: ippai
+          name: masu
           path: dist-new
           run-id: ${{ needs.plan.outputs.run_id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v8.0.2
         if: needs.plan.outputs.old_run_id != ''
         with:
-          name: ippai
+          name: masu
           path: dist-old
           run-id: ${{ needs.plan.outputs.old_run_id }}
           github-token: ${{ github.token }}
@@ -202,8 +202,8 @@ jobs:
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
           unpack() {  # artifact dir, sha, destination (the build's tarball is named by git describe)
             local t
-            t=$(ls "$1"/ippai-*"${2:0:7}"*.tar.zst 2>/dev/null | head -1)
-            t=${t:-$(ls "$1"/ippai-*.tar.zst | head -1)}
+            t=$(ls "$1"/masu-*"${2:0:7}"*.tar.zst 2>/dev/null | head -1)
+            t=${t:-$(ls "$1"/masu-*.tar.zst | head -1)}
             mkdir -p "$3" && tar -I zstd -xf "$t" -C "$3" --strip-components=1
           }
           unpack dist-new "$SHA" "$RUNNER_TEMP/new"
@@ -250,7 +250,7 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           # (the pinned JavaScriptCore bundle: webkitgtk.org drops old revisions)
-          path: ~/.cache/ippai-jsc
+          path: ~/.cache/masu-jsc
           key: jsc-${{ hashFiles('tests/bench/js.sh') }}
       - name: Bench js (V8 and JavaScriptCore)
         env:
@@ -264,7 +264,7 @@ jobs:
       - if: steps.cache-6.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
-          path: ~/.cache/ippai-jsc
+          path: ~/.cache/masu-jsc
           key: jsc-${{ hashFiles('tests/bench/js.sh') }}
       - uses: actions/upload-artifact@v7.0.2
         if: always()

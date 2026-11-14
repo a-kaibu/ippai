@@ -1,6 +1,6 @@
 // Chunk size vs a game's reads on an Android-like machine (577a146 review §2): the same game
 // (chunkread.exe and a 192 MiB incompressible data.bin, as packed archives are) packed with
-// FastCDC at each average size, served by ippai serve from this machine (a local server: no
+// FastCDC at each average size, served by masu serve from this machine (a local server: no
 // network throttling), run in Chromium. Per size: a first start (nothing on the device), a
 // second (the chunks in Cache Storage), and one offline (the same reads, the device's copy only).
 // Prints, per run: the page's start to the program's first line, its scattered reads (64 KiB at
@@ -13,7 +13,7 @@
 // same data read NET_READS="<reads> <bytes each>" (default "50 131072": a scene's voices and
 // pictures, scattered) instead: what a chunk size costs a first play on a phone's line.
 //
-//   tests/android-like.sh node tests/chunkbench/run.mjs [ippai] [sizes in KiB, default 1024,4096,16384]
+//   tests/android-like.sh node tests/chunkbench/run.mjs [masu] [sizes in KiB, default 1024,4096,16384]
 //   (web/dist built with sake; PLAYWRIGHT as elsewhere; EXE: chunkread.exe, else built with mingw;
 //   WEB: the built app, default web/dist)
 import { execFileSync, spawn } from "node:child_process";
@@ -24,9 +24,9 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
 const sizes = (process.argv[3] ?? "1024,4096,16384").split(",").map(Number);
-const work = mkdtempSync(join(tmpdir(), "ippai-chunkbench-"));
+const work = mkdtempSync(join(tmpdir(), "masu-chunkbench-"));
 let exe = process.env.EXE;
 if (!exe) {
   exe = join(work, "chunkread.exe");

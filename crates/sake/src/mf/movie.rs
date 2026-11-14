@@ -1,6 +1,6 @@
 //! Movies Media Foundation's MP4 source opens (H.264 with AAC or MP3), played as a `.vnv` is
 //! (dshow_play.rs): by the Media Session (session.rs), and by DirectShow and the Media Engine
-//! for an MP4 file `ippai pack` made no `.vnv` of. The pictures come by frame number (`frame`:
+//! for an MP4 file `masu pack` made no `.vnv` of. The pictures come by frame number (`frame`:
 //! bytes R G B A, as kura::video's Rgb601) from the page's VideoDecoder (vstream.rs), the sound
 //! as dshow_play's `Sound::Mf` (`Audio`: the Source Reader's stream, the page's AudioDecoder).
 //! The pictures' ids are apart from kura's streams and asfmovie's (ID_BASE..ID_END).

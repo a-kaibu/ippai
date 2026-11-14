@@ -1,4 +1,4 @@
-//! Runs' read traces (vfs/trace.rs, kept by ippai serve in `<jit>/traces/`) replayed in time
+//! Runs' read traces (vfs/trace.rs, kept by masu serve in `<jit>/traces/`) replayed in time
 //! against a model of the bucket, for ways of foreseeing reads: how many first reads of a chunk
 //! still waited, how long in all, and how many chunks were fetched ahead for nothing. Unlike
 //! hints_eval.rs (orders of first reads, no times), a chunk hinted too late waits here too.
@@ -7,13 +7,13 @@
 //!
 //! The model: each request to the bucket answers after LATENCY_MS whatever its size (it does:
 //! 0.4-2 s, docs/s3-reads.md); the game's own fetch goes at once, fetches ahead WIDTH at a time,
-//! the newest hints first (host/fetch-bridge.js ippaiHint). The game's time between reads is
+//! the newest hints first (host/fetch-bridge.js masuHint). The game's time between reads is
 //! what the trace shows less what each read waited then. The device starts empty.
 //!
 //! Foresights, each from what the game read so far only:
 //! - `layout`, `script`: the run's own hints of that source (sent right after the read that
 //!   gave them: vfs/hints.rs, vfs/predict.rs);
-//! - `next`: what followed the chunk in the game's other runs (fetch-bridge.js ippaiFollow);
+//! - `next`: what followed the chunk in the game's other runs (fetch-bridge.js masuFollow);
 //! - `list`: the other runs' first reads in order, behind every hint (the warm).
 
 use super::trace::{parse, Line};

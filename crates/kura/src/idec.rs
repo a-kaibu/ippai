@@ -59,19 +59,19 @@ fn ring() {
     }
 }
 
-/// Whether a page decodes (IPPAI_IDEC_OFF: never).
+/// Whether a page decodes (MASU_IDEC_OFF: never).
 pub fn available() -> bool {
-    PAGE.load(Ordering::Relaxed) && !SLOW.load(Ordering::Relaxed) && !crate::env_on!("IPPAI_IDEC_OFF")
+    PAGE.load(Ordering::Relaxed) && !SLOW.load(Ordering::Relaxed) && !crate::env_on!("MASU_IDEC_OFF")
 }
 
 /// Pictures smaller than this are decoded by the guest (the page's round trip would cost more);
-/// IPPAI_IDEC_ALL=1 sends every one (tests/winref's small probe pictures, in the browser).
+/// MASU_IDEC_ALL=1 sends every one (tests/winref's small probe pictures, in the browser).
 pub const PIXELS_MIN: u64 = 128 * 128;
 static ALL: AtomicBool = AtomicBool::new(false);
 
 /// Whether the page is to decode a picture of `pixels` pixels.
 pub fn wants(pixels: u64) -> bool {
-    available() && (pixels >= PIXELS_MIN || ALL.load(Ordering::Relaxed) || crate::env_on!("IPPAI_IDEC_ALL"))
+    available() && (pixels >= PIXELS_MIN || ALL.load(Ordering::Relaxed) || crate::env_on!("MASU_IDEC_ALL"))
 }
 
 /// How long the guest waits for a picture (a 4K JPEG takes the page ~30 ms on a phone).

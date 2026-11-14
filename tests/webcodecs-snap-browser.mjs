@@ -16,7 +16,7 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const work = mkdtempSync(join(tmpdir(), "ippai-wcsnap-"));
+const work = mkdtempSync(join(tmpdir(), "masu-wcsnap-"));
 const entry = join(work, "entry.ts");
 writeFileSync(
   entry,
@@ -28,7 +28,7 @@ const built = await build({
   configFile: false,
   logLevel: "silent",
   root: work,
-  build: { write: false, minify: false, lib: { entry, formats: ["iife"], name: "ippai" } },
+  build: { write: false, minify: false, lib: { entry, formats: ["iife"], name: "masu" } },
 });
 const script = (Array.isArray(built) ? built[0] : built).output[0].code;
 
@@ -38,14 +38,14 @@ try {
   page.on("console", (m) => process.env.VERBOSE && console.log(m.text()));
   page.on("pageerror", (e) => console.log(`page error: ${e}`));
   // (WebCodecs wants a secure context: a page of its own at an https URL)
-  await page.route("https://ippai.test/**", (r) =>
+  await page.route("https://masu.test/**", (r) =>
     r.fulfill({ contentType: "text/html", body: "<!doctype html><title>webcodecs and states</title>" }),
   );
-  await page.goto("https://ippai.test/");
+  await page.goto("https://masu.test/");
   await page.addScriptTag({ content: script });
 
   const result = await page.evaluate(async () => {
-    const { Gate, Video, AudioDecode } = window.ippai;
+    const { Gate, Video, AudioDecode } = window.masu;
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const W = 64,
       H = 48,

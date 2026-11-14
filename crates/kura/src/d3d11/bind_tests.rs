@@ -8,7 +8,7 @@
 //! targets of A's mip 0 / 1; 6 / 7 depth views of Z, writable / read-only; 8 UAV of A's mip 0;
 //! 9 the buffer.
 //!
-//! `IPPAI_TRACE_DIR=dir` writes `dir/d3d11bind-<seed>/`; `IPPAI_TRACE_SEEDS=n` (default 20).
+//! `MASU_TRACE_DIR=dir` writes `dir/d3d11bind-<seed>/`; `MASU_TRACE_SEEDS=n` (default 20).
 
 use super::*;
 use crate::d3d9::trace_tests::{alloc, seeds, write_module, Rng, CALLS, SERIAL};

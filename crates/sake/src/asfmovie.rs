@@ -1,5 +1,5 @@
 //! Movies sake decodes itself (crates/wmcodec, through wmdec.rs): an ASF file (.wmv / .asf)
-//! that `ippai pack` made no `.vnv` of plays as a `.vnv` does (dshow_play.rs). Its pictures
+//! that `masu pack` made no `.vnv` of plays as a `.vnv` does (dshow_play.rs). Its pictures
 //! come by frame number (`frame`: kura::video's Rgb601 layout, bytes R G B A) and its sound as
 //! dshow_play's `Sound::Asf` (`Audio`). The pictures' ids are kept apart from kura's streams
 //! (ID_BASE up).

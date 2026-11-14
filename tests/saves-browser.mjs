@@ -1,11 +1,11 @@
-// Saved games across pages, in real Chromium against a real ippai serve (web/src/saves.ts, the
-// server's /saves in crates/ippai/src/saves.rs): a save made offline, the browser closed, and
+// Saved games across pages, in real Chromium against a real masu serve (web/src/saves.ts, the
+// server's /saves in crates/masu/src/saves.rs): a save made offline, the browser closed, and
 // the next start online must start from that save and send it, not from the server's older
 // copy. Also with the network up but the server gone, with a page closed while its upload was
 // on the way, and with another device (another browser profile) saving meanwhile: this
 // device's later save wins, the other's is kept in this browser's OPFS beside it.
 //
-//   node tests/saves-browser.mjs [path to ippai]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
+//   node tests/saves-browser.mjs [path to masu]   (web's node_modules installed; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -15,16 +15,16 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-saves-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-saves-"));
 
-// saves.ts as a script for the page (window.ippaiSaves), built with the web app's Vite
+// saves.ts as a script for the page (window.masuSaves), built with the web app's Vite
 const vp = await import(createRequire(resolve("web/package.json")).resolve("vite-plus"));
 const build = vp.build ?? vp.default.build;
 const built = await build({
   configFile: false,
   logLevel: "silent",
-  build: { write: false, minify: false, lib: { entry: resolve("web/src/saves.ts"), formats: ["iife"], name: "ippaiSaves" } },
+  build: { write: false, minify: false, lib: { entry: resolve("web/src/saves.ts"), formats: ["iife"], name: "masuSaves" } },
 });
 const script = (Array.isArray(built) ? built[0] : built).output[0].code;
 
@@ -42,7 +42,7 @@ async function startServer() {
     if (await fetch(`${base}saves/x`).then((r) => r.status === 404, () => false)) return;
     await new Promise((r) => setTimeout(r, 300));
   }
-  throw new Error("ippai serve did not start");
+  throw new Error("masu serve did not start");
 }
 const serverSave = async () => {
   const r = await fetch(`${base}saves/game`, { cache: "no-store" });
@@ -62,12 +62,12 @@ async function device(name) {
 const load = (page) =>
   page.evaluate(async () => {
     const notices = [];
-    const b = await window.ippaiSaves.loadSaves("game", (m) => notices.push(m));
+    const b = await window.masuSaves.loadSaves("game", (m) => notices.push(m));
     return { text: b ? new TextDecoder().decode(b) : null, notices };
   });
 const store_ = (page, text) =>
   page.evaluate(
-    (t) => window.ippaiSaves.storeSaves("game", new TextEncoder().encode(t)).then(() => true, () => false),
+    (t) => window.masuSaves.storeSaves("game", new TextEncoder().encode(t)).then(() => true, () => false),
     text,
   );
 /** This device's OPFS saves folder: names and texts. */

@@ -19,10 +19,10 @@ try {
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   const results = await page.evaluate(async source => {
-    const connect = new Function(source + '; return ippaiFetchConnect;')();
+    const connect = new Function(source + '; return masuFetchConnect;')();
     const request = path => new Promise((resolve,reject) => {
       const port = connect();
-      const script = source + `\nself.onmessage=e=>{ippaiFetchPort=e.data.port;try{self.postMessage({bytes:Array.from(ippaiFetchSync(e.data.url))});}catch(e){self.postMessage({error:e.message});}};`;
+      const script = source + `\nself.onmessage=e=>{masuFetchPort=e.data.port;try{self.postMessage({bytes:Array.from(masuFetchSync(e.data.url))});}catch(e){self.postMessage({error:e.message});}};`;
       const blob = URL.createObjectURL(new Blob([script],{type:'text/javascript'}));
       const worker = new Worker(blob);
       const timer = setTimeout(()=>{worker.terminate();reject(new Error('worker stalled'));},10000);

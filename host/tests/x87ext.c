@@ -1,4 +1,4 @@
-/* The x87 in its 80-bit format (#52; sake runs it with IPPAI_X87_80=1, koji's precise x87
+/* The x87 in its 80-bit format (#52; sake runs it with MASU_X87_80=1, koji's precise x87
  * mode): FADD/FSUB/FMUL/FDIV of m80 values and of m64/m32/int operands, FSQRT, FRNDINT, FST to
  * m64/m32, FISTP m64, FCOMI, FLD/FSTP m80 round trips, chained without storing in between
  * (the 64-bit significand and the 15-bit exponent kept), at precision control 24/53/64 bits and

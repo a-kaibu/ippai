@@ -1,13 +1,13 @@
 # Browser TLS relay
 
 The client requirement is an Android browser without an installed companion.
-The user authorized adding encrypted transport to `ippai serve`. The original
+The user authorized adding encrypted transport to `masu serve`. The original
 vendor runtime remains responsible for authentication and licensing.
 
 ## Decision
 
 Expose `GET /net/tls/soft-denchi` as a WebSocket on the authenticated app listener.
-The client must select `ippai.tls.v1`. Binary messages carry a byte stream;
+The client must select `masu.tls.v1`. Binary messages carry a byte stream;
 message boundaries have no meaning to TLS. The server connects only to
 one of the fixed official destinations listed below, on port 443, and forwards bytes in both directions. DNS results
 are checked before connecting to those exact resolved addresses. No HTTP proxy,
@@ -26,7 +26,7 @@ transport preserves browser-only use at the cost of implementing TLS in Wasm.
 
 ## Bounds and integration
 
-Reuse ippai's existing auth guard. Reject foreign Origin and Sec-Fetch-Site even
+Reuse masu's existing auth guard. Reject foreign Origin and Sec-Fetch-Site even
 though the upgrade uses GET. Add no route on the isolated web-game listener.
 Allow at most eight active/pending tunnels per server, 64 KiB WebSocket messages,
 16 MiB total traffic per direction, 60 seconds without progress, and five minutes
@@ -49,7 +49,7 @@ exact hostname. No browser-supplied hostname, port or URL is accepted by the ser
 
 ## Verification and remaining work
 
-Nine `cargo test -p ippai tls_relay` tests cover origin and auth rejection, fixed
+Nine `cargo test -p masu tls_relay` tests cover origin and auth rejection, fixed
 destination selection, public address checks, actual bidirectional WebSocket/TCP
 bytes, close propagation, traffic/time limits and admission-slot release. A real
 rustls client through the tunnel verifies a trusted test certificate, rejects an
@@ -61,7 +61,7 @@ requirements.
 ## Client protocol
 
 Open a WebSocket to `/net/tls/soft-denchi` on the app origin, using `wss:` when
-the app uses HTTPS, and select subprotocol `ippai.tls.v1`. The normal ippai session
+the app uses HTTPS, and select subprotocol `masu.tls.v1`. The normal masu session
 cookie authenticates the upgrade. Each binary message contains the next bytes
 of the TLS stream; combine received messages before parsing TLS records. Text
 messages are rejected. A successful upgrade means the upstream TCP connection
@@ -82,7 +82,7 @@ TLS records over WebSocket while the guest pthread waits. The app origin is
 passed to each pthread by `host/pre.js`; WinINet uses this transport for the
 fixed official HTTPS destination. The earlier plaintext JSON relay is no
 longer linked into sake. ring's Emscripten RNG cfg fix is documented in
-`vendor/ring/IPPAI-PATCH.md`.
+`vendor/ring/MASU-PATCH.md`.
 
 This section described an earlier work-in-progress checkpoint. Licensed play
 through this transport has since been verified in Chromium (docs/sdrt.md).
@@ -90,7 +90,7 @@ HTTP framing edge-case coverage and real Android devices remain unverified.
 
 ## Browser transport verification after the checkpoint
 
-A real WinINet HEAD probe now completes in Chromium/Wasm through the ippai
+A real WinINet HEAD probe now completes in Chromium/Wasm through the masu
 WebSocket route, with rustls verification, and receives HTTP 200 from the
 official controller. Node/Wasm does too. Creating a nested WebSocket worker
 and immediately blocking its parent pthread prevented Chromium from starting

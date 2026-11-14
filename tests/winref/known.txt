@@ -147,7 +147,7 @@ ddrefs-* ^(want|got) +refs d3d7 after CreateDevice
 # (0xC149.. on the runner), DWM sends WM_DWMNCRENDERINGCHANGED (0x31f) at create, ShowWindow's
 # "was visible" answer is an undocumented nonzero (24), and NCPAINT/ERASEBKGND come with
 # ShowWindow there while sake paints at the next message loop
-user-* ^(want|got) +GetClassInfoA\(wc.hInstance, "ippai-winref", &got\) 
+user-* ^(want|got) +GetClassInfoA\(wc.hInstance, "masu-winref", &got\) 
 user-* ^(want|got) +start: 
 user-* ^want +WM_(NCPAINT|ERASEBKGND)$
 user-* ^(want|got) +ShowWindow\(h, SW_HIDE\) 
@@ -159,7 +159,7 @@ shell-* ^(want|got) +(name|removespec|strip) .*(2e747874\]|955c|835c\]|835c5c95\
 crt_io-* ^(want|got) +(mbstowcs|wcstombs cut|mbrtowc|mbrlen|mbtowc|wcrtomb|btowc|wctob|_mbstrlen|fgetwc) 
 res-* ^(want|got) +item 0: 1 id \d+ type 0 state 0 sub 1 text \[&File\] cch 5$  # a popup's wID is its HMENU, whose number differs
 # sake's MS-named fonts are IPA fonts under those names (tools/ci/sake-fonts.py), as separate
-# .ttf files in a game's store or one msgothic.ttc from `ippai ttc`: other design metrics, and the
+# .ttf files in a game's store or one msgothic.ttc from `masu ttc`: other design metrics, and the
 # file, its type and face count differ when the store has the .ttf files
 dwfont-* ^(want|got) +(metrics em|face 00000000 type|local loader|analyze)
 # the runner's VMR-9 (Direct3D 9) doesn't connect in windowless mode (its session has no

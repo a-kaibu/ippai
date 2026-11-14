@@ -1,5 +1,5 @@
 # CI: every push to main and every pull request runs the Rust tests and builds the whole
-# thing (sake.wasm, the page, the ippai binary with the page built in), then runs host/tests
+# thing (sake.wasm, the page, the masu binary with the page built in), then runs host/tests
 # on sake. The release workflow (release.yml) runs this first and makes the release from its
 # web/dist (artifact "web").
 name: CI
@@ -46,8 +46,8 @@ jobs:
           key: playwright-${{ runner.os }}-1.63.0
       - name: Install browser test tools
         run: |
-          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
-          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
+          mkdir -p "$RUNNER_TEMP/masu-browser" && pnpm add --dir "$RUNNER_TEMP/masu-browser" playwright@1.63.0
+          "$RUNNER_TEMP/masu-browser/node_modules/.bin/playwright" install chromium
       - if: steps.cache-1.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
@@ -58,23 +58,23 @@ jobs:
         run: tools/ci/apt.sh nsis p7zip-full && python3 tests/corpus/shots_test.py && python3 tests/corpus/winplay_test.py && python3 tests/corpus/golden_test.py && python3 tests/corpus/check_test.py && python3 tests/corpus/mirror_test.py && python3 tests/corpus/prep_test.py && python3 tests/corpus/pickexe_test.py && python3 tests/corpus/install_test.py && python3 tests/corpus/electron_nsis_test.py && python3 tests/coverage/usage_test.py
       - name: Real browser fetch regression
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/fetch-browser.mjs
       - name: Ranges past a whole chunk in the HTTP cache
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/range-cache-browser.mjs
       - name: Saved chunks in OPFS, read through synchronous handles (tests/opfs-read-browser.mjs)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/opfs-read-browser.mjs
       - name: A lost WebGPU device is replaced and the drawing goes on (host/vngpu.js)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/gpulost-browser.mjs
       - name: Unstable link (drops, stalls, offline, chunks kept on the device)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/net-browser.mjs
       - name: Bench report (a failed run stays out of the history)
         run: python3 tests/bench/test_report.py
@@ -92,73 +92,73 @@ jobs:
             browser-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Web games run isolated from the app
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: |
           (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
-          cargo build -p ippai
-          node tests/webgame-isolation.mjs target/debug/ippai
+          cargo build -p masu
+          node tests/webgame-isolation.mjs target/debug/masu
       - name: Installable, and opens offline (service worker)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/offline-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/offline-browser.mjs target/debug/masu
       - name: sake's wasm from the bucket, the device or the HTTP cache (web/src/wasmsource.ts)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/wasmsource-browser.mjs
       - name: Saves made offline survive the next online start (saves.ts sync state)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/saves-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/saves-browser.mjs target/debug/masu
       - name: Save states wait for WebCodecs' writes (memgate.ts, real decoders)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/webcodecs-snap-browser.mjs
       - name: The chunk cache trimmed by the chunks' real sizes (net.ts trimChunks)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/chunk-trim-browser.mjs
       - name: The sound's worklet fades at underruns and skips (audio.ts sinkStep, minified build)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/audio-sink-browser.mjs
       - name: Pictures through ImageDecoder as Windows decodes them, Exif turns or not (idec.ts)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/idec-browser.mjs
       - name: Save state slots from two devices at once (content-named files, merged index)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/savestate-slots-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/savestate-slots-browser.mjs target/debug/masu
       - name: Web apps kept for older builds' states (apps.rs)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/apps-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/apps-browser.mjs target/debug/masu
       - name: The game list (name, icons, 設定 sidebar with server update, app, statistics and reset; order and sections; favorites)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/library-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/library-browser.mjs target/debug/masu
       - name: What is on the device and being saved there (保存 tab, a game's parts, the file being fetched)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/storage-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/storage-browser.mjs target/debug/masu
       - name: The browser's back button goes back to the game list (once, from a game picked or opened by its address)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/back-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/back-browser.mjs target/debug/masu
       - name: A game not on the device is saved there whole before it starts (from the bucket many at once, the server at most 4)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/save-first-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/save-first-browser.mjs target/debug/masu
       - name: A game's information from a pasted 批評空間 / VNDB page (stand-ins for both)
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
-        run: node tests/meta-browser.mjs target/debug/ippai
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: node tests/meta-browser.mjs target/debug/masu
       - name: The game database's update script (tools/gamedb/update.sh, stand-in gh)
         run: sh tests/gamedb-update-sh.sh
       - name: Sign-in behind a reverse proxy that adds no forwarding header (auth.rs)
-        run: python3 tests/auth-proxy.py target/debug/ippai
+        run: python3 tests/auth-proxy.py target/debug/masu
       - name: The server answers before it has compressed the web app (serve.rs precompress)
-        run: python3 tests/serve-start.py target/debug/ippai
+        run: python3 tests/serve-start.py target/debug/masu
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
@@ -224,7 +224,7 @@ jobs:
         # once held the job (and every later run, one at a time on main) for an hour)
         timeout-minutes: 25
         run: cargo test --workspace --release
-      # (the official RPG Maker RTPs installed as their setups would, crates/ippai/src/rtp.rs,
+      # (the official RPG Maker RTPs installed as their setups would, crates/masu/src/rtp.rs,
       # byte for byte against innoextract and unshield; the zips are cached, never uploaded)
       - id: cache-rtp
         uses: actions/cache/restore@v6.1.0
@@ -235,7 +235,7 @@ jobs:
         timeout-minutes: 15
         run: |
           tools/ci/apt.sh innoextract unshield p7zip-full
-          IPPAI_RTP_TEST=$HOME/.rtp-downloads IPPAI_RTP_ORACLE=1 cargo test --release -p ippai --bin ippai -- rtp::tests::official_packages
+          MASU_RTP_TEST=$HOME/.rtp-downloads MASU_RTP_ORACLE=1 cargo test --release -p masu --bin masu -- rtp::tests::official_packages
       - if: steps.cache-rtp.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
@@ -627,7 +627,7 @@ jobs:
           retention-days: 3
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: ippai
+          name: masu
           path: target/dist/*
           retention-days: 14
       - uses: actions/upload-artifact@v7.0.2
@@ -685,7 +685,7 @@ jobs:
           key: pip-${{ runner.os }}-fonttools==4.59.0
       - uses: actions/cache@v6.1.0
         with:
-          path: ~/.cache/ippai-inno
+          path: ~/.cache/masu-inno
           key: inno-6.7.4
       - name: Fonts for host/tests
         run: |
@@ -697,11 +697,11 @@ jobs:
           OUT: ${{ runner.temp }}/host-tests
         run: |
           mkdir -p "$RUNNER_TEMP/api-counts" "$OUT"
-          if [ "$SAKE_BUILD" = sake-grow ]; then export IPPAI_JIT_RECLAIM=1; fi
-          IPPAI_API_COUNTS=1 IPPAI_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_C=$RUNNER_TEMP/sake-c SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/$SAKE_BUILD.js tests/host-tests.sh
+          if [ "$SAKE_BUILD" = sake-grow ]; then export MASU_JIT_RECLAIM=1; fi
+          MASU_API_COUNTS=1 MASU_API_COUNTS_OUT=$RUNNER_TEMP/api-counts/host-tests.txt SAKE_C=$RUNNER_TEMP/sake-c SAKE_FONTS=$RUNNER_TEMP/fonts SAKE=$PWD/target/sake-out/$SAKE_BUILD.js tests/host-tests.sh
       - uses: actions/cache@v6.1.0
         with:
-          path: ~/.cache/ippai-watcom
+          path: ~/.cache/masu-watcom
           key: watcom-${{ hashFiles('tests/bench/build-novel16.sh') }}
       - name: Win16 programs on ${{ matrix.build }}
         if: ${{ !cancelled() }}
@@ -772,12 +772,12 @@ jobs:
       - run: tools/ci/pnpm.sh
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: ippai
+          name: masu
           path: target/dist
       - name: Use the exact packaged build, not another compilation
         run: |
           mkdir -p target/release
-          tar --zstd -xf target/dist/ippai-*.tar.zst -C target/release --strip-components=1
+          tar --zstd -xf target/dist/masu-*.tar.zst -C target/release --strip-components=1
           ln -s ../target/release/web web/dist
       - run: tools/ci/apt.sh mingw-w64
       - uses: actions/cache@v6.1.0
@@ -786,36 +786,36 @@ jobs:
           key: playwright-${{ runner.os }}-1.63.0
       - name: Browser tools
         run: |
-          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
-          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
+          mkdir -p "$RUNNER_TEMP/masu-browser" && pnpm add --dir "$RUNNER_TEMP/masu-browser" playwright@1.63.0
+          "$RUNNER_TEMP/masu-browser/node_modules/.bin/playwright" install chromium
       # One browser at a time: software rendering itself uses several cores.
       - name: The page's tests
         env:
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
           SAKE_WEB: target/release/web/sake/
         run: |
-          node tests/savestate-browser.mjs target/release/ippai
-          node tests/hidden-browser.mjs target/release/ippai
-          node tests/autoadvance-browser.mjs target/release/ippai
+          node tests/savestate-browser.mjs target/release/masu
+          node tests/hidden-browser.mjs target/release/masu
+          node tests/autoadvance-browser.mjs target/release/masu
           # (a hidden tab: the game held in Present, the host heap flat, drawing again when shown)
-          node tests/hidden-memory-browser.mjs target/release/ippai
-          node tests/exec-browser.mjs target/release/ippai
-          node tests/output-browser.mjs target/release/ippai
-          node tests/screen-browser.mjs target/release/ippai
+          node tests/hidden-memory-browser.mjs target/release/masu
+          node tests/exec-browser.mjs target/release/masu
+          node tests/output-browser.mjs target/release/masu
+          node tests/screen-browser.mjs target/release/masu
           node tests/direct-browser.mjs
-          node tests/save-first-browser.mjs target/release/ippai
+          node tests/save-first-browser.mjs target/release/masu
           # (the device benchmark, web/bench.html: its quick profile twice, the programs as a release has them)
           PROGRAMS_ONLY=1 tests/bench/build.sh "$RUNNER_TEMP/bench" >/dev/null
-          node tests/devbench-browser.mjs target/release/ippai "$RUNNER_TEMP/bench"
+          node tests/devbench-browser.mjs target/release/masu "$RUNNER_TEMP/bench"
 
       - name: Restore states across two real runtime builds
         env:
           GH_TOKEN: ${{ github.token }}
-          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: |
           # The previous successful main artifact is immutable: use its original
           # page code and Wasm together, never just change a build-id in a fixture.
-          old="$RUNNER_TEMP/ippai-old-web"
+          old="$RUNNER_TEMP/masu-old-web"
           found=false
           for run in $(gh run list --workflow ci.yml --branch main --status success --limit 10 --json databaseId --jq '.[].databaseId'); do
             rm -rf "$old"
@@ -829,7 +829,7 @@ jobs:
             then
               found=true
               echo "Old runtime artifact: CI run $run" >> "$GITHUB_STEP_SUMMARY"
-              OLD_WEB="$old" NEW_WEB=web/dist node tests/savestate-browser.mjs target/release/ippai
+              OLD_WEB="$old" NEW_WEB=web/dist node tests/savestate-browser.mjs target/release/masu
               break
             fi
           done
@@ -853,8 +853,8 @@ jobs:
           key: windows-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
       - run: tools/ci/apt.sh mingw-w64
       - run: rustup target add x86_64-pc-windows-gnu
-      - name: ippai for Windows builds without warnings
-        run: RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
+      - name: masu for Windows builds without warnings
+        run: RUSTFLAGS="-D warnings" cargo build --release -p masu --target x86_64-pc-windows-gnu
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target

@@ -3,7 +3,7 @@
  * wait, play notify and what a stop, a second play or the end report, seek, close) and through
  * mciSendCommand (open by type, status, play wait, close); the same sound with no extension
  * opened as `type mpegvideo` (LiLiM's Data\Sound\se\lilim); the errors and their texts; an
- * MCIWnd child playing an uncompressed AVI (its `.vnv` for sake, as ippai pack makes) with
+ * MCIWnd child playing an uncompressed AVI (its `.vnv` for sake, as masu pack makes) with
  * MCIWNDF_NOTIFYMODE: its size, length, CAN_PLAY / CAN_WINDOW, and the modes it reports.
  * libs: -lwinmm -lvfw32 -lgdi32 */
 #include "../probe.h"

@@ -1,4 +1,4 @@
-## Ren'Py ベンチ: ippai のベンチマーク (tests/bench, グループ renpy-gl / renpy-angle) が遊ぶ小さなノベル。
+## Ren'Py ベンチ: masu のベンチマーク (tests/bench, グループ renpy-gl / renpy-angle) が遊ぶ小さなノベル。
 ## 絵と音は吉里吉里ベンチ (testdata/kirikiri) のものを tests/bench/pack-renpy.mjs が images/ と audio/ に写す。
 
 define config.name = "Ren'Py Bench"

@@ -80,12 +80,12 @@ load it. The page loads a state in the build it is of (a sake-grow state on a de
 have 4 GB too); a sake.wasm state needs the 4 GB memory.
 
 States of an older build load in that build's own web app (its sake and its page code, which
-change together): `ippai serve` keeps each web app it served in `<store>/apps/<key>/` (key: a hash
+change together): `masu serve` keeps each web app it served in `<store>/apps/<key>/` (key: a hash
 of its build-id.txt) and serves it at `/apps/<key>/`, its own files from there and every other
 path as at the root (saves, store, jit, the API), so the old app's relative URLs reach the same
-server (crates/ippai/src/apps.rs). `/apps/builds` maps build ids to keys; the page opens a state
+server (crates/masu/src/apps.rs). `/apps/builds` maps build ids to keys; the page opens a state
 of another build at `/apps/<key>/play.html?...&state=<slot>`. Kept: the apps the states' indexes
-name, and the 3 newest. Apps from before this (served by an ippai older than 2026-11-08) were
+name, and the 3 newest. Apps from before this (served by an masu older than 2026-11-08) were
 never kept. When a retained app navigates back to its library (`play.html` without `game` or
 `run`, or `index.html`), the server redirects to the current app. The switches remain, but
 `state` and `autostart` are removed. This works for already-retained page code too.
@@ -98,7 +98,7 @@ build identity in real Chromium against a server upgrade. For real runtime resto
 
 ```sh
 OLD_WEB=/path/to/old/web NEW_WEB=/path/to/new/web \
-  node tests/savestate-browser.mjs target/release/ippai
+  node tests/savestate-browser.mjs target/release/masu
 ```
 
 Both directories must contain complete, distinct sake and sake-grow builds and their matching
@@ -116,7 +116,7 @@ Sizes: the test program (host/tests/snaptest.c) 42 MiB of memory → 2.5 MiB, st
 ## Where states are kept
 
 * this browser: OPFS `states/<game>/<hash>.snap` and `index.json` (4 slots);
-* the server: `ippai serve` `/saves/state.<game>.<hash>` and `/saves/state.<game>.index` (the
+* the server: `masu serve` `/saves/state.<game>.<hash>` and `/saves/state.<game>.index` (the
   same versioned saves as the game's own, in its S3 bucket when one is set up): another device
   lists and loads them too.
 
@@ -126,8 +126,8 @@ another device wrote it meanwhile (the newer entry of each slot wins). So a slot
 and a phone at once never leaves the index naming a file that was replaced
 (tests/savestate-slots-browser.mjs, every order of the two uploads). States from before (no
 `hash`) are read from `<slot>.snap` / `state.<game>.<slot>`. This browser removes its own files
-no index names. The server removes its own (`Saves::prune_states`, when `ippai serve` starts and in
-`ippai storage gc`) once written a week ago (`--grace-days` for gc: a device uploads the file before
+no index names. The server removes its own (`Saves::prune_states`, when `masu serve` starts and in
+`masu storage gc`) once written a week ago (`--grace-days` for gc: a device uploads the file before
 the index naming it): kept is every file the index names, with S3 also the files its kept older
 revisions name (a device may still be listing one), all files of a game whose index does not
 parse, and the old layout's `state.<game>.<slot>`. With S3 the files are forgotten and their
@@ -175,9 +175,9 @@ worker's animation frames held).
 
 host/snap.js (the node build's pre-js):
 
-    IPPAI_SNAP_SAVE=<file>@<s>[,<s>...]   states at those seconds (file, file.1, ...)
-    IPPAI_SNAP_EXIT=1                     end right at the (last) state, without going on
-    IPPAI_SNAP_LOAD=<file>                start from a state
+    MASU_SNAP_SAVE=<file>@<s>[,<s>...]   states at those seconds (file, file.1, ...)
+    MASU_SNAP_EXIT=1                     end right at the (last) state, without going on
+    MASU_SNAP_LOAD=<file>                start from a state
 
 * `tests/snap.sh`: snaptest.c (events, critical sections, condition variables, SRW locks,
   Sleep, a thread started late, the clocks) for x86 and x86-64, JIT and interpreter: cut at five
@@ -187,7 +187,7 @@ host/snap.js (the node build's pre-js):
 * `a_state_draws_the_same_d3d9/11` (crates/kura/src/render/d3d/model_tests.rs): random Direct3D
   command streams on the WebGPU model, with the GPU read back after a random batch and made again
   in a fresh model: every later frame and readback the same.
-* `tests/savestate-browser.mjs`: in Chromium with ippai serve (also host/tests/snapmsaa.c:
+* `tests/savestate-browser.mjs`: in Chromium with masu serve (also host/tests/snapmsaa.c:
   Direct3D 11 4x targets of 4 formats drawn once, every sample read back each step, the same
   bits after the state; it fails without the sample copies), a state from the dialog, loaded,
   and loaded in a browser with nothing of its own (the server's copy); again on sake-grow with

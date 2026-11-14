@@ -4,7 +4,7 @@ import { checkUpdate, installUpdate, parseUpdate, sameVersion, waitForVersion } 
 const g = globalThis as unknown as { location?: unknown };
 const oldLocation = g.location;
 beforeAll(() => {
-  g.location = { href: "https://ippai.test/sub/index.html" };
+  g.location = { href: "https://masu.test/sub/index.html" };
 });
 afterAll(() => {
   g.location = oldLocation;
@@ -73,10 +73,7 @@ describe("checkUpdate / installUpdate", () => {
     };
     expect((await checkUpdate(f)).newer).toBe(true);
     expect(await installUpdate(f)).toBe("0.3.4");
-    expect(asked).toEqual([
-      "GET https://ippai.test/sub/api/update",
-      "POST https://ippai.test/sub/api/update",
-    ]);
+    expect(asked).toEqual(["GET https://masu.test/sub/api/update", "POST https://masu.test/sub/api/update"]);
   });
   it("says why it did not update", async () => {
     const answer = (r: Response) => () => Promise.resolve(r);

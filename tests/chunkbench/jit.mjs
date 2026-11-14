@@ -1,21 +1,21 @@
 // Start and run time with and without the regions earlier runs saved (577a146 review §2 JIT):
-// flatbench.exe (Lua and SQLite, /mnt/project-files/sake/ab) through ippai serve, a first run
+// flatbench.exe (Lua and SQLite, /mnt/project-files/sake/ab) through masu serve, a first run
 // (nothing saved: every region translated as it runs), then RUNS more (the server's saved
 // regions loaded at the start). Prints per run: page start to the program's line, flatbench's
 // first and last round (ms), its average, and the page's whole time. Under tests/android-like.sh for a phone.
 // ANDROID=1: V8 as on Android Chrome (no trap handler: every wasm load and store checked,
 // docs/translator.md "Android"). ENV=K=V,... adds variables for the program (&env=).
 //
-//   tests/android-like.sh node tests/chunkbench/jit.mjs [ippai] [flatbench.exe]
+//   tests/android-like.sh node tests/chunkbench/jit.mjs [masu] [flatbench.exe]
 import { execFileSync, spawn } from "node:child_process";
 import { cpSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
 const exe = resolve(process.argv[3] ?? "/mnt/project-files/sake/ab/flatbench.exe");
-const work = mkdtempSync(join(tmpdir(), "ippai-jitbench-"));
+const work = mkdtempSync(join(tmpdir(), "masu-jitbench-"));
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });
 mkdirSync(join(work, "prefix/drive_c/windows/temp"), { recursive: true });

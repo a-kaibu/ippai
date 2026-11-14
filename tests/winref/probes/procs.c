@@ -9,7 +9,7 @@
 #include <ctype.h>
 
 #define E(expr) do { SetLastError(0xdead); long long r_ = (long long)(expr); printf("%-70s = %lld err %lu\n", #expr, r_, GetLastError()); } while (0)
-#define PIPE "\\\\.\\pipe\\ippai_procs_probe"
+#define PIPE "\\\\.\\pipe\\masu_procs_probe"
 
 static int child(const char *mode) {
     char buf[64];
@@ -35,18 +35,18 @@ static int child(const char *mode) {
         return strcmp(buf, "pong") ? 15 : 0;
     }
     if (!strcmp(mode, "event")) {
-        HANDLE e = OpenEventA(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, "ippai_procs_event");
+        HANDLE e = OpenEventA(EVENT_MODIFY_STATE | SYNCHRONIZE, FALSE, "masu_procs_event");
         if (!e) return 20;
-        HANDLE back = OpenEventA(SYNCHRONIZE, FALSE, "ippai_procs_back");
+        HANDLE back = OpenEventA(SYNCHRONIZE, FALSE, "masu_procs_back");
         SetEvent(e);
         return back && WaitForSingleObject(back, 10000) == WAIT_OBJECT_0 ? 21 : 22;
     }
     if (!strcmp(mode, "mutex")) {
-        HANDLE m = OpenMutexA(SYNCHRONIZE, FALSE, "ippai_procs_mutex");
+        HANDLE m = OpenMutexA(SYNCHRONIZE, FALSE, "masu_procs_mutex");
         return m ? (int)WaitForSingleObject(m, 0) : 30;
     }
     if (!strcmp(mode, "window")) {
-        HWND w = FindWindowA("ippai_procs_class", "ippai procs");
+        HWND w = FindWindowA("masu_procs_class", "masu procs");
         if (!w) return 40;
         COPYDATASTRUCT cd = { 7, 5, "copy" };
         LRESULT r = SendMessageA(w, WM_COPYDATA, 0, (LPARAM)&cd);
@@ -166,15 +166,15 @@ int main(int argc, char **argv) {
     CloseHandle(s);
 
     /* named events */
-    HANDLE ev = CreateEventA(NULL, FALSE, FALSE, "ippai_procs_event");
-    HANDLE back = CreateEventA(NULL, TRUE, FALSE, "ippai_procs_back");
+    HANDLE ev = CreateEventA(NULL, FALSE, FALSE, "masu_procs_event");
+    HANDLE back = CreateEventA(NULL, TRUE, FALSE, "masu_procs_back");
     spawn("event", 0, NULL, FALSE, &pi);
     E(WaitForSingleObject(ev, 20000));
     E(SetEvent(back));
     finish(&pi);
 
     /* a named mutex: held here, then abandoned by a child */
-    HANDLE mx = CreateMutexA(NULL, TRUE, "ippai_procs_mutex");
+    HANDLE mx = CreateMutexA(NULL, TRUE, "masu_procs_mutex");
     spawn("mutex", 0, NULL, FALSE, &pi);
     finish(&pi);
     E(ReleaseMutex(mx));
@@ -188,9 +188,9 @@ int main(int argc, char **argv) {
     WNDCLASSA wc = { 0 };
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandleA(NULL);
-    wc.lpszClassName = "ippai_procs_class";
+    wc.lpszClassName = "masu_procs_class";
     RegisterClassA(&wc);
-    HWND w = CreateWindowA("ippai_procs_class", "ippai procs", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
+    HWND w = CreateWindowA("masu_procs_class", "masu procs", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
     E(w != NULL);
     spawn("window", 0, NULL, FALSE, &pi);
     for (;;) {

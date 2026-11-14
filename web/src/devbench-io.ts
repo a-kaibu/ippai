@@ -13,7 +13,7 @@ const WORKER = `
 onmessage = async ({ data: [fileMb, read, reads] }) => {
   const out = {};
   const dir = await navigator.storage.getDirectory();
-  const name = "ippai-bench.tmp";
+  const name = "masu-bench.tmp";
   try {
     const file = await dir.getFileHandle(name, { create: true });
     const h = await file.createSyncAccessHandle();
@@ -55,7 +55,7 @@ export async function storageBench(metric: (name: string, v: number) => void): P
     URL.revokeObjectURL(url);
   }
   if (typeof caches === "undefined") return;
-  const name = "ippai-bench-tmp";
+  const name = "masu-bench-tmp";
   const cache = await caches.open(name);
   try {
     const body = new Uint8Array(4 * MB);

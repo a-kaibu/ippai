@@ -72,7 +72,7 @@ function world(
   const objs = new Map<string, Obj>();
   const asked: string[] = [];
   const ranges: string[] = [];
-  // (a delivery pack: objects side by side, crates/ippai/src/storage.rs pack_objects)
+  // (a delivery pack: objects side by side, crates/masu/src/storage.rs pack_objects)
   const PACK = "0f0e0d0c-0b0a-4908-8706-050403020100";
   const at = new Map<string, { id: string; offset: number; len: number }>();
   const packs = new Map<string, Uint8Array>();
@@ -161,7 +161,7 @@ function world(
   return { add, request, asked, objs, pack, ranges, at };
 }
 
-const STORE = "https://ippai.test/store/";
+const STORE = "https://masu.test/store/";
 
 describe("directFetcher", () => {
   it("opens, decodes and checks a chunk from the bucket", async () => {
@@ -171,7 +171,7 @@ describe("directFetcher", () => {
     const d = directFetcher(STORE, { request: w.request, unzstd });
     expect(await d.get(hex)).toEqual(data);
     expect(w.asked).toEqual([
-      `https://ippai.test/store-direct/chunks/${hex.slice(0, 2)}/${hex}`,
+      `https://masu.test/store-direct/chunks/${hex.slice(0, 2)}/${hex}`,
       expect.stringMatching(/^https:\/\/bucket\.test\//),
     ]);
   });
@@ -534,7 +534,7 @@ describe("the page's share of the fixes of the 2026-11-14 review", () => {
 
   it("a run of a pack holds the locks nobody else holds, and leaves the others out", async () => {
     const { withFreeChunkLocks } = await import("./offline");
-    const held = new Set(["ippai-chunk:b", "ippai-chunk:d"]);
+    const held = new Set(["masu-chunk:b", "masu-chunk:d"]);
     const locks = {
       async request(name: string, o: { ifAvailable?: boolean }, f: (l: object | null) => Promise<unknown>) {
         if (held.has(name)) return f(o.ifAvailable ? null : {});
@@ -552,11 +552,11 @@ describe("the page's share of the fixes of the 2026-11-14 review", () => {
     try {
       const got = await withFreeChunkLocks(["a", "b", "c", "d", "e"], async (mine) => {
         // (while the run goes: its locks held)
-        expect([...held].sort()).toEqual(["a", "b", "c", "d", "e"].map((h) => `ippai-chunk:${h}`));
+        expect([...held].sort()).toEqual(["a", "b", "c", "d", "e"].map((h) => `masu-chunk:${h}`));
         return mine;
       });
       expect(got).toEqual(["a", "c", "e"]);
-      expect([...held].sort()).toEqual(["ippai-chunk:b", "ippai-chunk:d"]);
+      expect([...held].sort()).toEqual(["masu-chunk:b", "masu-chunk:d"]);
     } finally {
       if (had) Object.defineProperty(nav, "locks", had);
       else delete nav.locks;

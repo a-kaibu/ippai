@@ -482,7 +482,7 @@ const SYSTEM_KEYS: [&str; 8] = [
 ];
 
 /// RPG Maker RTPs: (registry key, value, folder), as the official setups write them on a 32-bit
-/// Windows (their folders: crates/ippai/src/pack.rs RTP_DIRS, installed by rtp.rs). RGSS1-3 (XP,
+/// Windows (their folders: crates/masu/src/pack.rs RTP_DIRS, installed by rtp.rs). RGSS1-3 (XP,
 /// VX, VX Ace) read the folder of the RTP their Game.ini names (RTP=RPGVXAce, RTP1=Standard)
 /// from the key and stop with "RTP が必要です" without it; RPG_RT (2000, 2003) reads
 /// RuntimePackagePath (the 2000 setup's script names Software\ASCII\RPG2000; the 2003 one's is
@@ -574,7 +574,7 @@ fn reg_builtin() -> HashMap<String, KeyData> {
             put_str(&mut m, "hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f, 1);
         }
     }
-    // the RPG Maker RTPs in C:\ (the official ones, crates/ippai/src/rtp.rs), as their setups
+    // the RPG Maker RTPs in C:\ (the official ones, crates/masu/src/rtp.rs), as their setups
     // register them: the engine finds the RTP folder by this value
     for (key, name, dir) in RTPS {
         if crate::files::resolve(&format!("{dir}\\")).is_some() {
@@ -1654,7 +1654,7 @@ fn dx_node(path: &str) -> Option<(Vec<&'static str>, Vec<(&'static str, DxProp)>
                 ("ullPhysicalMemory", U8(4 << 30)),
                 ("ullAvailPhysMem", U8(3 << 30)),
                 ("szPhysicalMemoryEnglish", Str("4096MB RAM")),
-                ("szProcessorEnglish", Str("ippai x86")),
+                ("szProcessorEnglish", Str("masu x86")),
                 ("szOSEnglish", Str("Windows 7")),
                 ("szOSExEnglish", Str("Windows 7 Professional 32-bit (6.1, Build 7601)")),
                 ("szLanguagesEnglish", Str("Japanese")),
@@ -1666,9 +1666,9 @@ fn dx_node(path: &str) -> Option<(Vec<&'static str>, Vec<(&'static str, DxProp)>
         "DxDiag_DisplayDevices.0" => (
             vec![],
             vec![
-                ("szDescription", Str("ippai WebGPU")),
+                ("szDescription", Str("masu WebGPU")),
                 ("szDeviceName", Str("\\\\.\\DISPLAY1")),
-                ("szManufacturer", Str("ippai")),
+                ("szManufacturer", Str("masu")),
                 ("szChipType", Str("WebGPU")),
                 ("szDisplayMemoryEnglish", Str("512.0 MB")),
                 ("szDisplayMemoryLocalized", Str("512.0 MB")),

@@ -1,11 +1,11 @@
 //! What a game reads next, foreseen from what it reads now: a script names the pictures, voices
 //! and scripts its scene shows and plays ("[bg storage=bg01]", "@voice v_0012"), so when the game
 //! reads a script, those files are fetched onto the device before it gets to them (kura vfs.rs
-//! `predict_read`, the page's ippaiHint). The same way whichever way the game goes: the gallery's
+//! `predict_read`, the page's masuHint). The same way whichever way the game goes: the gallery's
 //! script names the gallery's pictures, a route's its scenes, on the game's first run too.
 //!
-//! Two places use it: kura, on the device, reads a script as the game reads it; ippai serve
-//! reads every script of a tree once, ahead of any play (crates/ippai/src/foresee.rs), into a
+//! Two places use it: kura, on the device, reads a script as the game reads it; masu serve
+//! reads every script of a tree once, ahead of any play (crates/masu/src/foresee.rs), into a
 //! table ([`table_line`], [`parse_table`]) the page hands kura at the start: a script's names
 //! are known before it is read, and so are those of the scripts it goes on to.
 //!
@@ -363,7 +363,7 @@ pub fn xp3_chunk(tag: &[u8], body: &[u8]) -> Vec<u8> {
 }
 
 /// An .xp3 index entry of `name` with segments (start, packed, zlib), as KiriKiri writes them
-/// (for tests here and in kura and ippai).
+/// (for tests here and in kura and masu).
 pub fn xp3_entry(name: &str, segs: &[(u64, u64, bool)]) -> Vec<u8> {
     let units: Vec<u16> = name.encode_utf16().collect();
     let total: u64 = segs.iter().map(|s| s.1).sum();

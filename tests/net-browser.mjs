@@ -10,7 +10,7 @@ const { chromium } = pw.default ?? pw;
 const source = await readFile(new URL('../host/fetch-bridge.js', import.meta.url), 'utf8');
 const body = Buffer.from(Array.from({ length: 300000 }, (_, i) => i % 251));
 // (a store chunk is named by its content: see the chunk steps below)
-const name = new Function(`${source}; return ippaiBlake3;`)()(body);
+const name = new Function(`${source}; return masuBlake3;`)()(body);
 const hits = new Map();
 const server = createServer((req, res) => {
   const n = (hits.get(req.url) ?? 0) + 1;
@@ -55,13 +55,13 @@ try {
   const page = await context.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.evaluate((source) => {
-    const connect = new Function(`${source}; IPPAI_STALL_MS = 1000; return ippaiFetchConnect;`)();
+    const connect = new Function(`${source}; MASU_STALL_MS = 1000; return masuFetchConnect;`)();
     window.retries = [];
-    new BroadcastChannel('ippai-net').onmessage = (e) => window.retries.push(e.data.retrying);
+    new BroadcastChannel('masu-net').onmessage = (e) => window.retries.push(e.data.retrying);
     window.request = (path) =>
       new Promise((resolve, reject) => {
         const port = connect();
-        const script = `${source}\nself.onmessage=e=>{ippaiFetchPort=e.data.port;try{const b=ippaiFetchSync(e.data.url);self.postMessage({length:b.length,sum:b.reduce((a,x)=>(a*31+x)>>>0,0),cached:b.cached});}catch(e){self.postMessage({error:e.message});}};`;
+        const script = `${source}\nself.onmessage=e=>{masuFetchPort=e.data.port;try{const b=masuFetchSync(e.data.url);self.postMessage({length:b.length,sum:b.reduce((a,x)=>(a*31+x)>>>0,0),cached:b.cached});}catch(e){self.postMessage({error:e.message});}};`;
         const blob = URL.createObjectURL(new Blob([script], { type: 'text/javascript' }));
         const worker = new Worker(blob);
         const timer = setTimeout(() => (worker.terminate(), reject(new Error('worker stalled'))), 60000);

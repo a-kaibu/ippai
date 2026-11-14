@@ -6,7 +6,7 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let d = std::env::temp_dir().join(format!("ippai-fuzz-profile-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("masu-fuzz-profile-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&d);
     sake::ini::fuzz_cache(&d, data);
 });

@@ -1,5 +1,5 @@
 // The device benchmark's WebGPU step (web/src/bench.ts): what the phone's GPU does with the
-// work ippai gives it, without any game: a 1280x720 picture blended LAYERS times into render
+// work masu gives it, without any game: a 1280x720 picture blended LAYERS times into render
 // targets of several sizes (a VN's layers; the bigger sizes are a high-DPI canvas), uploads of a
 // 1280x720 frame (a movie or a CPU-drawn screen), and presenting to the canvas at the device's
 // pixels and at CSS pixels (does drawing at devicePixelRatio cost frames?).

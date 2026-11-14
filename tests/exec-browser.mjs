@@ -1,4 +1,4 @@
-// A launcher's game, picked from the list, in Chromium against a real ippai serve: the page that
+// A launcher's game, picked from the list, in Chromium against a real masu serve: the page that
 // takes over when the program starts another in its place (sake's k32::exec, play.ts closeGame)
 // keeps the game's mounts, environment and saves, also at the second step. host/tests/execchain.c
 // built as Key's chain (anemoi: Start.exe -> StartData\StartMenu.exe /from="autorun" ->
@@ -6,7 +6,7 @@
 // address bar; the next page was made from that and so started without the game's files
 // ("StartMenu.exe: No such file or directory").
 //
-//   node tests/exec-browser.mjs [path to ippai]
+//   node tests/exec-browser.mjs [path to masu]
 //   (web/dist built with sake in it: crates/sake/build.sh, then pnpm build; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -16,8 +16,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-exec-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-exec-"));
 assert.ok(existsSync("web/dist/sake/sake.wasm"), "web/dist has no sake build");
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });

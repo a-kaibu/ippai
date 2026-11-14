@@ -1,7 +1,7 @@
 // Games that are web pages already (NW.js or Electron: TyranoScript, RPG Maker MV/MZ): when the
-// program's folder (or its resources/app) has a package.json (ippai pack unpacks one appended to
-// the exe: crates/ippai/src/nwjs.rs), the page opens the game's own start page in an iframe
-// instead of running the exe. The frame is on another origin (ippai serve's game listener, see
+// program's folder (or its resources/app) has a package.json (masu pack unpacks one appended to
+// the exe: crates/masu/src/nwjs.rs), the page opens the game's own start page in an iframe
+// instead of running the exe. The frame is on another origin (masu serve's game listener, see
 // `GET /game-origin`) and sandboxed, so the game's scripts cannot reach this page, the saves of
 // other games or the server's other routes: its pages start with frame.ts (frame.js), which
 // asks this page for the game's saves and sends back what the game writes, and nothing else
@@ -26,7 +26,7 @@ function where(run: string, mounts: string[]): { tree: string; dir: string } | n
 
 const enc = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
-/** Where the server's game listener is (crates/ippai/src/serve.rs). */
+/** Where the server's game listener is (crates/masu/src/serve.rs). */
 async function gameOrigin(): Promise<string> {
   const r = await fetch(new URL("game-origin", location.href));
   if (!r.ok) throw new Error(`game-origin: HTTP ${r.status}`);
@@ -177,15 +177,15 @@ export async function startWebGame(
     "allow-popups",
     "allow-modals",
   );
-  frame.src = `${origin}/tree/${encodeURIComponent(at.tree)}/${page.slice(root.length)}${electronWithNode ? "#ippai-node" : ""}`;
+  frame.src = `${origin}/tree/${encodeURIComponent(at.tree)}/${page.slice(root.length)}${electronWithNode ? "#masu-node" : ""}`;
   addEventListener("message", (e: MessageEvent) => {
     if (e.source !== frame.contentWindow || e.origin !== origin) return;
     const m = fromFrame(e.data);
-    if (m?.ippai === "hello") {
+    if (m?.masu === "hello") {
       // (each page of the game asks: a reload gets the saves as they are now)
-      const init: Init = { ippai: "init", items: [...items], base, names };
+      const init: Init = { masu: "init", items: [...items], base, names };
       frame.contentWindow!.postMessage(init, origin);
-    } else if (m?.ippai === "set") {
+    } else if (m?.masu === "set") {
       if (!saves.set(m.key, m.value)) {
         if (!refused) log("ゲームのセーブが大きすぎるため、これ以上は保存しません");
         refused = true;

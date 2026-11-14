@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs vnbox corpus titles on vnvm one after another (tests/corpus.mjs), preparing the next
+"""Runs masu corpus titles on vnvm one after another (tests/corpus.mjs), preparing the next
 title (download, extract, pack: tests/corpus-prep.sh) while the current one runs.
 
   tests/corpus-run.py TITLES.tsv IDS_FILE OUT_DIR [--steps STEPS.tsv] [--keep]
@@ -9,7 +9,7 @@ STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title)<TAB>
 the title from then on however few colours it has, a dark menu on black), wins over the columns.
 IDS_FILE "-": every title of TITLES.tsv.
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
-env: IPPAI_DIST (a release directory: vnvm, web/; default the checkout's
+env: MASU_DIST (a release directory: vnvm, web/; default the checkout's
 target/release + web/dist), JIT_DIR, SKIP_X64=0 (run x64 exes too: sake runs them), PORT,
 TRIALS, STORES, BASE_STORE (corpus-prep.sh), PREP_JOBS, CORPUS_QS (appended to the page's query).
 """
@@ -29,7 +29,7 @@ TRIALS = os.environ.get('TRIALS', '/home/user/trials')
 STORES = os.environ.get('STORES', '/home/user/runs/stores')
 os.makedirs(STORES, exist_ok=True)
 PORT = int(os.environ.get('PORT', '8092'))
-DIST = os.environ.get('IPPAI_DIST')
+DIST = os.environ.get('MASU_DIST')
 BIN = DIST or f'{ROOT}/target/release'
 WEB = f'{DIST}/web' if DIST else f'{ROOT}/web/dist'
 JIT_DIR = os.environ.get('JIT_DIR', '/home/user/runs/jit')
@@ -81,7 +81,7 @@ for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
 ends = 0
 
 def web_game(store, exe):
-    """a package.json next to the exe (NW.js, unpacked by ippai pack) or in resources/app (Electron): the page runs it, x64 or not"""
+    """a package.json next to the exe (NW.js, unpacked by masu pack) or in resources/app (Electron): the page runs it, x64 or not"""
     d = exe.rsplit('/', 1)[0] + '/' if '/' in exe else ''
     if installed(exe): return False
     want = {f'{d}package.json'.lower(), f'{d}resources/app/package.json'.lower()}
@@ -130,7 +130,7 @@ while True:
     else:
         jit = f'{JIT_DIR}/{tid}'
         os.makedirs(jit, exist_ok=True)
-        srv = subprocess.Popen([f'{BIN}/ippai', 'serve', '--foreground', '--web', WEB, '--store', f'{STORES}/{tid}',
+        srv = subprocess.Popen([f'{BIN}/masu', 'serve', '--foreground', '--web', WEB, '--store', f'{STORES}/{tid}',
                                 '--jit', jit, '--listen', f'127.0.0.1:{PORT}', '--no-prerun',
                                 # (web games' origin; the default, PORT + 1, is the next lane's PORT)
                                 '--game-listen', f'127.0.0.1:{PORT + 1000}'],

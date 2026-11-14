@@ -1,5 +1,5 @@
-// The player's own records on the server (ippai serve /api): a game's favorite flag and note,
-// its backup (.ippai: saves and note), and the play time statistics.
+// The player's own records on the server (masu serve /api): a game's favorite flag and note,
+// its backup (.masu: saves and note), and the play time statistics.
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -102,7 +102,7 @@ export function Note({ state }: { state: ProfileState }) {
   );
 }
 
-/** The most a .ippai file may hold (ippai serve's limit for /api/packages). */
+/** The most a .masu file may hold (masu serve's limit for /api/packages). */
 export const PACKAGE_MAX = 512 << 20;
 
 /** Why `f` is not taken for a restore, or "" when it is. */
@@ -119,7 +119,7 @@ export function restoreTimeout(bytes: number): number {
   return 60_000 * (1 + Math.ceil(bytes / (4 << 20)));
 }
 
-/** The game's saves and note as one .ippai file, and back. */
+/** The game's saves and note as one .masu file, and back. */
 export function Backup({ game, state }: { game: string; state: ProfileState }) {
   const file = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -150,7 +150,7 @@ export function Backup({ game, state }: { game: string; state: ProfileState }) {
     <div className="flex flex-wrap gap-2">
       <Button asChild size="sm" variant="outline">
         <a href={url} download>
-          <Download /> 書き出す（.ippai）
+          <Download /> 書き出す（.masu）
         </a>
       </Button>
       <Button size="sm" variant="outline" disabled={busy} onClick={() => file.current?.click()}>
@@ -159,9 +159,9 @@ export function Backup({ game, state }: { game: string; state: ProfileState }) {
       <input
         ref={file}
         type="file"
-        accept=".ippai"
+        accept=".masu,.ippai"
         className="hidden"
-        aria-label=".ippai から復元"
+        aria-label=".masu から復元"
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) restore(f);

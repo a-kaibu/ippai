@@ -19,11 +19,11 @@ addToLibrary({
       address.pathname='/net/tls/'+name;address.search='';address.hash='';const url=address.href;
       if(!ENVIRONMENT_IS_NODE){const expected=new URL(vnvmTlsRelay);if(address.origin!==expected.origin)return -1;}
       const shared=new SharedArrayBuffer(16+2*65536),ctl=new Int32Array(shared,0,4);
-      const source='('+ippaiTlsSocketWorker.toString()+')()';
+      const source='('+masuTlsSocketWorker.toString()+')()';
       let worker;if(ENVIRONMENT_IS_NODE){worker=new(require('worker_threads').Worker)(source,{eval:true});worker.on('error',() => {});}else{
-        if(!ippaiTlsPort)return -1;
+        if(!masuTlsPort)return -1;
         const channel=new MessageChannel();
-        ippaiTlsPort.postMessage({port:channel.port1},[channel.port1]);
+        masuTlsPort.postMessage({port:channel.port1},[channel.port1]);
         worker=channel.port2;
         worker.terminate=() => {worker.postMessage({op:'close'});worker.close();};
       }

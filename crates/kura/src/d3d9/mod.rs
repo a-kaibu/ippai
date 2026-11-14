@@ -344,7 +344,7 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
             dev: None,
             parked: Vec::new(),
             calls: std::ptr::null(),
-            trace: crate::env_on!("IPPAI_D3D_TRACE"),
+            trace: crate::env_on!("MASU_D3D_TRACE"),
             deferred_free: Vec::new(),
             counts: HashMap::new(),
             v8: false,
@@ -509,7 +509,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
     r
 }
 
-/// `IPPAI_D3D_STATS`: every 5 s, the methods that took the most time (presents include their
+/// `MASU_D3D_STATS`: every 5 s, the methods that took the most time (presents include their
 /// waits) and what the batches carried.
 pub mod stats {
     use std::collections::HashMap;
@@ -527,7 +527,7 @@ pub mod stats {
 
     pub fn on() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("IPPAI_D3D_STATS").is_some())
+        *ON.get_or_init(|| std::env::var_os("MASU_D3D_STATS").is_some())
     }
 
     fn with(f: impl FnOnce(&mut S)) {

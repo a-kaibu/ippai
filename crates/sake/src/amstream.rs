@@ -459,7 +459,7 @@ fn mms_open_file(c: &mut Ctx) -> u32 {
             play::start(b, p);
         }
         None => {
-            eprintln!("sake: movie {w}: not played (no .vnv to decode, see ippai pack)");
+            eprintln!("sake: movie {w}: not played (no .vnv to decode, see masu pack)");
             mms(b, |x| {
                 x.open = true;
                 x.playing = false;

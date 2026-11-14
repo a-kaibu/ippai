@@ -1,11 +1,11 @@
 // What the page shows of a game's window, and where clicks land, in Chromium against a real
-// ippai serve (host/tests/screenfit.c): only the game window's client area, whole, also what of
+// masu serve (host/tests/screenfit.c): only the game window's client area, whole, also what of
 // it is off sake's screen (AMBITIOUS MISSION after episode 1's window at x 850 of 1366 was cut
 // to 516 of its 976 columns), a Direct3D 9 Present's source rectangle (俺の姿が､透明に! shows
 // (0,0)-(1920,1080) of a back buffer the desktop's size), at a phone's portrait and landscape
 // viewports and a desktop's; a click at a place of the page reaches the game at that place.
 //
-//   node tests/screen-browser.mjs [path to ippai]
+//   node tests/screen-browser.mjs [path to masu]
 //   (web/dist built with sake in it: crates/sake/build.sh, then pnpm build; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -15,8 +15,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-screen-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-screen-"));
 assert.ok(existsSync("web/dist/sake/sake.wasm"), "web/dist has no sake build");
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });

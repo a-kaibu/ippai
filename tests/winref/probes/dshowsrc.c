@@ -5,7 +5,7 @@
  * its pin's IAsyncReader reads, the name it joins the graph by); then the probe's renderer
  * (one input pin taking MEDIATYPE_Video / RGB24 / VIDEOINFOHEADER only, as AdvHD's) added and
  * RenderFile of an uncompressed AVI (64x48, 10 fps, 20 frames, each frame's top and bottom
- * halves two grays, as tests/winref/probes/dshow.c writes it, with the `.vnv` ippai pack would
+ * halves two grays, as tests/winref/probes/dshow.c writes it, with the `.vnv` masu pack would
  * make of it next to it): the type the renderer is given, the graph's IVideoWindow (no video
  * window: E_NOINTERFACE), the samples it gets once the graph runs (their times and the gray of
  * the first ones' halves), the end of the stream and EC_COMPLETE.

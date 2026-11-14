@@ -4,7 +4,7 @@ The 577a146 review asked whether FastCDC's 16 MiB average (`pack.rs` DEFAULT_CHU
 for S3 PUT counts: 1.9 GiB pushed in 69 s at 16 MiB, 105 s at 4 MiB, 358 s at 1 MiB) is also
 right for playing from a local server and the device's cache. `tests/chunkbench/run.mjs`: a
 192 MiB incompressible archive (as packed games' are) read by `chunkread.exe` as a VN reads
-one (its head, 200 reads of 64 KiB at random places, 32 MiB sequential), from ippai serve on
+one (its head, 200 reads of 64 KiB at random places, 32 MiB sequential), from masu serve on
 the same machine, per size a first start (nothing on the device), a second (chunks in Cache
 Storage) and one offline. kura's chunk cache was its default 128 MiB. Release sake.wasm, 4-core
 container; "Android-like" = `tests/android-like.sh` (one busy loop per core, ~the user's phone
@@ -67,16 +67,16 @@ Chromium here), copied it into the wasm heap and again into a `Vec`, and kept it
 entry (8 entries of 16 MiB in 128 MiB); over the network it fetched the whole chunk, plus the
 next whole chunk ahead. So big chunks lost on scattered reads and 1 MiB lost on requests.
 
-Now (crates/kura/src/vfs.rs, host/fetch-bridge.js, crates/ippai/src/store_api.rs):
+Now (crates/kura/src/vfs.rs, host/fetch-bridge.js, crates/masu/src/store_api.rs):
 
-- kura caches and asks for **blocks** of 256 KiB (`IPPAI_VFS_BLOCK_KIB`), fetched in pieces of up
+- kura caches and asks for **blocks** of 256 KiB (`MASU_VFS_BLOCK_KIB`), fetched in pieces of up
   to 1 MiB: a read asks for its own blocks, the fetcher threads for the rest of it and one block
   past it (32 for a sequential read).
 - The network worker answers a block range from the first place that has it: its memory (a chunk
   it fetched whole lately), the whole chunk in Cache Storage with `Blob.slice` (~1.3 ms for 64 or
   256 KiB of an entry of 1, 4, 16 or 64 MiB alike), the chunk's blocks kept alone in Cache Storage
   (`<chunk>?b=<n>&s=<block>`), else a `Range` request.
-- `ippai serve` answers `Range` on a chunk with those bytes of the decoded chunk (206, no
+- `masu serve` answers `Range` on a chunk with those bytes of the decoded chunk (206, no
   Content-Encoding), decoding each chunk once (256 MiB of decoded chunks kept, one decode for
   requests side by side). A server without ranges sends the whole chunk: then checked and kept
   whole as before. A block has no name of its own to check: its place and length are checked, the

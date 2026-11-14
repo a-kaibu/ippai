@@ -1048,7 +1048,7 @@ const DEVICE_GUID: [u8; 16] = [0x7c, 0x1d, 0x7f, 0x3e, 0x2b, 0x4a, 0x5d, 0x4c, 0
 fn ds_devices(sound: bool) -> Vec<(Option<[u8; 16]>, &'static str, String)> {
     let mut v = vec![(None, "Primary Sound Driver", String::new())];
     if sound {
-        v.push((Some(DEVICE_GUID), "Speakers (ippai Audio)", format!("{{0.0.0.00000000}}.{}", guid_text(&DEVICE_GUID))));
+        v.push((Some(DEVICE_GUID), "Speakers (masu Audio)", format!("{{0.0.0.00000000}}.{}", guid_text(&DEVICE_GUID))));
     }
     v
 }

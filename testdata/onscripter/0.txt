@@ -1,5 +1,5 @@
 ;modew720,value500
-; ONScripter ベンチ: ippai のベンチマーク (tests/bench, グループ onscripter) が遊ぶ小さなノベル。
+; ONScripter ベンチ: masu のベンチマーク (tests/bench, グループ onscripter) が遊ぶ小さなノベル。
 ; 絵と音は吉里吉里ベンチ (testdata/kirikiri) のもの。tests/bench/pack-onscripter.py が Shift_JIS に
 ; して、build-onscripter.sh が作った onscripter.exe の隣に置く。合図は benchlog (標準出力の行):
 ;   BENCH-STATE <何> <番号>   何かを表示し終えた (title, scene, line, saved, restored, end, fx_*)

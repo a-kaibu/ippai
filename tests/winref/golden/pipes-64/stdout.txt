@@ -21,15 +21,15 @@ CreateNamedPipeA("\\\\.\\pipe\\", PIPE_ACCESS_DUPLEX, 0, 1, 512, 512, 0, NULL) !
 CreateNamedPipeA("C:\\notapipe", PIPE_ACCESS_DUPLEX, 0, 1, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 123
 CreateNamedPipeA(P("x"), PIPE_ACCESS_DUPLEX, 0, 0, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 87
 CreateNamedPipeA(P("x"), 0, 0, 1, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE   = 0 err 87
-client ippai_probe_none valid 0 err 2
+client masu_probe_none valid 0 err 2
 WaitNamedPipeA(P("none"), 0)                                                   = 0 err 2
 s != INVALID_HANDLE_VALUE                                                      = 1 err 57005
 GetFileType(s)                                                                 = 3 err 57005
 CreateNamedPipeA(P("byte"), PIPE_ACCESS_DUPLEX, 0, 1, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 231
 WaitNamedPipeA(P("byte"), 0)                                                   = 1 err 57005
 peek 0 err 230 read 57005 avail 57005 left 57005 data ''
-client ippai_probe_byte valid 1 err 0
-client ippai_probe_byte valid 0 err 231
+client masu_probe_byte valid 1 err 0
+client masu_probe_byte valid 0 err 231
 WaitNamedPipeA(P("byte"), 0)                                                   = 0 err 121
 ConnectNamedPipe(s, NULL)                                                      = 0 err 535
 write 'hello' 1 err 57005 wrote 5
@@ -55,15 +55,15 @@ DisconnectNamedPipe(s)                                                         =
 DisconnectNamedPipe(s)                                                         = 0 err 233
 read(10) 0 err 233 got 0 ''
 WaitNamedPipeA(P("byte"), 0)                                                   = 0 err 121
-client ippai_probe_byte valid 0 err 231
+client masu_probe_byte valid 0 err 231
 CloseHandle(s)                                                                 = 1 err 57005
-client ippai_probe_byte valid 0 err 2
+client masu_probe_byte valid 0 err 2
 m1 != INVALID_HANDLE_VALUE && m2 != INVALID_HANDLE_VALUE                       = 1 err 57005
 CreateNamedPipeA(P("msg"), PIPE_ACCESS_DUPLEX, PIPE_TYPE_MESSAGE, 2, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 231
 CreateNamedPipeA(P("msg"), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 231
-client ippai_probe_msg valid 1 err 0
-client ippai_probe_msg valid 1 err 0
-client ippai_probe_msg valid 0 err 231
+client masu_probe_msg valid 1 err 0
+client masu_probe_msg valid 1 err 0
+client masu_probe_msg valid 0 err 231
 write 'first message' 1 err 57005 wrote 13
 write 'second' 1 err 57005 wrote 6
 write 'to two' 1 err 57005 wrote 6
@@ -98,8 +98,8 @@ write 'x' 0 err 232 wrote 0
 CloseHandle(m1)                                                                = 1 err 57005
 CloseHandle(m2)                                                                = 1 err 57005
 in1 != INVALID_HANDLE_VALUE                                                    = 1 err 57005
-client ippai_probe_in valid 0 err 5
-client ippai_probe_in valid 1 err 0
+client masu_probe_in valid 0 err 5
+client masu_probe_in valid 1 err 0
 write 'up' 1 err 57005 wrote 2
 read(10) 1 err 57005 got 2 'up'
 write 'down' 0 err 5 wrote 0
@@ -107,7 +107,7 @@ CloseHandle(cw)                                                                =
 CloseHandle(in1)                                                               = 1 err 57005
 ConnectNamedPipe(ov, &o)                                                       = 0 err 997
 WaitForSingleObject(o.hEvent, 0)                                               = 258 err 57005
-client ippai_probe_ov valid 1 err 0
+client masu_probe_ov valid 1 err 0
 WaitForSingleObject(o.hEvent, 0)                                               = 0 err 57005
 GetOverlappedResult(ov, &o, &got, FALSE)                                       = 1 err 0
 write 'ovl' 1 err 57005 wrote 3

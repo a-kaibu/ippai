@@ -1,8 +1,8 @@
 // Where the page gets sake's wasm (~23 MB, ~5 MB as zstd). Normally from the server
 // (sake/<name>.wasm?v=...), which the browser keeps with its compiled code. But a server far
 // away or on a slow line (worker2 gave ~100 KB/s at times) held the start for minutes before
-// the first instruction ran, the page saying only "起動中". ippai serve puts its wasm in the
-// bucket the game's chunks come from (crates/ippai/src/store_api.rs publish_wasm) and
+// the first instruction ran, the page saying only "起動中". masu serve puts its wasm in the
+// bucket the game's chunks come from (crates/masu/src/store_api.rs publish_wasm) and
 // /sake-direct/<name> says how to fetch it there, as /store-direct does for a chunk. So:
 //
 // 1. the browser has the server's file already (HTTP cache): that, as before (the compiled

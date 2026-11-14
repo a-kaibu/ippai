@@ -371,10 +371,10 @@ thread_local! {
     static SET: std::cell::RefCell<PassSet> = std::cell::RefCell::new(PassSet::default());
 }
 
-/// IPPAI_NOSETOPT=1: every state call made
+/// MASU_NOSETOPT=1: every state call made
 fn no_set_opt() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("IPPAI_NOSETOPT").is_some_and(|v| v != "0"))
+    *OFF.get_or_init(|| std::env::var_os("MASU_NOSETOPT").is_some_and(|v| v != "0"))
 }
 
 fn forget_set() {

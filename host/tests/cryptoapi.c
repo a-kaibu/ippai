@@ -7,7 +7,7 @@
 #include <string.h>
 #include "cryptoapi-vectors.h"
 
-static const BYTE message[] = "ippai CryptoAPI signature regression";
+static const BYTE message[] = "masu CryptoAPI signature regression";
 static HCRYPTPROV provider;
 static HCRYPTKEY key;
 static int failed;

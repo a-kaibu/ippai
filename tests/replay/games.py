@@ -4,7 +4,7 @@ is an OCI artifact on GitHub Packages (ghcr.io/a-kaibu/ippai-traces:<id>-<bits>,
 unlimited for a public package: the user, 2026-11-07, "packagesに置くようにして"), and
 testdata/apitrace/<id>-<bits>.txt says what was recorded (api, exe, seconds, the trace's size and
 sha256) and where it is (ref, the zstd blob's digest and size). Pulled blobs are kept in
-TRACES_CACHE (default ~/.cache/ippai-traces). A private package (before it is made public)
+TRACES_CACHE (default ~/.cache/masu-traces). A private package (before it is made public)
 needs GHCR_TOKEN (CI: the job's GITHUB_TOKEN with packages: read); pushing needs packages: write.
 
     games.py todo [--again=true] [--max N] [id ...]   the titles to record (at most N): those given, else
@@ -41,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GAMES = os.path.join(HERE, "..", "..", "testdata", "apitrace")
 TITLES = os.path.join(HERE, "..", "corpus", "titles.tsv")
 REF = os.environ.get("TRACES_REF", "ghcr.io/a-kaibu/ippai-traces")
-SOURCE = "https://github.com/a-kaibu/ippai"
+SOURCE = "https://github.com/a-kaibu/masu"
 
 
 def listed(path=os.path.join(HERE, "games.txt")):
@@ -204,7 +204,7 @@ def push_zst(z, data, prefix, api, exe, seconds, ref=REF, reg=None):
     layer = {"mediaType": "application/zstd", "digest": reg.put_blob(z), "size": len(z),
              "annotations": {"org.opencontainers.image.title": name + ".trace.zst"}}
     m = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-         "artifactType": "application/vnd.ippai.apitrace.v1",
+         "artifactType": "application/vnd.masu.apitrace.v1",
          "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": reg.put_blob(EMPTY), "size": len(EMPTY)},
          "layers": [layer],
          # (links the package to the repository: its visibility and access)
@@ -224,7 +224,7 @@ def unzstd(z, what):
 
 
 def cache_dir():
-    return os.environ.get("TRACES_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "ippai-traces")
+    return os.environ.get("TRACES_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "masu-traces")
 
 
 def unpack(prefix, out, reg=None):

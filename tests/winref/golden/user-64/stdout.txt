@@ -51,8 +51,8 @@ setpos max 300: 200 x 300
 nosize max 300: 200 x 300
 RegisterClassA(&wc) != 0                                         = 1 err 57005
 RegisterClassA(&wc) != 0                                         = 0 err 1410
-GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49531 err 57005
-GetClassInfoA(wc.hInstance, "ippai-nothere", &got)               = 0 err 1411
+GetClassInfoA(wc.hInstance, "masu-winref", &got)                = 49531 err 57005
+GetClassInfoA(wc.hInstance, "masu-nothere", &got)               = 0 err 1411
 -- create hidden
 WM_GETMINMAXINFO
 WM_NCCREATE
@@ -147,5 +147,5 @@ WM_NCDESTROY
 DestroyWindow(h)                                                 = 1 err 0
 DestroyWindow(h)                                                 = 0 err 1400
 IsWindow(h)                                                      = 0 err 57005
-UnregisterClassA("ippai-winref", wc.hInstance)                   = 1 err 57005
-UnregisterClassA("ippai-winref", wc.hInstance)                   = 0 err 1411
+UnregisterClassA("masu-winref", wc.hInstance)                   = 1 err 57005
+UnregisterClassA("masu-winref", wc.hInstance)                   = 0 err 1411

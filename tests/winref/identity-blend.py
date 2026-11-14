@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GPU metamorphic test: disabled blending and ONE/ZERO ADD must render identically.
 
-Uses run-browser.mjs (IPPAI, WEB and PLAYWRIGHT environment variables as documented there).
+Uses run-browser.mjs (MASU, WEB and PLAYWRIGHT environment variables as documented there).
 Requires i686-w64-mingw32-gcc/windres on PATH. No Windows golden output is invented:
 both actual PE programs run on the same browser/runtime and their outputs are compared.
 """

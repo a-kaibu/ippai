@@ -1,4 +1,4 @@
-//! koji's saved translations index (what `ippai serve` hands the page back: any bytes may come
+//! koji's saved translations index (what `masu serve` hands the page back: any bytes may come
 //! from the server or a damaged file): no panic; a whole index is the one decode_all reads;
 //! every entry read is consistent (a root, its code's bytes) and has its names.
 #![no_main]

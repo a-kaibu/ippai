@@ -1,6 +1,6 @@
 //! The run's read trace: when the game first read each store chunk, of which file and where,
 //! how long that read waited, and what each foresight (vfs/hints.rs by layout, vfs/predict.rs
-//! by what scripts name) hinted when. ippai serve keeps a game's last runs (`jit/traces/`); a
+//! by what scripts name) hinted when. masu serve keeps a game's last runs (`jit/traces/`); a
 //! replay of them (hints_eval.rs) scores ways to foresee reads against what real plays read
 //! and when, and is what a model of the next reads learns from.
 //!

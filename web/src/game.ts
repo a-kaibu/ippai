@@ -8,7 +8,7 @@
 //   - frames per second the game draws, and the longest gap between animation frames (stalls)
 //
 // Natively (Wine on the x86-64 dev machine) for comparison: title 5.9 s, story 0.18 cores (9 s of
-// CPU in 50 s). The result goes to ippai serve's `PUT /bench-log` (bench-results.txt).
+// CPU in 50 s). The result goes to masu serve's `PUT /bench-log` (bench-results.txt).
 //
 // It runs twice (the page reloads itself: the module can't start twice in a page): the first run
 // translates what isn't saved yet (after a new build, all of it), the second starts from the
@@ -18,7 +18,7 @@
 //   /game.html?runs=1     one run only
 //   &titleafter=N         the title counts as shown after N s (Direct3D games)
 //   &pre=x,y              clicked every 3 s before the title (a first-start dialog; client pixels)
-//   &env=IPPAI_JIT_PROFILE=1  print the executed instruction counts at the end (console)
+//   &env=MASU_JIT_PROFILE=1  print the executed instruction counts at the end (console)
 
 import { setBench } from "./ui/store";
 import { renderShell } from "./ui/Shell";
@@ -53,7 +53,7 @@ if (!params.has("run")) {
   params.set("load", "");
   // the screen the numbers were taken on: on kura's 1366x768 default Reunion's title ignores
   // clicks
-  params.append("env", "IPPAI_SCREEN=1280x720");
+  params.append("env", "MASU_SCREEN=1280x720");
   history.replaceState(null, "", `?${params}`);
 }
 
@@ -230,8 +230,8 @@ async function story(): Promise<void> {
     `per second (cpu cores / fps / gap ms): ${perSec.map((p) => `${p.cpu.toFixed(2)}/${p.fps.toFixed(0)}/${p.gap.toFixed(0)}`).join(" ")}`,
     device,
   ];
-  // &env=IPPAI_JIT_PROFILE=1: the executed instruction counts (to stderr, the console)
-  if (params.getAll("env").some((e) => e.startsWith("IPPAI_JIT_PROFILE="))) sake()?._vnhost_jit_profile?.();
+  // &env=MASU_JIT_PROFILE=1: the executed instruction counts (to stderr, the console)
+  if (params.getAll("env").some((e) => e.startsWith("MASU_JIT_PROFILE="))) sake()?._vnhost_jit_profile?.();
   await fetch("bench-log", { method: "PUT", body: lines.join("\n") }).catch(() => undefined);
   if (round < runs) {
     try {

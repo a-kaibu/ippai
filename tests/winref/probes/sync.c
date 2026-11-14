@@ -83,21 +83,21 @@ int main(void) {
     E(CreateSemaphoreA(NULL, 0, 0, NULL) != NULL);
 
     /* names */
-    HANDLE n1 = CreateEventA(NULL, TRUE, FALSE, "ippai-winref-ev");
+    HANDLE n1 = CreateEventA(NULL, TRUE, FALSE, "masu-winref-ev");
     E(GetLastError());
-    HANDLE n2 = CreateEventA(NULL, FALSE, TRUE, "ippai-winref-ev"); /* opens the existing one: its flags stay */
+    HANDLE n2 = CreateEventA(NULL, FALSE, TRUE, "masu-winref-ev"); /* opens the existing one: its flags stay */
     E(n2 != NULL);
     W(n2, 0);
-    E(OpenEventA(EVENT_ALL_ACCESS, FALSE, "ippai-winref-ev") != NULL);
-    E(OpenEventA(EVENT_ALL_ACCESS, FALSE, "ippai-winref-none") != NULL);
-    E(CreateMutexA(NULL, FALSE, "ippai-winref-ev") != NULL); /* another type */
-    E(OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "ippai-winref-ev") != NULL);
-    E(CreateSemaphoreA(NULL, 0, 1, "ippai-winref-ev") != NULL);
-    HANDLE nm = CreateMutexA(NULL, TRUE, "ippai-winref-mx");
-    E(CreateMutexA(NULL, TRUE, "ippai-winref-mx") != NULL);
+    E(OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-ev") != NULL);
+    E(OpenEventA(EVENT_ALL_ACCESS, FALSE, "masu-winref-none") != NULL);
+    E(CreateMutexA(NULL, FALSE, "masu-winref-ev") != NULL); /* another type */
+    E(OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "masu-winref-ev") != NULL);
+    E(CreateSemaphoreA(NULL, 0, 1, "masu-winref-ev") != NULL);
+    HANDLE nm = CreateMutexA(NULL, TRUE, "masu-winref-mx");
+    E(CreateMutexA(NULL, TRUE, "masu-winref-mx") != NULL);
     E(GetLastError());
-    E(CreateEventA(NULL, TRUE, FALSE, "Local\\ippai-winref-ev2") != NULL);
-    E(CreateEventA(NULL, TRUE, FALSE, "Global\\ippai-winref-ev3") != NULL);
+    E(CreateEventA(NULL, TRUE, FALSE, "Local\\masu-winref-ev2") != NULL);
+    E(CreateEventA(NULL, TRUE, FALSE, "Global\\masu-winref-ev3") != NULL);
     E(CreateEventA(NULL, TRUE, FALSE, "bad\\name") != NULL);
     E(CreateEventA(NULL, TRUE, FALSE, "") != NULL);
     CloseHandle(n2); CloseHandle(nm);

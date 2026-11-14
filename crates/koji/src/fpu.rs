@@ -7,7 +7,7 @@ use crate::f80::F80;
 use crate::flags::{CF, PF, ZF};
 use core::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
-/// The precise x87 mode (off by default; the embedder sets it, kura: IPPAI_X87_80): the
+/// The precise x87 mode (off by default; the embedder sets it, kura: MASU_X87_80): the
 /// interpreter computes the x87's arithmetic, loads, stores and compares in the 80-bit format
 /// (crate::f80: 64-bit significand, 15-bit exponent, the precision control's rounding), keeping
 /// each register's extended value beside its f64 (`Fpu::ext`), and the JITs leave x87

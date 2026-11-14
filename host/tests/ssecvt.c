@@ -1,6 +1,6 @@
 /* SSE2 conversions and compares the JIT translates (CVTTSD2SI, CVTSS2SD, COMISS, MOVSD, BT...):
    edge values (NaN, out of range, -0, halves) folded into a checksum; the same with
-   IPPAI_JIT=0 (and natively). Build with -msse2 -mssse3 (PSHUFB). */
+   MASU_JIT=0 (and natively). Build with -msse2 -mssse3 (PSHUFB). */
 #include <stdio.h>
 #include <string.h>
 #include <tmmintrin.h>

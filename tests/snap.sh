@@ -1,11 +1,11 @@
 #!/bin/bash
 # Save states under node (docs/savestate.md): host/tests/snaptest.c (and other host tests) run
 # whole, and in pieces cut by states. For each cut time T:
-#   run A: a state at T, the process ends there (IPPAI_SNAP_EXIT)
+#   run A: a state at T, the process ends there (MASU_SNAP_EXIT)
 #   run B: from that state to the end
 # A's output followed by B's must be the whole run's. Also: a live state (the program goes on)
 # changes nothing, B twice prints the same, a state taken from a restored run (A -> B' -> C)
-# restores too. With the JIT and the interpreter (IPPAI_JIT=0), x86 and x86-64.
+# restores too. With the JIT and the interpreter (MASU_JIT=0), x86 and x86-64.
 #
 #   tests/snap.sh          SAKE=path/to/sake.js (default /home/user/work/sake-out/sake.js); node 24+
 #                          (EXES="snaptest snaptest-64", JITS="1 0", TIMES: fewer)
@@ -43,31 +43,31 @@ for exe in $EXES; do
   for jit in $JITS; do
     tag="$exe jit=$jit"
     o=$OUT/$exe-$jit
-    run IPPAI_JIT=$jit > $o.whole
+    run MASU_JIT=$jit > $o.whole
     if [ "$(tail -1 $o.whole)" != end ] || ! grep -qx 'clocks: ok' $o.whole; then
       echo "FAIL $tag: the whole run"; tail -5 $o.whole; fail=1; continue
     fi
     for t in $TIMES; do
       s=$o-$t.snap
       # (a state may come in the middle of a line: the pieces are put together as they are)
-      run IPPAI_JIT=$jit IPPAI_SNAP_SAVE="$s@$t" IPPAI_SNAP_EXIT=1 > $o.a
+      run MASU_JIT=$jit MASU_SNAP_SAVE="$s@$t" MASU_SNAP_EXIT=1 > $o.a
       if [ ! -s "$s" ]; then
         echo "FAIL $tag @$t: no state"; fail=1; continue
       fi
-      run IPPAI_JIT=$jit IPPAI_SNAP_LOAD="$s" > $o.b
+      run MASU_JIT=$jit MASU_SNAP_LOAD="$s" > $o.b
       cat $o.a $o.b > $o.ab
       check "$tag @$t: before + after = whole" $o.ab $o.whole
-      run IPPAI_JIT=$jit IPPAI_SNAP_LOAD="$s" > $o.b2
+      run MASU_JIT=$jit MASU_SNAP_LOAD="$s" > $o.b2
       check "$tag @$t: restored twice" $o.b2 $o.b
     done
     # a state from a restored run
-    run IPPAI_JIT=$jit IPPAI_SNAP_SAVE="$o.c1@0.9" IPPAI_SNAP_EXIT=1 > $o.a
-    run IPPAI_JIT=$jit IPPAI_SNAP_LOAD="$o.c1" IPPAI_SNAP_SAVE="$o.c2@0.9" IPPAI_SNAP_EXIT=1 > $o.b
-    run IPPAI_JIT=$jit IPPAI_SNAP_LOAD="$o.c2" > $o.c
+    run MASU_JIT=$jit MASU_SNAP_SAVE="$o.c1@0.9" MASU_SNAP_EXIT=1 > $o.a
+    run MASU_JIT=$jit MASU_SNAP_LOAD="$o.c1" MASU_SNAP_SAVE="$o.c2@0.9" MASU_SNAP_EXIT=1 > $o.b
+    run MASU_JIT=$jit MASU_SNAP_LOAD="$o.c2" > $o.c
     cat $o.a $o.b $o.c > $o.abc
     check "$tag: state of a restored run" $o.abc $o.whole
     # live states: the program goes on as if none were taken
-    run IPPAI_JIT=$jit IPPAI_SNAP_SAVE="$o.live@0.5,1.5,2.5" > $o.l
+    run MASU_JIT=$jit MASU_SNAP_SAVE="$o.live@0.5,1.5,2.5" > $o.l
     check "$tag: live states" $o.l $o.whole
   done
 done
@@ -79,8 +79,8 @@ for bits in 32 64; do
   EXE=$OUT/snapinit-$bits.exe
   o=$OUT/snapinit-$bits
   run > $o.whole
-  run IPPAI_SNAP_SAVE="$o.snap@1.2" IPPAI_SNAP_EXIT=1 > $o.a
-  run IPPAI_SNAP_LOAD="$o.snap" > $o.b
+  run MASU_SNAP_SAVE="$o.snap@1.2" MASU_SNAP_EXIT=1 > $o.a
+  run MASU_SNAP_LOAD="$o.snap" > $o.b
   cat $o.a $o.b > $o.ab
   if [ "$(tail -1 $o.whole)" = end ] && grep -qx callback $o.a; then
     check "snapinit $bits: asked for in the TLS callback" $o.ab $o.whole
@@ -93,7 +93,7 @@ done
 i686-w64-mingw32-gcc -O2 "$ROOT/host/tests/snapproc.c" -o "$OUT/snapproc.exe" &&
   i686-w64-mingw32-gcc -O2 -DCHILD "$ROOT/host/tests/snapproc.c" -o "$OUT/snapchild.exe" || exit 1
 EXE=$OUT/snapproc.exe
-run IPPAI_SNAP_SAVE="$OUT/proc.snap@1" > "$OUT/proc.out"
+run MASU_SNAP_SAVE="$OUT/proc.snap@1" > "$OUT/proc.out"
 if grep -q "snap: no state: other processes run with this one" "$LOG" && [ ! -e "$OUT/proc.snap" ] &&
   [ "$(cat "$OUT/proc.out")" = "$(printf 'started\nchild: 7\nend')" ]; then
   echo "ok   another process: no state, the program goes on"

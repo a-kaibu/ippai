@@ -8,7 +8,7 @@
 #include "../probe.h"
 
 #define E(expr) do { SetLastError(0xdead); long long r_ = (long long)(expr); printf("%-78s = %lld err %lu\n", #expr, r_, GetLastError()); } while (0)
-#define P(name) "\\\\.\\pipe\\ippai_probe_" name
+#define P(name) "\\\\.\\pipe\\masu_probe_" name
 
 static char buf[256];
 static DWORD n, avail, left, msg;

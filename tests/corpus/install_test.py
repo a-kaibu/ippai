@@ -9,7 +9,7 @@ random trees: choose() names a file of the tree that is a setup program or the e
 an uninstaller; game_of() never answers a tool, setup or uninstall program and does not depend on
 listing order. End to end (when node's sake.js is there, SAKE_NODE or target/sake-out, and
 i686-w64-mingw32-gcc): host/tests/autoinstall.c as a trial's setup, through install.py run and
-through corpus-prep.sh (the store's prefix32 holds what it installed, when ippai is on PATH).
+through corpus-prep.sh (the store's prefix32 holds what it installed, when masu is on PATH).
 
   python3 tests/corpus/install_test.py
 """
@@ -299,7 +299,7 @@ class EndToEnd(unittest.TestCase):
                            env=self.env, capture_output=True, text=True, timeout=400)
         self.assertEqual((r.returncode, r.stdout), (0, 'C\tautoinstall/game.exe\n'), r.stderr + open(os.path.join(self.t, 'install.log')).read()[-2000:])
 
-    @unittest.skipUnless(shutil.which('ippai'), 'needs ippai on PATH for the store')
+    @unittest.skipUnless(shutil.which('masu'), 'needs masu on PATH for the store')
     def test_corpus_prep(self):
         trials, base = os.path.join(self.t, 'trials'), os.path.join(self.t, 'base')
         fonts = os.path.join(self.t, 'fonts')
@@ -308,7 +308,7 @@ class EndToEnd(unittest.TestCase):
         open(os.path.join(fonts, 'f.ttf'), 'wb').write(b'font')
         p = os.path.join(self.t, 'p', 'drive_c', 'windows', 'temp')
         os.makedirs(p)
-        subprocess.run(['ippai', '--store', base, 'pack', os.path.join(self.t, 'p'), 'prefix32'], check=True, capture_output=True)
+        subprocess.run(['masu', '--store', base, 'pack', os.path.join(self.t, 'p'), 'prefix32'], check=True, capture_output=True)
         shutil.copy(self.setup, os.path.join(trials, 'auto', 'dl.exe'))
         store = os.path.join(self.t, 'store')
         r = subprocess.run(['bash', f'{ROOT}/tests/corpus-prep.sh', 'auto', 'http://127.0.0.1:9/test_setup.exe', '', store],

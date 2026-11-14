@@ -45,9 +45,9 @@ static void folder(const char *rel) {
 
 static void registry(void) {
     HKEY k;
-    LONG r = RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\ippai\\msitest", 0, KEY_READ, &k);
+    LONG r = RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\masu\\msitest", 0, KEY_READ, &k);
     if (r) {
-        printf("  HKCU\\Software\\ippai\\msitest: missing (%ld)\n", r);
+        printf("  HKCU\\Software\\masu\\msitest: missing (%ld)\n", r);
         return;
     }
     char s[MAX_PATH] = "";
@@ -192,7 +192,7 @@ static void search_setup(void) {
     HANDLE h = CreateFileA(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     CloseHandle(h);
     HKEY k;
-    RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\ippai\\search", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL);
+    RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\masu\\search", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL);
     RegSetValueExA(k, "sz", 0, REG_SZ, (const BYTE *)"#hash", 6);
     DWORD v = 0xfffffff6;
     RegSetValueExA(k, "dw", 0, REG_DWORD, (const BYTE *)&v, 4);

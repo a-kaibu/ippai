@@ -416,16 +416,16 @@ fn transport(r: &Request) -> Result<Response, u32> {
     let connection = &r.connection;
     let host = connection.host.to_ascii_lowercase();
     if crate::env_on!("SAKE_TRACE_WININET") {
-        eprintln!("sake: WinINet target allowed={} port={} secure={}", ippai_tls::target(&host).is_some(), connection.port, r.flags & 0x800000 != 0);
+        eprintln!("sake: WinINet target allowed={} port={} secure={}", masu_tls::target(&host).is_some(), connection.port, r.flags & 0x800000 != 0);
     }
-    if r.flags & 0x800000 == 0 || !ippai_tls::target(&host).is_some() || !matches!(connection.port, 0 | 443) {
+    if r.flags & 0x800000 == 0 || !masu_tls::target(&host).is_some() || !matches!(connection.port, 0 | 443) {
         return Err(12029);
     }
     let mut headers = r.headers.clone();
     if !connection.session.agent.is_empty() && !headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("user-agent")) {
         headers.push(("User-Agent".into(), connection.session.agent.clone()));
     }
-    let request = ippai_tls::Request {
+    let request = masu_tls::Request {
         host: host.clone(),
         method: r.method.clone(),
         path: r.path.clone(),
@@ -434,8 +434,8 @@ fn transport(r: &Request) -> Result<Response, u32> {
     };
     let io = crate::tls_socket::Socket::open(&host, connection.session.timeout).map_err(|_| 12029u32)?;
     let response =
-        ippai_tls::exchange(io, &request, ippai_tls::default_config()).map_err(|error| -> u32 {
-            use ippai_tls::{
+        masu_tls::exchange(io, &request, masu_tls::default_config()).map_err(|error| -> u32 {
+            use masu_tls::{
                 Error,
                 rustls::{CertificateError, Error as TlsError},
             };

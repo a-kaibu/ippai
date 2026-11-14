@@ -6,7 +6,7 @@ Module.preRun.push(() => {
 });
 
 // Regions an earlier run saved (crates/kura/src/jit.rs): `vnvmJit` = { parts: [{ module, idx }] }
-// from the page, or under node IPPAI_JIT_FILE.wasm/.idx; and the page's saved games `vnvmSaves`
+// from the page, or under node MASU_JIT_FILE.wasm/.idx; and the page's saved games `vnvmSaves`
 // (bytes, read as "@saves" by host/vnfs.js). Every thread gets them in the message that loads it
 // ('load'): the saves as a SharedArrayBuffer, not copied per thread.
 var vnvmJitBundle = null;
@@ -17,7 +17,7 @@ var vnvmSaves = null;
 var vnvmKernel = null;
 var vnvmKernelI32 = null;
 var vnvmCanSpawn = false;
-var IPPAI_KERNEL_BYTES = 32 << 20;
+var MASU_KERNEL_BYTES = 32 << 20;
 // the tree lists the page fetched before starting (`vnvmFiles`, host/vnfs.js): every thread gets
 // them, so a thread's first look at the file system needs no request
 var vnvmTrees = null;
@@ -43,7 +43,7 @@ if (ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
     if (vnvmPrintChannel) vnvmPrintChannel.postMessage(line);
   };
 }
-function ippaiSharedFs() {
+function masuSharedFs() {
   try {
     const b = new SharedArrayBuffer(1 << 20, { maxByteLength: 1 << 30 });
     if (b.growable) return b;
@@ -52,7 +52,7 @@ function ippaiSharedFs() {
 }
 Module.preInit = [].concat(Module.preInit || [], () => {
   if (ENVIRONMENT_IS_PTHREAD) return;
-  const f = ENVIRONMENT_IS_NODE && process.env.IPPAI_JIT_FILE;
+  const f = ENVIRONMENT_IS_NODE && process.env.MASU_JIT_FILE;
   if (f && !Module.vnvmJit) {
     try {
       const fs = require('fs');
@@ -65,12 +65,12 @@ Module.preInit = [].concat(Module.preInit || [], () => {
   vnvmSensitive = Module.vnvmSensitive || null;
   // (the processes' shared namespace: grown as needed where the browser can, else 64 MiB;
   // used only once a child process starts, kura/src/vfs/shared.rs)
-  vnvmFs = Module.vnvmFs || (!ENVIRONMENT_IS_NODE ? ippaiSharedFs() : null);
+  vnvmFs = Module.vnvmFs || (!ENVIRONMENT_IS_NODE ? masuSharedFs() : null);
   vnvmJitBundle = Module.vnvmJit || null;
   vnvmPid = Number((Module.vnvmEnv && Module.vnvmEnv.SAKE_PID) || (ENVIRONMENT_IS_NODE && process.env.SAKE_PID) || 0x10);
   vnvmTrees = Module.vnvmFiles || null;
   if (!ENVIRONMENT_IS_NODE) { const u = new URL("/net/tls/soft-denchi", location.href); u.protocol = u.protocol === "https:" ? "wss:" : "ws:"; vnvmTlsRelay = u.href; }
-  vnvmKernel = Module.vnvmKernel || (typeof SharedArrayBuffer == 'function' ? new SharedArrayBuffer(IPPAI_KERNEL_BYTES) : null);
+  vnvmKernel = Module.vnvmKernel || (typeof SharedArrayBuffer == 'function' ? new SharedArrayBuffer(MASU_KERNEL_BYTES) : null);
   vnvmCanSpawn = !!Module.vnvmSpawn;
   if (Module.vnvmSaves) {
     vnvmSaves = new Uint8Array(new SharedArrayBuffer(Module.vnvmSaves.length));
@@ -91,7 +91,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       load: () => ({ vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn, vnvmTlsRelay, vnvmAccount, vnvmSensitive, vnvmFs, vnvmPid, vnvmPrint: Module.vnvmPrint || null }),
       // (what the thread asks of the host: to start a process)
       ask: (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel, vnvmFs),
-      ports: () => [ippaiFetchConnect(), ippaiTlsConnect()],
+      ports: () => [masuFetchConnect(), masuTlsConnect()],
     };
     const hosts = (W.vnvmHosts ??= new Set());
     hosts.add(host);
@@ -130,8 +130,8 @@ if (!ENVIRONMENT_IS_PTHREAD) {
       vnvmPid = d.vnvmPid || 0x10;
       if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
       if (d.vnvmPrint && !ENVIRONMENT_IS_NODE && !vnvmPrintChannel) vnvmPrintChannel = new BroadcastChannel(d.vnvmPrint);
-      if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
-      if (d.vnvmTlsPort) ippaiTlsPort = d.vnvmTlsPort;
+      if (d.vnvmFetchPort) masuFetchPort = d.vnvmFetchPort;
+      if (d.vnvmTlsPort) masuTlsPort = d.vnvmTlsPort;
     }
   };
   if (ENVIRONMENT_IS_NODE) require('worker_threads').parentPort.on('message', take);

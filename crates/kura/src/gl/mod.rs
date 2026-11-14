@@ -648,9 +648,9 @@ GL_ARB_shader_objects GL_ARB_vertex_program GL_ARB_vertex_shader GL_ARB_fragment
 
 extern "C" fn glGetString(name: u32) -> *const u8 {
     let s: &'static [u8] = match name {
-        0x1F00 => b"ippai\0",
+        0x1F00 => b"masu\0",
         0x1F01 => b"WebGPU\0",
-        0x1F02 => b"2.1 ippai\0",
+        0x1F02 => b"2.1 masu\0",
         0x8B8C => b"1.20\0",
         0x1F03 => concat!("GL_ARB_multitexture GL_EXT_bgra GL_ARB_texture_non_power_of_two GL_EXT_framebuffer_object ",
             "GL_ARB_framebuffer_object GL_ARB_vertex_buffer_object GL_EXT_blend_func_separate GL_EXT_blend_minmax ",

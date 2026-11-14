@@ -1,11 +1,11 @@
 // Runs the winref probes that need a GPU (build.sh lists them in <exe dir>/browser.txt) on sake
 // in headless Chromium (WebGPU), as run.sh does under node for the rest: <out dir>/<probe>/
 // stdout.txt (the program's console lines) and exit. Packs the exes into a scratch store and
-// serves it with ippai.
+// serves it with masu.
 //
 //   node tests/winref/run-browser.mjs <exe dir> <out dir> [name-filter]
-//   IPPAI=path (default target/release/ippai), WEB=dir (web app instead of the built-in one),
-//   PLAYWRIGHT=module path, FONTS=dir (drive_c\windows\Fonts), IPPAI_JIT=0, MEMORY=grow, PORT (default 8790),
+//   MASU=path (default target/release/masu), WEB=dir (web app instead of the built-in one),
+//   PLAYWRIGHT=module path, FONTS=dir (drive_c\windows\Fonts), MASU_JIT=0, MEMORY=grow, PORT (default 8790),
 //   GUEST_ENV="NAME=value ..." (the program's environment), TIMEOUT (seconds a program may run, default 180), DEBUG_CONSOLE=1 (every console line
 //   of the page into stderr.txt), BROWSER64=1, SYSTEM64=dir (x64 DLLs, e.g. the CRT, for the
 //   prefix's windows\system64), NO_GAMES=1 (not the trial games' replays)
@@ -18,7 +18,7 @@ import { partition } from './partition.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const [exeDir, outDir, filter = ""] = process.argv.slice(2);
-const ippai = process.env.IPPAI ?? join(root, "target/release/ippai");
+const masu = process.env.MASU ?? join(root, "target/release/masu");
 const port = Number(process.env.PORT ?? 8790);
 const list = join(exeDir, "browser.txt");
 // (x64 probes need the x64 CRT in the page's prefix, not there yet: BROWSER64=1 runs them)
@@ -35,16 +35,16 @@ if (process.env.FONTS) cpSync(process.env.FONTS, join(work, "prefix/drive_c/wind
 if (process.env.SYSTEM64) cpSync(process.env.SYSTEM64, join(work, "prefix/drive_c/windows/system64"), { recursive: true });
 mkdirSync(join(work, "probes"));
 for (const n of names) copyFileSync(join(exeDir, `${n}.exe`), join(work, "probes", `${n}.exe`));
-execFileSync(ippai, ["--store", store, "pack", join(work, "prefix"), "prefix32"], { stdio: "ignore" });
-execFileSync(ippai, ["--store", store, "pack", join(work, "probes"), "winref"], { stdio: "ignore" });
+execFileSync(masu, ["--store", store, "pack", join(work, "prefix"), "prefix32"], { stdio: "ignore" });
+execFileSync(masu, ["--store", store, "pack", join(work, "probes"), "winref"], { stdio: "ignore" });
 const serveArgs = ["--store", store, "serve", "--foreground", "--listen", `127.0.0.1:${port}`, "--logs", join(work, "logs")];
 if (process.env.WEB) serveArgs.push("--web", process.env.WEB);
 const base = `http://127.0.0.1:${port}`;
 const memory = process.env.MEMORY === "grow" ? "&memory=grow" : "";
 // (a server left on the port, e.g. by a run that was killed, would answer from its own store:
 // stale programs, wrong results)
-if (await fetch(`${base}/play.html`).then(() => true, () => false)) throw new Error(`port ${port} is already served (an old ippai serve? PORT= another)`);
-const server = spawn(ippai, serveArgs, { stdio: ["ignore", "ignore", "pipe"] });
+if (await fetch(`${base}/play.html`).then(() => true, () => false)) throw new Error(`port ${port} is already served (an old masu serve? PORT= another)`);
+const server = spawn(masu, serveArgs, { stdio: ["ignore", "ignore", "pipe"] });
 let serverErrors = "";
 server.stderr.on("data", (chunk) => { serverErrors = (serverErrors + chunk).slice(-16384); });
 process.on("exit", () => server.kill());
@@ -52,7 +52,7 @@ for (let i = 0; ; i++) {
   try {
     if ((await fetch(`${base}/play.html`)).ok) break;
   } catch {}
-  if (server.exitCode !== null || i > 300) throw new Error(`ippai serve did not start (exit ${server.exitCode}): ${serverErrors}`);
+  if (server.exitCode !== null || i > 300) throw new Error(`masu serve did not start (exit ${server.exitCode}): ${serverErrors}`);
   await new Promise((r) => setTimeout(r, 100));
 }
 
@@ -98,7 +98,7 @@ for (const n of names) {
     });
     page.on("crash", ok);
   });
-  const env = ["IPPAI_SCREEN=1366x768", ...(process.env.IPPAI_JIT === "0" ? ["IPPAI_JIT=0"] : []), ...(process.env.GUEST_ENV ?? "").split(/\s+/).filter(Boolean)].map((e) => `&env=${encodeURIComponent(e)}`).join("");
+  const env = ["MASU_SCREEN=1366x768", ...(process.env.MASU_JIT === "0" ? ["MASU_JIT=0"] : []), ...(process.env.GUEST_ENV ?? "").split(/\s+/).filter(Boolean)].map((e) => `&env=${encodeURIComponent(e)}`).join("");
   const t0 = Date.now();
   await page.goto(`${base}/play.html?autostart&headless${memory}${env}&mount=/ippai/game=winref&run=Z:\\ippai\\game\\${n}.exe`);
   let timer;

@@ -213,7 +213,7 @@ export const SUITE: Step[] = [
     ...s,
     id: "cpu.huffman_slots",
     label: "CPU huffman (stack slots)",
-    env: "IPPAI_JIT_SLOTS=4",
+    env: "MASU_JIT_SLOTS=4",
   })),
 ];
 

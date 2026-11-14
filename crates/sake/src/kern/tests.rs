@@ -390,17 +390,17 @@ fn process_records() {
 fn windows_of_other_processes() {
     let mut k = Kern::default();
     let child = k.new_process(Proc { parent: ROOT_PID, ..Proc::default() });
-    let w = KWin { hwnd: 0x10020, pid: ROOT_PID, tid: 0x20, class: "ippai_procs_class".into(), title: "ippai procs".into() };
+    let w = KWin { hwnd: 0x10020, pid: ROOT_PID, tid: 0x20, class: "masu_procs_class".into(), title: "masu procs".into() };
     k.set_wins(ROOT_PID, vec![w.clone()]);
     // (the same list again changes nothing)
     let g = k.gen;
     k.set_wins(ROOT_PID, vec![w.clone()]);
     assert_eq!(k.gen, g);
     // FindWindow: not among its own windows; class and title match whole
-    assert_eq!(k.find_win(child, Some("ippai_procs_class"), Some("ippai procs")), Some(&w));
-    assert_eq!(k.find_win(child, None, Some("ippai procs")), Some(&w));
-    assert_eq!(k.find_win(child, Some("ippai_procs"), None), None);
-    assert_eq!(k.find_win(ROOT_PID, Some("ippai_procs_class"), None), None);
+    assert_eq!(k.find_win(child, Some("masu_procs_class"), Some("masu procs")), Some(&w));
+    assert_eq!(k.find_win(child, None, Some("masu procs")), Some(&w));
+    assert_eq!(k.find_win(child, Some("masu_procs"), None), None);
+    assert_eq!(k.find_win(ROOT_PID, Some("masu_procs_class"), None), None);
     // sent and posted, in order; the sender gets the result
     let s1 = k.put_msg(XMsg { to: ROOT_PID, hwnd: w.hwnd, msg: 0x4a, data: Some((7, b"copy".to_vec())), send: true, ..XMsg::default() });
     k.put_msg(XMsg { to: ROOT_PID, hwnd: w.hwnd, msg: 0x402, w: 5, l: 6, ..XMsg::default() });
@@ -653,7 +653,7 @@ fn what_waits_in_pipes_is_bounded() {
     }
     assert_eq!(n, PIPE_QUOTA >> 20);
     assert_eq!(win32(QUOTA_EXCEEDED), 1816);
-    // the kernel's state fits the processes' shared buffer (host/pre.js IPPAI_KERNEL_BYTES)
+    // the kernel's state fits the processes' shared buffer (host/pre.js MASU_KERNEL_BYTES)
     assert!(bytes(&k).len() < 32 << 20);
     // reading makes room again
     assert!(k.read(s, 1 << 20).is_ok());

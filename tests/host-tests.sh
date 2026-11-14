@@ -1,11 +1,11 @@
 #!/bin/bash
 # Console checks of host/tests on sake (its node build): each is built with mingw-w64, then run
-# with the JIT and with the interpreter (IPPAI_JIT=0). Both outputs must equal
+# with the JIT and with the interpreter (MASU_JIT=0). Both outputs must equal
 # host/tests/expected/<name>.txt (checksums of integer, MMX/SSE, atomics, self-modifying code
 # results; they match Windows). UPDATE=1 rewrites the expected files. Exits 1 on a failure.
 # Tests in X64 are also built for x86-64 (mingw-w64: msvcrt) and must print the same: sake's
 # C runtime has to behave alike in both; they run once more merging regions at the first hot
-# jump and reclaiming after every load (IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1). CLANG64 are x86-64 programs clang builds (SEH, and
+# jump and reclaiming after every load (MASU_JIT_MERGE_HOPS=1 MASU_JIT_RECLAIM=1). CLANG64 are x86-64 programs clang builds (SEH, and
 # x64crt: an MSVC-ABI program on ucrtbase/vcruntime140; msvcpsync: msvcp140 threads/sync;
 # msvcstream: its iostreams and locale facets, built against Microsoft's STL headers; msvcrtti:
 # dynamic_cast and typeid (vcruntime140's __RTDynamicCast...); msvcseh: _set_se_translator
@@ -103,7 +103,7 @@ for t in $TESTS; do
         return 0
       fi
       local v=6.7.4 sum=a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
-      local cache=${INNO_CACHE:-$HOME/.cache/ippai-inno} tools=$OUT/inno-tools
+      local cache=${INNO_CACHE:-$HOME/.cache/masu-inno} tools=$OUT/inno-tools
       local exe=$cache/innosetup-$v.exe
       mkdir -p "$cache"
       # (CI runs this file twice at once (sake and sake-grow): one downloads the installer, the
@@ -190,7 +190,7 @@ for t in $TESTS; do
       test_env=("SAKE_C=$OUT/$t-prefix")
       ;;
     # (koji's precise x87 mode: the 80-bit format, expected from a native x86-64 Linux build)
-    x87ext) test_env=("IPPAI_X87_80=1") ;;
+    x87ext) test_env=("MASU_X87_80=1") ;;
   esac
   # (an installer's pages answered by sake's autopilot, crates/sake/src/autopilot.rs)
   [ "$t" = autoinstall ] && test_env+=("SAKE_AUTO=1")
@@ -224,13 +224,13 @@ for t in $TESTS; do
   # (EXE: another build of the test; LOG: its own log)
   run() { local log=$OUT/${LOG:-$t}.log; (cd "$(dirname "$SAKE")" && timeout 300 env "${test_env[@]}" "$@" node "$SAKE" "${EXE:-$OUT/$t.exe}" > "$log" 2>&1; s=$?; grep -v '^sake:' "$log"; exit $s); }
   failed_run() { echo "FAIL $t: $1 process failed or timed out (status $2):"; tail -20 "$OUT/${LOG:-$t}.log" | sed 's/^/    /'; }
-  jit=$(run IPPAI_JIT=1); st=$?
+  jit=$(run MASU_JIT=1); st=$?
   if [ $st != 0 ]; then
     failed_run JIT $st
     fail=1
     continue
   fi
-  interp=$(run IPPAI_JIT=0); st=$?
+  interp=$(run MASU_JIT=0); st=$?
   if [ $st != 0 ]; then
     failed_run interpreter $st
     fail=1
@@ -291,7 +291,7 @@ for t in $TESTS; do
     fi
     # (kura's merge_hot64 at the first hot jump, and reclaim after every load: regions are
     # merged into bigger ones and their own modules go while the program runs)
-    tm=$(EXE=$OUT/$t-64.exe LOG=$t-64m run IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1); st=$?
+    tm=$(EXE=$OUT/$t-64.exe LOG=$t-64m run MASU_JIT_MERGE_HOPS=1 MASU_JIT_RECLAIM=1); st=$?
     if [ $st != 0 ]; then
       LOG=$t-64m failed_run "x64 merging" $st
       fail=1
@@ -323,11 +323,11 @@ for t in $MSVC32; do
   MSVC_ARCH=i686 "$ROOT/host/tests/build-msvc64.sh" "$t" "$OUT/m32" || { echo "FAIL $t (MSVC x86): build"; fail=1; continue; }
   want=$ROOT/host/tests/expected/$t.txt
   for jit in 1 0; do
-    got=$( (cd "$(dirname "$SAKE")" && timeout 300 env IPPAI_JIT=$jit node "$SAKE" "$OUT/m32/$t.exe" 2>&1 | grep -v '^sake:') )
+    got=$( (cd "$(dirname "$SAKE")" && timeout 300 env MASU_JIT=$jit node "$SAKE" "$OUT/m32/$t.exe" 2>&1 | grep -v '^sake:') )
     if [ "$got" != "$(cat "$want" 2>/dev/null)" ]; then
-      echo "FAIL $t (MSVC x86, IPPAI_JIT=$jit):"; diff <(echo "$got") "$want" | head -10; fail=1
+      echo "FAIL $t (MSVC x86, MASU_JIT=$jit):"; diff <(echo "$got") "$want" | head -10; fail=1
     else
-      echo "ok   $t (MSVC x86, IPPAI_JIT=$jit)"
+      echo "ok   $t (MSVC x86, MASU_JIT=$jit)"
     fi
   done
 done
@@ -336,12 +336,12 @@ for t in $CLANG32; do
   "$ROOT/host/tests/build-msvc32.sh" "$t" "$OUT/32" || { echo "FAIL $t (x86): build"; fail=1; continue; }
   want=$ROOT/host/tests/expected/$t-32.txt
   for jit in 1 0; do
-    got=$( (cd "$(dirname "$SAKE")" && timeout 300 env IPPAI_JIT=$jit node "$SAKE" "$OUT/32/$t.exe" 2>&1 | grep -v '^sake:') )
+    got=$( (cd "$(dirname "$SAKE")" && timeout 300 env MASU_JIT=$jit node "$SAKE" "$OUT/32/$t.exe" 2>&1 | grep -v '^sake:') )
     [ -n "${UPDATE:-}" ] && [ $jit = 1 ] && echo "$got" > "$want"
     if [ "$got" != "$(cat "$want" 2>/dev/null)" ]; then
-      echo "FAIL $t (x86, IPPAI_JIT=$jit):"; diff <(echo "$got") "$want" | head -10; fail=1
+      echo "FAIL $t (x86, MASU_JIT=$jit):"; diff <(echo "$got") "$want" | head -10; fail=1
     else
-      echo "ok   $t (x86, IPPAI_JIT=$jit)"
+      echo "ok   $t (x86, MASU_JIT=$jit)"
     fi
   done
 done

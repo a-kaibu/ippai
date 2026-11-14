@@ -3,7 +3,7 @@
  * SetState(RUN), then Update after Update into the surface until MS_S_ENDOFSTREAM; the end's
  * event; GetFilterGraph and FindFilterByName on it; the errors on the way. The movie is
  * dshow.c's: an uncompressed AVI (64x48, 10 fps, 20 frames, each frame's halves two grays) and
- * the `.vnv` ippai pack makes of it, which sake plays.
+ * the `.vnv` masu pack makes of it, which sake plays.
  * (x64 too: the 64-bit DDSURFACEDESC, #128)
  * libs: -lole32 -loleaut32 -luuid -lddraw */
 #include "../probe.h"

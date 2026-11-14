@@ -1,11 +1,11 @@
 // vnvm_fetch(name, &len): one file of the store (trees/<name>.tsv or chunks/ab/<hash>, the
 // latter zstd-compressed; "chunks/ab/<hash>#<from>+<len>/<block>": those bytes of the decoded
 // chunk, fewer past its stored end, asked for in blocks of <block> bytes), for crates/kura/src/vfs.rs; or "@saves", the saved games the page
-// passed (host/pre.js; node: the file $IPPAI_SAVES). Returns a malloc'ed buffer, or 0. The bytes
+// passed (host/pre.js; node: the file $MASU_SAVES). Returns a malloc'ed buffer, or 0. The bytes
 // that came over the network (compressed; none from the browser's HTTP cache) go to vfs.rs's
 // counters (vnhost_net_wire).
 //
-// node: read from $IPPAI_STORE. Browser: a dedicated worker uses fetch; the game pthread waits for its response from
+// node: read from $MASU_STORE. Browser: a dedicated worker uses fetch; the game pthread waits for its response from
 // store/ beside the directory of sake.js; the server sends chunks with "Content-Encoding: zstd",
 // so the browser decompresses them.
 addToLibrary({
@@ -70,16 +70,16 @@ addToLibrary({
 #if EXPORT_ES6
     const store = new URL('../store', import.meta.url).href;
 #else
-    const store = process.env.IPPAI_STORE || 'store';
+    const store = process.env.MASU_STORE || 'store';
 #endif
     let data;
     try {
       if (name === '@saves') {
-        data = ENVIRONMENT_IS_NODE ? (process.env.IPPAI_SAVES ? require('fs').readFileSync(process.env.IPPAI_SAVES) : null) : vnvmSaves;
+        data = ENVIRONMENT_IS_NODE ? (process.env.MASU_SAVES ? require('fs').readFileSync(process.env.MASU_SAVES) : null) : vnvmSaves;
         if (!data) return 0;
       } else if (ENVIRONMENT_IS_NODE) {
         // (the chunk decoded last, kept: a read asks for its blocks one range at a time)
-        const [file, from, len] = ippaiRange(name);
+        const [file, from, len] = masuRange(name);
         if (vnvmLastChunk?.[0] === file) data = vnvmLastChunk[1];
         else {
           data = require('fs').readFileSync(require('path').join(store, file));
@@ -87,8 +87,8 @@ addToLibrary({
         }
         if (from !== undefined) data = data.subarray(from, from + len);
       } else {
-        const [file, from, len, block, cls] = ippaiRange(name);
-        data = Module.vnvmFiles?.[file] ?? ippaiFetchSync(store + '/' + file, from, len, block, cls);
+        const [file, from, len, block, cls] = masuRange(name);
+        data = Module.vnvmFiles?.[file] ?? masuFetchSync(store + '/' + file, from, len, block, cls);
         if (data.wire !== undefined) wasmExports.vnhost_net_wire(data.wire, data.cached);
         else if (from !== undefined) data = data.subarray(from, from + len);
       }
@@ -105,7 +105,7 @@ addToLibrary({
   },
   // vnvm_fetch_hint(names, len): store files (newline-separated, as vnvm_fetch's) the game reads
   // soon (crates/kura/src/vfs.rs hints): fetched onto the device by the network worker, not
-  // waited for (host/fetch-bridge.js ippaiHint). node: nothing (the store is on the disk).
+  // waited for (host/fetch-bridge.js masuHint). node: nothing (the store is on the disk).
   vnvm_fetch_hint: (names, len) => {
     if (ENVIRONMENT_IS_NODE) return;
 #if EXPORT_ES6
@@ -114,7 +114,7 @@ addToLibrary({
     const store = 'store';
 #endif
     const s = UTF8ToString(names >>> 0, len >>> 0);
-    ippaiFetchHint(s.split('\n').filter(Boolean).map((n) => store + '/' + n));
+    masuFetchHint(s.split('\n').filter(Boolean).map((n) => store + '/' + n));
   },
   // kura::fs::hard_link of two host paths (node, NODERAWFS: emscripten's own link answers
   // EMLINK): 0; -1 the page (no host files), -2 the new name exists, -3 the file is missing,

@@ -1,14 +1,14 @@
 // A game's information from a page the user pastes (web/src/ui/Library.tsx MetaSource,
-// crates/ippai/src/library_api.rs, meta_url.rs, meta.rs) in Chromium, on ippai serve with a
-// small store and local stand-ins for 批評空間's SQL form and VNDB's API (IPPAI_META_EGS_SQL,
-// IPPAI_META_VNDB; its game list: max(id), then windows of ids): something that is no game page is refused on the page and by the server;
+// crates/masu/src/library_api.rs, meta_url.rs, meta.rs) in Chromium, on masu serve with a
+// small store and local stand-ins for 批評空間's SQL form and VNDB's API (MASU_META_EGS_SQL,
+// MASU_META_VNDB; its game list: max(id), then windows of ids): something that is no game page is refused on the page and by the server;
 // a 批評空間 page fills the game's dialog and card (title, brand, year, score, tags) without a
 // reload, and stays after one; a source that fails says why and keeps what was there; a VNDB page
 // brings its cover, which the card then shows; 候補を探す lists the list's games like a name and
-// picks one; `ippai meta` identifies a game by its names from the list (egs_match.rs) without a
+// picks one; `masu meta` identifies a game by its names from the list (egs_match.rs) without a
 // search. SHOTS=<dir> keeps screenshots.
 //
-//   node tests/meta-browser.mjs [path to ippai]   (web/dist built; PLAYWRIGHT as elsewhere)
+//   node tests/meta-browser.mjs [path to masu]   (web/dist built; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
@@ -19,8 +19,8 @@ import { deflateSync } from "node:zlib";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-meta-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-meta-"));
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });
 const shots = process.env.SHOTS && resolve(process.env.SHOTS);
@@ -143,7 +143,7 @@ await new Promise((ok) => sources.listen(0, "127.0.0.1", ok));
 const src = `http://127.0.0.1:${sources.address().port}`;
 
 const port = 9300 + Math.floor(Math.random() * 200) * 2;
-const env = { ...process.env, IPPAI_META_EGS_SQL: `${src}/egs`, IPPAI_META_VNDB: `${src}/vndb`, IPPAI_META_SEED: `${src}/seed`, IPPAI_GAMEDB_REF: `127.0.0.1:${sources.address().port}/none/gamedb` };
+const env = { ...process.env, MASU_META_EGS_SQL: `${src}/egs`, MASU_META_VNDB: `${src}/vndb`, MASU_META_SEED: `${src}/seed`, MASU_GAMEDB_REF: `127.0.0.1:${sources.address().port}/none/gamedb` };
 // (the stand-ins are on this machine: no proxy in between)
 for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) delete env[k];
 const server = spawn(
@@ -158,7 +158,7 @@ for (let i = 0; i < 100; i++) {
   await new Promise((r) => setTimeout(r, 300));
 }
 
-// `ippai meta`: "LOOPERS DL版" is LOOPERS (4400) from the list, asked for by its id
+// `masu meta`: "LOOPERS DL版" is LOOPERS (4400) from the list, asked for by its id
 // (not spawnSync: the stand-ins answer from this process)
 const said = await new Promise((ok) => {
   const p = spawn(bin, ["--store", store, "meta", "loopers"], { env });
@@ -270,7 +270,7 @@ try {
   assert.ok(asked.includes("egs 1201"), asked.join(", "));
   await page.keyboard.press("Escape");
 
-  // 候補を探す with nothing typed: by the game's names ("LOOPERS DL版"), the one `ippai meta` took marked
+  // 候補を探す with nothing typed: by the game's names ("LOOPERS DL版"), the one `masu meta` took marked
   await page.getByRole("button", { name: "LOOPERS DL版 の情報" }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByTestId("meta-candidates").click();

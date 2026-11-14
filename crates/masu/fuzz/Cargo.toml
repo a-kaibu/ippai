@@ -1,0 +1,62 @@
+# cargo-fuzz targets for masu (the server binary): fuzz/README.md, fuzz/run.sh runs them.
+[package]
+name = "masu-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# (unpack.rs, asar.rs and evb.rs are compiled in as a module: masu is a binary crate; these are its dependencies)
+[dependencies]
+libfuzzer-sys = "0.4"
+anyhow = "1"
+flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+encoding_rs = "0.8"
+regex = "1"
+serde_json = "1"
+sdrs-core = { git = "https://github.com/a-kaibu/sdrs", rev = "91be70fc0c7ee9a501b5cf06235abc655a84f4c8" }
+
+# (its own workspace: not a member of the repository's)
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "unpack"
+path = "fuzz_targets/unpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "meta_url"
+path = "fuzz_targets/meta_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "asar"
+path = "fuzz_targets/asar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evb"
+path = "fuzz_targets/evb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ttc"
+path = "fuzz_targets/ttc.rs"
+test = false
+doc = false
+bench = false

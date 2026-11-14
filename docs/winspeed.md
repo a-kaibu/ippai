@@ -1,13 +1,13 @@
-# 起動の速さと CPU: Windows 実機と ippai (2026-11-14)
+# 起動の速さと CPU: Windows 実機と masu (2026-11-14)
 
-同じ体験版 (VN Mirror Archive、`tests/corpus/winspeed.tsv` の 28 本) を、Windows 実機と ippai で同じ判定で動かした結果。#89 #217-2 #222 #225 #227 #228 と Unity の遅い起動の、「Windows でも同じか」の答え。
+同じ体験版 (VN Mirror Archive、`tests/corpus/winspeed.tsv` の 28 本) を、Windows 実機と masu で同じ判定で動かした結果。#89 #217-2 #222 #225 #227 #228 と Unity の遅い起動の、「Windows でも同じか」の答え。
 
 - Windows: 808 PC (Core i7-11700 8C/16T、RTX 2080 Ti、2560x1440、日本語 Windows、ACP 932)。`python tests/corpus/winspeed.py WORK` (中で `tests/corpus/winplay.py`)、各 2 回。下の表は 2 回のうち速い方の title と、高い方の storyCores。
-- ippai: main 8cbb4524 (`tools/ci/build.sh`)、クラウドの 4 コア VM のヘッドレス Chromium、`tests/corpus-run.py` で 1 本ずつ、`IPPAI_SCREEN=1920x1080`、保存 JIT なしの初回。括弧内は同じストアで保存 JIT ありの 2 回目。
-- 判定はどちらも corpus.mjs と同じ: title = 中央 1/3 が 300 色を超えた最初のフレームの秒 (起動から)、story = タイトルの手順のあと 2 秒ごとに下の方をクリックする 30 秒、その間の CPU コア数 (Windows は GetProcessTimes、ippai は vnhost_load_busy)。手順は既定 (`key:Return wait:3`)。
+- masu: main 8cbb4524 (`tools/ci/build.sh`)、クラウドの 4 コア VM のヘッドレス Chromium、`tests/corpus-run.py` で 1 本ずつ、`MASU_SCREEN=1920x1080`、保存 JIT なしの初回。括弧内は同じストアで保存 JIT ありの 2 回目。
+- 判定はどちらも corpus.mjs と同じ: title = 中央 1/3 が 300 色を超えた最初のフレームの秒 (起動から)、story = タイトルの手順のあと 2 秒ごとに下の方をクリックする 30 秒、その間の CPU コア数 (Windows は GetProcessTimes、masu は vnhost_load_busy)。手順は既定 (`key:Return wait:3`)。
 - 「本編/タイトル」は story の 30 秒で画面がタイトルから変わったか (leftTitle)。タイトルのままの行は、その画面に置いたときの CPU。
 
-| 作品 | ファイル | Windows title 秒 | ippai title 秒 | 倍 | Windows コア | ippai コア |
+| 作品 | ファイル | Windows title 秒 | masu title 秒 | 倍 | Windows コア | masu コア |
 |---|---|---|---|---|---|---|
 | 女体汚辱 (#217-2) | `VJ011293_trial.zip` | 26.0 | 57.6 (47.5) | 2.2 | 0.13 (タイトル) | 0.44 (タイトル) |
 | appetite 先輩の… (#89) | `apt246_tr.zip` | 3.1 | 16.4 | 5.3 | 0.01 (本編) | 0.03 (本編) |
@@ -40,13 +40,13 @@
 
 注:
 - 艶嬢学園2・上倉雛 (Astronauts、Unity 2017.3): ロゴは左クリック待ち (Return/Space は効かない。Windows で確認、項目 S の IL 調査と一致)。両方とも PRE=0.5,0.5 (3 秒ごとに中央クリック) で計測。艶嬢学園2 の title は WARNING 画面 (300 色超) で、表の「本編」コアは実際にはタイトル画面。
-- こいのすはインストーラー (setup_koicha_trial2.exe) で、Windows では UAC が出るので測っていない。ippai は SAKE_AUTO でインストールして起動。
+- こいのすはインストーラー (setup_koicha_trial2.exe) で、Windows では UAC が出るので測っていない。masu は SAKE_AUTO でインストールして起動。
 - 新妻ふわトロは start.exe の起動設定ダイアログで、Windows ではマウスもキーもダイアログに効かず (SendInput、原因未調査) 両方とも測れていない。
 - Windows は 1 回目だけ最初の窓が 2〜4 秒 (展開直後の Defender 走査とみられる)。title は 2 回目もほぼ同じ。
-- ippai の計測中、server が起動直後に何も出さず終わり ERR_CONNECTION_REFUSED になる回が 28 本中 18 本の初回にあった (corpus-run.py が続けて server を立て直すとき)。1 本ずつ別ポートで流し直した。
+- masu の計測中、server が起動直後に何も出さず終わり ERR_CONNECTION_REFUSED になる回が 28 本中 18 本の初回にあった (corpus-run.py が続けて server を立て直すとき)。1 本ずつ別ポートで流し直した。
 
 ## 分かったこと
-- **1 コア張り付きが Windows でも同じ**: 催●学級 (ggs_0150t) は Windows でも本編 0.99 コア、放置中 0.99 コア。ゲーム自体のビジーループで、ippai の不具合ではない。
-- **appetite 系 吉里吉里の本編 1 コアは、もう再現しない**: 14 本とも ippai の本編/タイトルで 0.02〜0.09 コア (Windows 0.01〜0.04)。以前の 0.95〜1.0 (part 12/14/18/19/22 のメモ) は、その後の main のどこかで解消している (どのコミットかは確かめていない)。
-- **Windows と違う 1 コア張り付き (#122 の候補)**: VenusBlood VBB (Windows 0.26 / ippai 0.92)、GEARS of DRAGOON 2 (0.16 / 0.95)、Unity 全般 (僕のメイド 0.06 / 0.81、上倉雛 0.13 / 1.52、艶嬢学園2 0.16 / 1.60、BLACK-MARKET 0.42 / 0.76、妹ちゃん 0.09 / 0.45、ニャンコイ 0.14 / 0.66)。
-- **起動は全部 ippai が遅い**: 吉里吉里 (appetite) で 2.7〜7 倍 (Windows 2〜5 秒 / ippai 12〜17 秒)。女体汚辱は Windows でも 26 秒 (ロゴの演出) で ippai は 2.2 倍 (保存 JIT ありで 1.8 倍)。Unity は 6〜22 倍。純情化憐は保存 JIT で 38 → 14 秒 (Windows 5 秒)。保存 JIT の効果は作品による (女体汚辱・VBB・GoD2・僕のメイドはほぼ変わらない)。
+- **1 コア張り付きが Windows でも同じ**: 催●学級 (ggs_0150t) は Windows でも本編 0.99 コア、放置中 0.99 コア。ゲーム自体のビジーループで、masu の不具合ではない。
+- **appetite 系 吉里吉里の本編 1 コアは、もう再現しない**: 14 本とも masu の本編/タイトルで 0.02〜0.09 コア (Windows 0.01〜0.04)。以前の 0.95〜1.0 (part 12/14/18/19/22 のメモ) は、その後の main のどこかで解消している (どのコミットかは確かめていない)。
+- **Windows と違う 1 コア張り付き (#122 の候補)**: VenusBlood VBB (Windows 0.26 / masu 0.92)、GEARS of DRAGOON 2 (0.16 / 0.95)、Unity 全般 (僕のメイド 0.06 / 0.81、上倉雛 0.13 / 1.52、艶嬢学園2 0.16 / 1.60、BLACK-MARKET 0.42 / 0.76、妹ちゃん 0.09 / 0.45、ニャンコイ 0.14 / 0.66)。
+- **起動は全部 masu が遅い**: 吉里吉里 (appetite) で 2.7〜7 倍 (Windows 2〜5 秒 / masu 12〜17 秒)。女体汚辱は Windows でも 26 秒 (ロゴの演出) で masu は 2.2 倍 (保存 JIT ありで 1.8 倍)。Unity は 6〜22 倍。純情化憐は保存 JIT で 38 → 14 秒 (Windows 5 秒)。保存 JIT の効果は作品による (女体汚辱・VBB・GoD2・僕のメイドはほぼ変わらない)。

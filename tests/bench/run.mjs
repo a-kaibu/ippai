@@ -1,19 +1,19 @@
-// Runs benchmark groups (tests/bench/suite.mjs) on one or more builds of ippai in headless
+// Runs benchmark groups (tests/bench/suite.mjs) on one or more builds of masu in headless
 // Chromium and writes what they measured as JSON. With two builds (this commit and the one before
 // it) the runs alternate between them, round after round, on the same machine: a slow runner
 // slows both the same, so their ratio says whether the commit made things faster or slower.
 //
 //   node tests/bench/run.mjs OUT.json GROUP [GROUP ...]
-//   env: BUILDS="new=http://127.0.0.1:8091 old=http://127.0.0.1:8092" (name=ippai serve URL;
+//   env: BUILDS="new=http://127.0.0.1:8091 old=http://127.0.0.1:8092" (name=masu serve URL;
 //          default "new=http://127.0.0.1:8090"), ROUNDS (measured rounds, default 3 or the
 //          group's MIN_ROUNDS; one more
 //          before them warms the JIT's saved translations and is not counted), SCALE (work per
 //          case, default 1), ONLY="exe:case ..." (just those), TIMEOUT (s per run, default 240),
 //          PLAYWRIGHT (the playwright module), CHROME_ARGS (more browser flags), BENCH_ENV
-//          ("NAME=value ..." more of the program's environment, e.g. IPPAI_D3D_STATS=1: its
+//          ("NAME=value ..." more of the program's environment, e.g. MASU_D3D_STATS=1: its
 //          "d3d9 stats" lines are printed)
 //
-// Pages: play.html?autostart&headless with the bench tree mounted, IPPAI_NOPACE (frames as fast as
+// Pages: play.html?autostart&headless with the bench tree mounted, MASU_NOPACE (frames as fast as
 // the guest makes them) and Chromium's frame rate unlimited (no vsync), so frame times are what
 // the build can do rather than 16.7 ms.
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
@@ -66,7 +66,7 @@ async function runOnce(build, c) {
   const scale = c.format === "plain" ? "" : SCALE;
   const args = [c.args, c.args && scale].filter(Boolean).join(",");
   const url =
-    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1${extraEnv}&mount=/ippai/game=bench${c.page ? `&${c.page}` : ""}` +
+    `${build.url}/play.html?autostart&headless&env=MASU_NOPACE%3D1${extraEnv}&mount=/ippai/game=bench${c.page ? `&${c.page}` : ""}` +
     `${args ? `&args=${encodeURIComponent(args)}` : ""}&run=${encodeURIComponent(`Z:\\ippai\\game\\${c.exe}`)}`;
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
@@ -188,12 +188,12 @@ for (let round = 0; round <= ROUNDS; round++) {
     }
   }
   if (round === 0 && paced) {
-    // After the warm-up: every build must have said it runs unpaced (IPPAI_NOPACE). This one must;
+    // After the warm-up: every build must have said it runs unpaced (MASU_NOPACE). This one must;
     // a previous build that doesn't (from before the flag, or with another name) can't be
     // compared with it, so it is left out and the report compares with the history instead.
     for (const b of builds) {
       if (saidNopace[b.name]) continue;
-      const why = "this build does not run frames unpaced (IPPAI_NOPACE): its frame times are its 60 fps pacing";
+      const why = "this build does not run frames unpaced (MASU_NOPACE): its frame times are its 60 fps pacing";
       console.log(`${b.name}: ${why}`);
       if (b === builds[0]) results.errors[b.name][`${groups.join("+")}/nopace`] = { error: why, fatal: true };
       else results.incompatible[b.name] = why;

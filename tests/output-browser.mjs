@@ -6,7 +6,7 @@
 // in each thread's order, and no thread's lines show a gap the size of the busy spell (the
 // writes did not wait for the page).
 //
-//   node tests/output-browser.mjs [path to ippai]
+//   node tests/output-browser.mjs [path to masu]
 //   (web/dist built with sake in it; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -16,8 +16,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-output-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-output-"));
 assert.ok(existsSync("web/dist/sake/sake.wasm"), "web/dist has no sake build");
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });

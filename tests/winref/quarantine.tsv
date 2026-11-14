@@ -5,24 +5,24 @@
 # fixed line may disappear; a new or changed line fails. A probe glob alone allows nothing.
 # compare.py prints the failing quarantined probes' line hashes as "quarantine candidates"
 # (and --quarantine-observed FILE writes them): CI never approves or updates them itself.
-gdipfont-32	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
-gdipfont-64	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
-host_browsefolder-32	https://github.com/a-kaibu/ippai/issues/108	Headless folder selection and callback ordering differ from the Windows dialog.
-rgnshape-32	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
-rgnshape-64	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
-versions-32	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
-versions-64	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
-d3d7state-32	https://github.com/a-kaibu/ippai/issues/105	The 24-bit depth buffer the runner refuses, and fog and far-plane rasterization differ.
-d3d9rtfmt-32	https://github.com/a-kaibu/ippai/issues/53	Packed and floating-point render-target format conversion differs.
-replay_d3d9rtfmt-32-32	https://github.com/a-kaibu/ippai/issues/53	The same render-target format differences reproduced through apitrace.
-mfreader-32	https://github.com/a-kaibu/ippai/issues/85	The browser audio decoder does not yet produce the reference PCM stream.
-replay_d3d11-32-32	https://github.com/a-kaibu/ippai/issues/64	The remaining shader instruction translation is unsupported.
-replay_b2011_anim_team_mm-*	https://github.com/a-kaibu/ippai/issues/105	Recorded QueryInterface, scene-state and frame differences; includes drill variants.
-replay_b2015_guilty-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame/readback differences; includes drill variants.
-replay_b2019_anim-*	https://github.com/a-kaibu/ippai/issues/105	Recorded image and call-result differences.
-replay_b2021_tinkerbell-*	https://github.com/a-kaibu/ippai/issues/105	Recorded D3D11 interface and return-value differences.
-replay_b2026_anim-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame/readback differences.
-replay_b2026_wendybell-*	https://github.com/a-kaibu/ippai/issues/105	Recorded D3D11 interface and return-value differences.
-replay_s2020_wonder_fool_maokatsu-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame and draw-state differences; includes drill variants.
-replay_s2021_giga_fuyukiss-*	https://github.com/a-kaibu/ippai/issues/105	Recorded frame and draw-state differences.
-replay_s2021_silkys_plus_fuyukuru-*	https://github.com/a-kaibu/ippai/issues/105	Recorded D3D11 interface and return-value differences.
+gdipfont-32	https://github.com/a-kaibu/masu/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
+gdipfont-64	https://github.com/a-kaibu/masu/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
+host_browsefolder-32	https://github.com/a-kaibu/masu/issues/108	Headless folder selection and callback ordering differ from the Windows dialog.
+rgnshape-32	https://github.com/a-kaibu/masu/issues/55	Ellipse and round-rectangle region scan conversion differs.
+rgnshape-64	https://github.com/a-kaibu/masu/issues/55	Ellipse and round-rectangle region scan conversion differs.
+versions-32	https://github.com/a-kaibu/masu/issues/105	Remaining composite version comparisons and SSPI table entries differ.
+versions-64	https://github.com/a-kaibu/masu/issues/105	Remaining composite version comparisons and SSPI table entries differ.
+d3d7state-32	https://github.com/a-kaibu/masu/issues/105	The 24-bit depth buffer the runner refuses, and fog and far-plane rasterization differ.
+d3d9rtfmt-32	https://github.com/a-kaibu/masu/issues/53	Packed and floating-point render-target format conversion differs.
+replay_d3d9rtfmt-32-32	https://github.com/a-kaibu/masu/issues/53	The same render-target format differences reproduced through apitrace.
+mfreader-32	https://github.com/a-kaibu/masu/issues/85	The browser audio decoder does not yet produce the reference PCM stream.
+replay_d3d11-32-32	https://github.com/a-kaibu/masu/issues/64	The remaining shader instruction translation is unsupported.
+replay_b2011_anim_team_mm-*	https://github.com/a-kaibu/masu/issues/105	Recorded QueryInterface, scene-state and frame differences; includes drill variants.
+replay_b2015_guilty-*	https://github.com/a-kaibu/masu/issues/105	Recorded frame/readback differences; includes drill variants.
+replay_b2019_anim-*	https://github.com/a-kaibu/masu/issues/105	Recorded image and call-result differences.
+replay_b2021_tinkerbell-*	https://github.com/a-kaibu/masu/issues/105	Recorded D3D11 interface and return-value differences.
+replay_b2026_anim-*	https://github.com/a-kaibu/masu/issues/105	Recorded frame/readback differences.
+replay_b2026_wendybell-*	https://github.com/a-kaibu/masu/issues/105	Recorded D3D11 interface and return-value differences.
+replay_s2020_wonder_fool_maokatsu-*	https://github.com/a-kaibu/masu/issues/105	Recorded frame and draw-state differences; includes drill variants.
+replay_s2021_giga_fuyukiss-*	https://github.com/a-kaibu/masu/issues/105	Recorded frame and draw-state differences.
+replay_s2021_silkys_plus_fuyukuru-*	https://github.com/a-kaibu/masu/issues/105	Recorded D3D11 interface and return-value differences.

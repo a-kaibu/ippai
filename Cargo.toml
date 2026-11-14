@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/apitrace", "crates/foresee", "crates/crt", "crates/dxwgsl", "crates/vorbis", "crates/hlslc", "crates/glwgsl", "crates/kura", "crates/ippai", "crates/koji", "crates/sake", "crates/msidb", "crates/tls-client", "crates/shaderconf", "crates/waits", "crates/mpeg1", "crates/asf", "crates/wmcodec", "crates/decbench"]
+members = ["crates/apitrace", "crates/foresee", "crates/crt", "crates/dxwgsl", "crates/vorbis", "crates/hlslc", "crates/glwgsl", "crates/kura", "crates/masu", "crates/koji", "crates/sake", "crates/msidb", "crates/tls-client", "crates/shaderconf", "crates/waits", "crates/mpeg1", "crates/asf", "crates/wmcodec", "crates/decbench"]
 exclude = ["fuzz", "vendor/ring", "vendor/naga"]
 
 [workspace.package]
@@ -23,4 +23,4 @@ overflow-checks = false
 
 [patch.crates-io]
 ring = { path = "vendor/ring" }
-naga = { path = "vendor/naga" }  # (vendor/naga/IPPAI-PATCH.md: GLSL front end panics a game's shader can reach)
+naga = { path = "vendor/naga" }  # (vendor/naga/MASU-PATCH.md: GLSL front end panics a game's shader can reach)

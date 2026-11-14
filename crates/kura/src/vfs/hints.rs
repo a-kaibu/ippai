@@ -1,11 +1,11 @@
 //! What a read says the game reads soon, by how game engines lay out their files: the page
-//! fetches it onto the device while the game goes on (host/fetch-bridge.js ippaiHint), so that
+//! fetches it onto the device while the game goes on (host/fetch-bridge.js masuHint), so that
 //! the read that comes later does not wait for the bucket. The bucket (Hugging Face Storage
 //! Buckets) answers every object after 0.4-2 s whatever its size (docs/s3-reads.md), and a game
 //! reads one file after another: a scene that reads ten voices or pictures the device lacks
 //! waited ten times that.
 //!
-//! Two shapes cover what engines do (vnrun's notes on each engine, docs/s3-reads.md):
+//! Two shapes cover what engines do (masu's notes on each engine, docs/s3-reads.md):
 //! - loose files in a folder, read in name order (voices "v_0001.ogg", "v_0002.ogg", ...; CG
 //!   pictures; scripts): the next files of the folder of the same kind, after the one read.
 //! - an archive (one big file, its index then its members): the chunks after the one read, as

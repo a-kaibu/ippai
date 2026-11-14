@@ -4,9 +4,9 @@
 #
 #   tests/winref/check.sh [name-filter]
 #   SAKE=path/to/sake.js (default target/sake-out/sake.js, built if missing)
-#   IPPAI_JIT=0 for the interpreter; PNG=dir for pictures of differing images; FONTS=dir: sake's
+#   MASU_JIT=0 for the interpreter; PNG=dir for pictures of differing images; FONTS=dir: sake's
 #   fonts (tools/ci/sake-fonts.py) for the probes that measure text
-#   BROWSER=1: the GPU probes too, in headless Chromium (run-browser.mjs; needs ippai built,
+#   BROWSER=1: the GPU probes too, in headless Chromium (run-browser.mjs; needs masu built,
 #   web/dist built after sake, and Playwright: PLAYWRIGHT=module path)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)

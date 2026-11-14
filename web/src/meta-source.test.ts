@@ -2,7 +2,7 @@ import { describe as group, expect, it } from "vite-plus/test";
 import tsv from "../../testdata/meta-urls.tsv?raw";
 import { describe, looksLikeGamePage, untilSettled, type MetaStatus } from "./meta-source";
 
-// the same table as the server's parser (crates/ippai/src/meta_url.rs, test `pages`): the page
+// the same table as the server's parser (crates/masu/src/meta_url.rs, test `pages`): the page
 // lets through exactly what the server takes
 const rows = tsv
   .split("\n")

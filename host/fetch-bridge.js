@@ -2,35 +2,35 @@
 // The network worker never relies on a blocked pthread's event loop. A bounded shared buffer transfers one response, with explicit acknowledgement.
 //
 // Mobile links drop, stall and come back: a request is not given up on the first failure. The
-// worker retries network errors, stalled bodies (no byte for IPPAI_STALL_MS) and 5xx/408/429
+// worker retries network errors, stalled bodies (no byte for MASU_STALL_MS) and 5xx/408/429
 // with backoff, waits while the browser says it is offline, and only gives up after
-// IPPAI_GIVE_UP_MS (a 404 fails at once). While it retries it wakes the waiting pthread every
+// MASU_GIVE_UP_MS (a 404 fails at once). While it retries it wakes the waiting pthread every
 // few seconds, so the pthread's own timeout only catches a dead worker. Store chunks are named by
-// their content: they are kept in Cache Storage (IPPAI_CHUNKS, web/src/net.ts uses the same one),
+// their content: they are kept in Cache Storage (MASU_CHUNKS, web/src/net.ts uses the same one),
 // so a second play, or a game saved to the device beforehand, needs no network for them. A chunk
-// is checked against its name (BLAKE3, ippaiBlake3) before it is used or kept: one that does not
-// match (cut or damaged on the way, a wrong answer) is fetched again, at most IPPAI_BAD_CHUNK
-// times. Kept ones carry IPPAI_CHECKED; one kept before that (or by an older page) is checked
+// is checked against its name (BLAKE3, masuBlake3) before it is used or kept: one that does not
+// match (cut or damaged on the way, a wrong answer) is fetched again, at most MASU_BAD_CHUNK
+// times. Kept ones carry MASU_CHECKED; one kept before that (or by an older page) is checked
 // once when read, then kept again with it.
-// Retries are announced on the BroadcastChannel "ippai-net" (the page shows that it waits).
-var IPPAI_CHUNKS = 'ippai-chunks-v1';
-var IPPAI_STALL_MS = 20000;
-var IPPAI_GIVE_UP_MS = 15 * 60000;
-var IPPAI_RETRY_STATUS = [0, 408, 425, 429, 500, 502, 503, 504];
-var IPPAI_BAD_CHUNK = 3;
-var IPPAI_CHECKED = 'x-ippai-checked';
+// Retries are announced on the BroadcastChannel "masu-net" (the page shows that it waits).
+var MASU_CHUNKS = 'ippai-chunks-v1';
+var MASU_STALL_MS = 20000;
+var MASU_GIVE_UP_MS = 15 * 60000;
+var MASU_RETRY_STATUS = [0, 408, 425, 429, 500, 502, 503, 504];
+var MASU_BAD_CHUNK = 3;
+var MASU_CHECKED = 'x-ippai-checked';
 
 /** A store chunk: content-addressed, the same bytes forever. */
-function ippaiIsChunk(url) {
+function masuIsChunk(url) {
   return /\/chunks\/[0-9a-f]{2}\/[0-9a-f]{32}$/.test(url);
 }
 
 /**
- * The first 16 bytes of `data`'s BLAKE3 hash, as hex: a store chunk's name (crates/ippai/src/pack.rs).
+ * The first 16 bytes of `data`'s BLAKE3 hash, as hex: a store chunk's name (crates/masu/src/pack.rs).
  * One-shot (a chunk at once: 4 MiB on average, 64 MiB at most), all of it in this function: the
  * network worker gets it as source.
  */
-function ippaiBlake3(data) {
+function masuBlake3(data) {
   const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
   const PERM = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
   const S = [];
@@ -132,24 +132,24 @@ function ippaiBlake3(data) {
 }
 
 /** Whether `data` is store chunk `url`'s content (true for anything not a chunk). */
-function ippaiChunkOk(url, data) {
-  return !ippaiIsChunk(url) || ippaiBlake3(data) === url.slice(url.lastIndexOf('/') + 1);
+function masuChunkOk(url, data) {
+  return !masuIsChunk(url) || masuBlake3(data) === url.slice(url.lastIndexOf('/') + 1);
 }
 
 /** The delay before retry `attempt` (from 0): exponential with jitter, at most 8 s. */
-function ippaiBackoff(attempt) {
+function masuBackoff(attempt) {
   return Math.min(8000, 300 * 2 ** attempt) * (0.5 + Math.random() * 0.5);
 }
 
 /** Waits `ms`; while the browser reports no network, until it reports one again (at most 30 s). */
-async function ippaiPause(ms) {
+async function masuPause(ms) {
   await new Promise((r) => setTimeout(r, ms));
   // (polled: a worker's 'online' event is not dependable)
   for (let i = 0; i < 60 && globalThis.navigator?.onLine === false; i++) await new Promise((r) => setTimeout(r, 500));
 }
 
 /** One try: the body read in pieces; aborted when no byte arrives for `stallMs`. */
-async function ippaiFetchOnce(url, stallMs, reload, headers) {
+async function masuFetchOnce(url, stallMs, reload, headers) {
   const abort = new AbortController();
   let last = Date.now();
   const watch = setInterval(() => {
@@ -193,13 +193,13 @@ async function ippaiFetchOnce(url, stallMs, reload, headers) {
   }
 }
 
-var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };
+var masuNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };
 /** Tells the page how many requests are being retried now (and the last error). */
-function ippaiNetReport(error) {
+function masuNetReport(error) {
   try {
-    ippaiNet.channel ??= new BroadcastChannel('ippai-net');
-    ippaiNet.channel.unref?.();
-    ippaiNet.channel.postMessage({ id: ippaiNet.id, retrying: ippaiNet.retrying.size, error: String(error ?? '') });
+    masuNet.channel ??= new BroadcastChannel('masu-net');
+    masuNet.channel.unref?.();
+    masuNet.channel.postMessage({ id: masuNet.id, retrying: masuNet.retrying.size, error: String(error ?? '') });
   } catch (_) {}
 }
 
@@ -210,11 +210,11 @@ function ippaiNetReport(error) {
  * with the warm run beside the first reads: a read ahead waited in Blob.arrayBuffer, the game's
  * read for its blocks behind it, no window ever); a read of a 4 MiB chunk takes milliseconds.
  */
-var IPPAI_CACHE_MS = 5000;
-/** `p` (a Cache Storage step), or a rejection once it took IPPAI_CACHE_MS. */
-function ippaiCacheStep(p) {
+var MASU_CACHE_MS = 5000;
+/** `p` (a Cache Storage step), or a rejection once it took MASU_CACHE_MS. */
+function masuCacheStep(p) {
   let timer;
-  const late = new Promise((_, no) => (timer = setTimeout(() => no(new Error('Cache Storage did not answer')), IPPAI_CACHE_MS)));
+  const late = new Promise((_, no) => (timer = setTimeout(() => no(new Error('Cache Storage did not answer')), MASU_CACHE_MS)));
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
@@ -223,17 +223,17 @@ function ippaiCacheStep(p) {
  * Storage's entries from before read too (web/src/chunkstore.ts has the page's copy, tested
  * against this one on one folder); Cache Storage alone where there is no OPFS.
  */
-var ippaiCacheOpen;
-var IPPAI_CHUNK_DIR = 'ippai-chunks';
-function ippaiCache() {
-  return (ippaiCacheOpen ??= (async () => {
+var masuCacheOpen;
+var MASU_CHUNK_DIR = 'ippai-chunks';
+function masuCache() {
+  return (masuCacheOpen ??= (async () => {
     let old = null;
     try {
-      old = typeof caches === 'undefined' ? null : await ippaiCacheStep(caches.open(IPPAI_CHUNKS));
+      old = typeof caches === 'undefined' ? null : await masuCacheStep(caches.open(MASU_CHUNKS));
     } catch (_) {}
     try {
       const root = await navigator.storage.getDirectory();
-      return ippaiOpfsStore(await root.getDirectoryHandle(IPPAI_CHUNK_DIR, { create: true }), old);
+      return masuOpfsStore(await root.getDirectoryHandle(MASU_CHUNK_DIR, { create: true }), old);
     } catch (_) {
       return old;
     }
@@ -241,7 +241,7 @@ function ippaiCache() {
 }
 
 /** A key's file name in the chunk folder (chunkstore.ts chunkFileName). */
-function ippaiChunkFile(u) {
+function masuChunkFile(u) {
   u = typeof u === 'string' ? u : u.url;
   const m = /\/([0-9a-f]{2}|ippai-chunks)\/([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u) ?? /^()([0-9a-f]{32}(\?b=\d+&s=\d+)?)$/.exec(u);
   return m && (m[1] === '' || m[1] === 'ippai-chunks' || m[2].startsWith(m[1])) ? m[2] : '';
@@ -251,12 +251,12 @@ function ippaiChunkFile(u) {
  * Chunks in OPFS folder `dir` (one file each, chunkstore.ts says how), Cache Storage's `old`
  * read too, with the Cache interface the rest of this file uses, and `read(url, from, len)`: a
  * part through a read-only synchronous access handle (a dedicated worker's), kept open
- * IPPAI_HANDLE_MS for the next reads of the same chunk, IPPAI_HANDLES at most; elsewhere the
+ * MASU_HANDLE_MS for the next reads of the same chunk, MASU_HANDLES at most; elsewhere the
  * file's slice. null when it is not here.
  */
-var IPPAI_HANDLE_MS = 5000;
-var IPPAI_HANDLES = 32;
-function ippaiOpfsStore(dir, old) {
+var MASU_HANDLE_MS = 5000;
+var MASU_HANDLES = 32;
+function masuOpfsStore(dir, old) {
   const handles = new Map();
   const oldKey = (k) => {
     const u = typeof k === 'string' ? k : k.url;
@@ -305,7 +305,7 @@ function ippaiOpfsStore(dir, old) {
         } catch (_) {}
         h = handles.get(name);
       } else {
-        while (handles.size >= IPPAI_HANDLES) close(handles.keys().next().value);
+        while (handles.size >= MASU_HANDLES) close(handles.keys().next().value);
         h = { h: sync };
         handles.set(name, h);
       }
@@ -315,25 +315,25 @@ function ippaiOpfsStore(dir, old) {
       handles.set(name, h);
     }
     clearTimeout(h.timer);
-    h.timer = setTimeout(() => close(name), IPPAI_HANDLE_MS);
+    h.timer = setTimeout(() => close(name), MASU_HANDLE_MS);
     return h.h;
   };
   return {
     async match(k) {
-      const name = ippaiChunkFile(k);
+      const name = masuChunkFile(k);
       const f = name ? await file(name) : null;
       if (f) {
         const headers = { 'x-ippai-size': String(f.size) };
-        if (!name.includes('?')) headers[IPPAI_CHECKED] = '1';
+        if (!name.includes('?')) headers[MASU_CHECKED] = '1';
         return new Response(f, { headers });
       }
       const o = oldKey(k);
       return o ? ((await old?.match(o).catch(() => undefined)) ?? undefined) : undefined;
     },
     async put(k, response) {
-      const name = ippaiChunkFile(k);
+      const name = masuChunkFile(k);
       const o = oldKey(k);
-      if (!name || (!name.includes('?') && response.headers.get(IPPAI_CHECKED) !== '1')) {
+      if (!name || (!name.includes('?') && response.headers.get(MASU_CHECKED) !== '1')) {
         if (o) await old?.put(o, response);
         return;
       }
@@ -358,7 +358,7 @@ function ippaiOpfsStore(dir, old) {
       if (o) await old?.delete(o).catch(() => false);
     },
     async delete(k) {
-      const name = ippaiChunkFile(k);
+      const name = masuChunkFile(k);
       let gone = false;
       if (name) {
         close(name);
@@ -375,15 +375,15 @@ function ippaiOpfsStore(dir, old) {
       const out = [];
       const seen = new Set();
       for await (const name of dir.keys()) {
-        if (!ippaiChunkFile(name)) continue;
+        if (!masuChunkFile(name)) continue;
         seen.add(name);
-        out.push({ url: `opfs:/${IPPAI_CHUNK_DIR}/${name}` });
+        out.push({ url: `opfs:/${MASU_CHUNK_DIR}/${name}` });
       }
-      for (const k of (await old?.keys().catch(() => [])) ?? []) if (!seen.has(ippaiChunkFile(k))) out.push(k);
+      for (const k of (await old?.keys().catch(() => [])) ?? []) if (!seen.has(masuChunkFile(k))) out.push(k);
       return out;
     },
     async read(k, from, len) {
-      const name = ippaiChunkFile(k);
+      const name = masuChunkFile(k);
       if (!name) return null;
       const h = await handle(name);
       if (h === null) return null;
@@ -406,65 +406,65 @@ function ippaiOpfsStore(dir, old) {
 /**
  * "<store path>#<from>+<len>/<block>[!a]" (vfs.rs asks for blocks of a chunk so, `block` bytes
  * each; "!a": by its fetcher threads, ahead of the game's reads): [path, from, len, block,
- * class (IPPAI_CLASS)]; a plain path: [path].
+ * class (MASU_CLASS)]; a plain path: [path].
  */
-function ippaiRange(name) {
+function masuRange(name) {
   const m = /^(.*)#(\d+)\+(\d+)(?:\/(\d+))?(!a)?$/.exec(name);
-  return m ? [m[1], +m[2], +m[3], m[4] === undefined ? undefined : +m[4], m[5] ? IPPAI_CLASS.ahead : IPPAI_CLASS.game] : [name];
+  return m ? [m[1], +m[2], +m[3], m[4] === undefined ? undefined : +m[4], m[5] ? MASU_CLASS.ahead : MASU_CLASS.game] : [name];
 }
 
 /**
- * Whole chunks this worker fetched lately, newest last (IPPAI_RECENT_BYTES, and the newest one
+ * Whole chunks this worker fetched lately, newest last (MASU_RECENT_BYTES, and the newest one
  * whatever its size): a read asks for a chunk's blocks one range after another, and the first
  * fetched it whole (the network has no ranges of a zstd-coded chunk). They are answered from
  * here until Cache Storage has the chunk (its put is not awaited), or where there is none.
  */
-var IPPAI_RECENT_BYTES = 32 << 20;
-var ippaiRecent = new Map();
-function ippaiKeepRecent(url, data) {
-  ippaiRecent.delete(url);
-  ippaiRecent.set(url, data);
+var MASU_RECENT_BYTES = 32 << 20;
+var masuRecent = new Map();
+function masuKeepRecent(url, data) {
+  masuRecent.delete(url);
+  masuRecent.set(url, data);
   let bytes = 0;
-  for (const d of ippaiRecent.values()) bytes += d.length;
-  for (const [k, d] of ippaiRecent) {
-    if (bytes <= IPPAI_RECENT_BYTES || ippaiRecent.size === 1) break;
-    ippaiRecent.delete(k);
+  for (const d of masuRecent.values()) bytes += d.length;
+  for (const [k, d] of masuRecent) {
+    if (bytes <= MASU_RECENT_BYTES || masuRecent.size === 1) break;
+    masuRecent.delete(k);
     bytes -= d.length;
   }
 }
 /**
  * Whole chunks checked and on their way onto the device, their put not done yet (a pack's
- * neighbours, a chunk past IPPAI_RECENT_BYTES): answered from here meanwhile, so a read of one
- * in that time does not fetch it again. IPPAI_SAVING_BYTES of them at most before the fetches
- * past the game's wait for the device to catch up (ippaiGate).
+ * neighbours, a chunk past MASU_RECENT_BYTES): answered from here meanwhile, so a read of one
+ * in that time does not fetch it again. MASU_SAVING_BYTES of them at most before the fetches
+ * past the game's wait for the device to catch up (masuGate).
  */
-var IPPAI_SAVING_BYTES = 64 << 20;
-var ippaiSaving = new Map();
-var ippaiSavingBytes = 0;
+var MASU_SAVING_BYTES = 64 << 20;
+var masuSaving = new Map();
+var masuSavingBytes = 0;
 /** How long a chunk waits here for its put (Cache Storage can leave one pending for good under
- * load: its bytes stayed here, and past IPPAI_SAVING_BYTES every fetch ahead stopped). */
-var IPPAI_PUT_MS = 30000;
-function ippaiKeep(cache, url, data) {
-  if (!cache || ippaiSaving.has(url)) return;
-  ippaiSaving.set(url, data);
-  ippaiSavingBytes += data.length;
+ * load: its bytes stayed here, and past MASU_SAVING_BYTES every fetch ahead stopped). */
+var MASU_PUT_MS = 30000;
+function masuKeep(cache, url, data) {
+  if (!cache || masuSaving.has(url)) return;
+  masuSaving.set(url, data);
+  masuSavingBytes += data.length;
   let timer;
-  const late = new Promise((r) => (timer = setTimeout(r, IPPAI_PUT_MS)));
-  Promise.race([cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })), late])
+  const late = new Promise((r) => (timer = setTimeout(r, MASU_PUT_MS)));
+  Promise.race([cache.put(url, new Response(data, { headers: { [MASU_CHECKED]: '1', 'x-ippai-size': String(data.length) } })), late])
     .catch(() => {})
     .finally(() => {
       clearTimeout(timer);
-      if (ippaiSaving.get(url) !== data) return;
-      ippaiSaving.delete(url);
-      ippaiSavingBytes -= data.length;
+      if (masuSaving.get(url) !== data) return;
+      masuSaving.delete(url);
+      masuSavingBytes -= data.length;
     });
 }
 /** Chunk `url` whole if this worker holds it: fetched lately, or on its way onto the device. */
-function ippaiHeld(url) {
-  return ippaiRecent.get(url) ?? ippaiSaving.get(url);
+function masuHeld(url) {
+  return masuRecent.get(url) ?? masuSaving.get(url);
 }
 /** Cache Storage's key for block `k` (of `block` bytes) of chunk `url`, kept alone. */
-function ippaiBlockKey(url, k, block) {
+function masuBlockKey(url, k, block) {
   return `${url}?b=${k}&s=${block}`;
 }
 
@@ -479,32 +479,32 @@ function ippaiBlockKey(url, k, block) {
 // fetchers, its save: a Web Lock per chunk).
 
 /** Request classes, most urgent first. */
-var IPPAI_CLASS = { game: 0, ahead: 1, hint: 2, warm: 3, save: 4 };
+var MASU_CLASS = { game: 0, ahead: 1, hint: 2, warm: 3, save: 4 };
 /** Requests per second the budget refills by, and holds at most. */
-var IPPAI_RATE = 9;
-var IPPAI_BURST = 40;
+var MASU_RATE = 9;
+var MASU_BURST = 40;
 /** Requests each class leaves to the classes above it; the game's may run the budget into debt
- * (to -IPPAI_RATE * 5: a game waits for no fetch ahead's budget, and its bursts are short). */
-var IPPAI_RESERVE = [-IPPAI_RATE * 5, 0, 8, 16, 16];
+ * (to -MASU_RATE * 5: a game waits for no fetch ahead's budget, and its bursts are short). */
+var MASU_RESERVE = [-MASU_RATE * 5, 0, 8, 16, 16];
 
 /**
  * The shared budget: an Int32 lock word, then [tokens, last refill (Date.now()), blocked until
  * (Date.now())] as Float64, over a SharedArrayBuffer the page makes (web/src/net.ts netBudget:
  * its own save uses it too) or this worker's own.
  */
-var IPPAI_BUDGET_BYTES = 32;
-var ippaiBudgetBuf;
-function ippaiBudgetInit(buf) {
-  ippaiBudgetBuf = buf ?? ippaiBudgetBuf ?? (() => {
-    const b = new (typeof SharedArrayBuffer === 'undefined' ? ArrayBuffer : SharedArrayBuffer)(IPPAI_BUDGET_BYTES);
-    new Float64Array(b, 8, 3).set([IPPAI_BURST, Date.now(), 0]);
+var MASU_BUDGET_BYTES = 32;
+var masuBudgetBuf;
+function masuBudgetInit(buf) {
+  masuBudgetBuf = buf ?? masuBudgetBuf ?? (() => {
+    const b = new (typeof SharedArrayBuffer === 'undefined' ? ArrayBuffer : SharedArrayBuffer)(MASU_BUDGET_BYTES);
+    new Float64Array(b, 8, 3).set([MASU_BURST, Date.now(), 0]);
     return b;
   })();
-  return ippaiBudgetBuf;
+  return masuBudgetBuf;
 }
 /** `f(values)` with the budget's lock held (a few instructions: spun for). */
-function ippaiBudgetWith(f) {
-  const buf = ippaiBudgetInit();
+function masuBudgetWith(f) {
+  const buf = masuBudgetInit();
   const lock = new Int32Array(buf, 0, 1);
   const v = new Float64Array(buf, 8, 3);
   // (bounded, as budget.ts withBudget: a holder that died inside does not hang this thread)
@@ -517,21 +517,21 @@ function ippaiBudgetWith(f) {
 }
 /** Takes one request of class `cls` from the budget (refilled to `now`): whether it may go.
  * While the bucket asked to wait (a 429), no class goes, the game's neither. */
-function ippaiTake(cls, now = Date.now()) {
-  return ippaiBudgetWith((v) => {
+function masuTake(cls, now = Date.now()) {
+  return masuBudgetWith((v) => {
     if (now < v[2]) return false;
     const dt = Math.max(0, now - v[1]) / 1000;
-    v[0] = Math.min(IPPAI_BURST, v[0] + dt * IPPAI_RATE);
+    v[0] = Math.min(MASU_BURST, v[0] + dt * MASU_RATE);
     v[1] = Math.max(v[1], now);
-    if (v[0] - 1 < (IPPAI_RESERVE[cls] ?? 0)) return false;
+    if (v[0] - 1 < (MASU_RESERVE[cls] ?? 0)) return false;
     v[0] -= 1;
     return true;
   });
 }
 /** The bucket said 429: nobody goes for `ms`, and the budget refills only from then on, from
  * none (not a burst of every class at once when the wait ends). */
-function ippaiDrain(ms, now = Date.now()) {
-  ippaiBudgetWith((v) => {
+function masuDrain(ms, now = Date.now()) {
+  masuBudgetWith((v) => {
     const until = now + ms;
     v[2] = Math.max(v[2], until);
     v[0] = Math.min(v[0], 0);
@@ -539,16 +539,16 @@ function ippaiDrain(ms, now = Date.now()) {
   });
 }
 /** Waits until `job` (its class read again each time) may make a request of the bucket; past
- * the game's, also until the chunks on their way onto the device are under IPPAI_SAVING_BYTES. */
-async function ippaiGate(job) {
-  while ((job.cls > 0 && ippaiSavingBytes > IPPAI_SAVING_BYTES) || !ippaiTake(job.cls)) await new Promise((r) => setTimeout(r, 50));
+ * the game's, also until the chunks on their way onto the device are under MASU_SAVING_BYTES. */
+async function masuGate(job) {
+  while ((job.cls > 0 && masuSavingBytes > MASU_SAVING_BYTES) || !masuTake(job.cls)) await new Promise((r) => setTimeout(r, 50));
 }
 
 /** The game's reads waiting in this worker now (fetches ahead give way while there are any). */
-var ippaiGameWaiting = 0;
+var masuGameWaiting = 0;
 
 /** Chunks being fetched whole now: url -> { promise, job }. */
-var ippaiInflight = new Map();
+var masuInflight = new Map();
 
 /**
  * Chunk `url` whole, fetched once whoever asks: from this worker's memory, Cache Storage, a
@@ -557,153 +557,153 @@ var ippaiInflight = new Map();
  * when known. Classes past the game's hold the chunk's Web Lock while they fetch, so the page's
  * own save does not fetch it again meanwhile (the game's do not wait for a lock).
  */
-var IPPAI_LOCK_WAIT_MS = 1000;
-function ippaiWhole(url, { cls = 0, size, want = true, directOnly = false } = {}) {
-  const mem = ippaiHeld(url);
+var MASU_LOCK_WAIT_MS = 1000;
+function masuWhole(url, { cls = 0, size, want = true, directOnly = false } = {}) {
+  const mem = masuHeld(url);
   if (mem) return Promise.resolve({ data: mem, wire: 0, cached: 1 });
   // (null: not from the bucket; the server then, as the asker wants it: once for every waiter
   // of the same chunk, not a download each)
-  const rest = (r) => r ?? (directOnly ? null : ippaiRobustOnce(url, cls ? { giveUpMs: 60000 } : {}));
-  const again = (r) => (r && want && !r.data ? ippaiWhole(url, { cls, size, want, directOnly }) : rest(r));
-  const going = ippaiInflight.get(url);
+  const rest = (r) => r ?? (directOnly ? null : masuRobustOnce(url, cls ? { giveUpMs: 60000 } : {}));
+  const again = (r) => (r && want && !r.data ? masuWhole(url, { cls, size, want, directOnly }) : rest(r));
+  const going = masuInflight.get(url);
   if (going) {
     going.job.cls = Math.min(going.job.cls, cls);
     // (a fetch ahead still waiting for the chunk's lock, held by another fetcher of it, the
     // page's save most likely: the game waits for no lock. A little for that fetch, then its own.)
     if (cls === 0 && going.locking) {
       let late;
-      const timer = new Promise((r) => (late = setTimeout(() => r(ippaiWhole.LATE), IPPAI_LOCK_WAIT_MS)));
+      const timer = new Promise((r) => (late = setTimeout(() => r(masuWhole.LATE), MASU_LOCK_WAIT_MS)));
       return Promise.race([going.promise, timer]).then((r) => {
         clearTimeout(late);
-        if (r !== ippaiWhole.LATE) return again(r);
-        const now = ippaiInflight.get(url);
+        if (r !== masuWhole.LATE) return again(r);
+        const now = masuInflight.get(url);
         if (now && !now.locking) return now.promise.then(again);
-        return ippaiStartWhole(url, cls, size, want, false).then(again);
+        return masuStartWhole(url, cls, size, want, false).then(again);
       });
     }
     return going.promise.then(again);
   }
-  return ippaiStartWhole(url, cls, size, want, cls > 0).then(rest);
+  return masuStartWhole(url, cls, size, want, cls > 0).then(rest);
 }
-ippaiWhole.LATE = {};
+masuWhole.LATE = {};
 
-/** ippaiFetchRobust of `url` shared by everyone asking while it runs. */
-var ippaiRobustInflight = new Map();
-function ippaiRobustOnce(url, opt) {
-  let p = ippaiRobustInflight.get(url);
+/** masuFetchRobust of `url` shared by everyone asking while it runs. */
+var masuRobustInflight = new Map();
+function masuRobustOnce(url, opt) {
+  let p = masuRobustInflight.get(url);
   if (!p) {
-    p = ippaiFetchRobust(url, opt).finally(() => {
-      if (ippaiRobustInflight.get(url) === p) ippaiRobustInflight.delete(url);
+    p = masuFetchRobust(url, opt).finally(() => {
+      if (masuRobustInflight.get(url) === p) masuRobustInflight.delete(url);
     });
-    ippaiRobustInflight.set(url, p);
+    masuRobustInflight.set(url, p);
   }
   return p;
 }
 
-/** ippaiWhole's fetch of `url`, registered in ippaiInflight; `lock`: under the chunk's Web Lock. */
-function ippaiStartWhole(url, cls, size, want, lock) {
+/** masuWhole's fetch of `url`, registered in masuInflight; `lock`: under the chunk's Web Lock. */
+function masuStartWhole(url, cls, size, want, lock) {
   const job = { cls };
   const entry = { promise: undefined, job, locking: false };
   const run = async () => {
     entry.locking = false;
     // (fetched meanwhile, by the game's own fetch while this one waited for the lock)
-    const mem = ippaiHeld(url);
+    const mem = masuHeld(url);
     if (mem) return { data: want ? mem : null, wire: 0, cached: 1 };
-    const cache = await ippaiCache();
-    const hit = cache && (await ippaiCacheStep(cache.match(url)).catch(() => undefined));
-    if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
+    const cache = await masuCache();
+    const hit = cache && (await masuCacheStep(cache.match(url)).catch(() => undefined));
+    if (hit && hit.headers.get(MASU_CHECKED) === '1') {
       if (!want) return { data: null, wire: 0, cached: 1 };
       try {
-        return { data: new Uint8Array(await ippaiCacheStep(hit.arrayBuffer())), wire: 0, cached: 1 };
+        return { data: new Uint8Array(await masuCacheStep(hit.arrayBuffer())), wire: 0, cached: 1 };
       } catch (_) {}
     }
-    return ippaiDirect(url, job, size);
+    return masuDirect(url, job, size);
   };
   const locks = lock ? globalThis.navigator?.locks : undefined;
   entry.locking = !!locks;
-  const promise = (locks ? locks.request(`ippai-chunk:${url.slice(-32)}`, run) : run()).finally(() => {
-    if (ippaiInflight.get(url) === entry) ippaiInflight.delete(url);
+  const promise = (locks ? locks.request(`masu-chunk:${url.slice(-32)}`, run) : run()).finally(() => {
+    if (masuInflight.get(url) === entry) masuInflight.delete(url);
   });
   entry.promise = promise;
-  ippaiInflight.set(url, entry);
+  masuInflight.set(url, entry);
   return promise;
 }
 
 /**
  * Chunks a read says the game reads soon (vfs.rs `hint`: the next files of a folder, the next
- * chunks of an archive): fetched onto the device, IPPAI_HINT_WIDTH at a time, newest hints first
+ * chunks of an archive): fetched onto the device, MASU_HINT_WIDTH at a time, newest hints first
  * (a scene that moved on leaves the old ones behind). The budget's reserve keeps them from the
  * game's requests; the line is not what limits (16 at once from the bucket: 45 MB/s), the
  * bucket's wait for each object is.
  */
-var IPPAI_HINT_WIDTH = 6;
-var IPPAI_HINT_MAX = 256;
-var ippaiHints = [];
-var ippaiHintsSeen = new Set();
-var ippaiHintsGoing = 0;
-function ippaiHint(urls) {
-  for (const u of urls.slice(0, IPPAI_HINT_MAX).reverse()) {
-    if (ippaiHintsSeen.has(u) || ippaiInflight.has(u) || ippaiHeld(u)) continue;
-    ippaiHintsSeen.add(u);
-    ippaiHints.push(u);
-    ippaiReads.hinted++;
+var MASU_HINT_WIDTH = 6;
+var MASU_HINT_MAX = 256;
+var masuHints = [];
+var masuHintsSeen = new Set();
+var masuHintsGoing = 0;
+function masuHint(urls) {
+  for (const u of urls.slice(0, MASU_HINT_MAX).reverse()) {
+    if (masuHintsSeen.has(u) || masuInflight.has(u) || masuHeld(u)) continue;
+    masuHintsSeen.add(u);
+    masuHints.push(u);
+    masuReads.hinted++;
   }
-  if (ippaiHintsSeen.size > 1 << 16) ippaiHintsSeen.clear();
+  if (masuHintsSeen.size > 1 << 16) masuHintsSeen.clear();
   // (the oldest dropped)
-  if (ippaiHints.length > IPPAI_HINT_MAX) ippaiHints.splice(0, ippaiHints.length - IPPAI_HINT_MAX);
-  void ippaiDirectMany(ippaiHints.slice(-IPPAI_DIRECT_MANY));
-  ippaiHintPump();
+  if (masuHints.length > MASU_HINT_MAX) masuHints.splice(0, masuHints.length - MASU_HINT_MAX);
+  void masuDirectMany(masuHints.slice(-MASU_DIRECT_MANY));
+  masuHintPump();
 }
-function ippaiHintPump() {
-  while (ippaiHintsGoing < IPPAI_HINT_WIDTH && ippaiHints.length) {
-    const u = ippaiHints.pop();
-    ippaiHintsGoing++;
-    ippaiWhole(u, { cls: IPPAI_CLASS.hint, want: false })
+function masuHintPump() {
+  while (masuHintsGoing < MASU_HINT_WIDTH && masuHints.length) {
+    const u = masuHints.pop();
+    masuHintsGoing++;
+    masuWhole(u, { cls: MASU_CLASS.hint, want: false })
       .catch(() => {})
       .finally(() => {
-        ippaiHintsGoing--;
+        masuHintsGoing--;
         // (not this worker's memory: the game's reads find it on the device)
-        if (!ippaiInflight.has(u)) ippaiRecent.delete(u);
-        ippaiHintPump();
+        if (!masuInflight.has(u)) masuRecent.delete(u);
+        masuHintPump();
       });
   }
 }
 
 /**
- * What came next after each chunk in earlier runs of the game (ippai serve's `<list>.next`:
+ * What came next after each chunk in earlier runs of the game (masu serve's `<list>.next`:
  * every branch, the newest runs' first, and the list's own order after them): hex -> hexes.
  * When the game reads a chunk for the first time, the chunks that followed it are fetched ahead
- * as hints (ippaiFollow), whichever way the game goes from there: one list in one order is the
+ * as hints (masuFollow), whichever way the game goes from there: one list in one order is the
  * way one run went (title, then the story), the game may go another (title, then the gallery).
  */
-var IPPAI_FOLLOW = 12;
-var ippaiNext = new Map();
+var MASU_FOLLOW = 12;
+var masuNext = new Map();
 /** `bytes`: pairs of 16-byte hashes, the chunk then one that followed it. */
-function ippaiNextAdd(bytes) {
+function masuNextAdd(bytes) {
   const hex = (o) => Array.from(bytes.subarray(o, o + 16), (b) => b.toString(16).padStart(2, '0')).join('');
   for (let o = 0; o + 32 <= bytes.length; o += 32) {
     const a = hex(o), b = hex(o + 16);
     if (a === b) continue;
-    let l = ippaiNext.get(a);
-    if (!l) ippaiNext.set(a, (l = []));
+    let l = masuNext.get(a);
+    if (!l) masuNext.set(a, (l = []));
     if (!l.includes(b)) l.push(b);
   }
 }
 /** The game read chunk `url` for the first time: what followed it, breadth first (the nearest
- * of every branch first), IPPAI_FOLLOW at most, fetched ahead as hints. Returns their URLs. */
-function ippaiFollow(url) {
+ * of every branch first), MASU_FOLLOW at most, fetched ahead as hints. Returns their URLs. */
+function masuFollow(url) {
   const base = url.slice(0, -35);
   const out = [];
   const seen = new Set([url.slice(-32)]);
   let level = [url.slice(-32)];
-  while (level.length && out.length < IPPAI_FOLLOW) {
+  while (level.length && out.length < MASU_FOLLOW) {
     const n = [];
-    for (const a of level) for (const b of ippaiNext.get(a) ?? []) if (!seen.has(b)) seen.add(b), n.push(b);
+    for (const a of level) for (const b of masuNext.get(a) ?? []) if (!seen.has(b)) seen.add(b), n.push(b);
     out.push(...n);
     level = n;
   }
-  const urls = out.slice(0, IPPAI_FOLLOW).map((h) => `${base}${h.slice(0, 2)}/${h}`);
-  if (urls.length) ippaiHint(urls);
+  const urls = out.slice(0, MASU_FOLLOW).map((h) => `${base}${h.slice(0, 2)}/${h}`);
+  if (urls.length) masuHint(urls);
   return urls;
 }
 
@@ -712,30 +712,30 @@ function ippaiFollow(url) {
  * `device` (kept already), `saving` (checked, on its way into the cache), `coming` (a fetch
  * ahead was on its way), `none` (the game's read went to the network itself). The misses that
  * count are `coming` and `none`: what to fetch ahead earlier. `followed`: chunks queued from
- * what came next in earlier runs (ippaiFollow); `hinted`: all queued as hints (those, and the
+ * what came next in earlier runs (masuFollow); `hinted`: all queued as hints (those, and the
  * reads' own: a folder's next files, the files a script names, vfs/predict.rs).
  */
-var ippaiReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };
-var ippaiReadSeen = new Set();
+var masuReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };
+var masuReadSeen = new Set();
 /** Before the game's read of `url`: whether it is the chunk's first, and where it is then
  * (undefined: on the device or nowhere, as the read finds out). Its followers go ahead. */
-function ippaiReadStart(url) {
-  if (!ippaiIsChunk(url) || ippaiReadSeen.has(url)) return null;
-  if (ippaiReadSeen.size > 1 << 16) ippaiReadSeen.clear();
-  ippaiReadSeen.add(url);
-  const where = ippaiRecent.has(url) ? 'device' : ippaiSaving.has(url) ? 'saving' : ippaiInflight.has(url) ? 'coming' : undefined;
-  ippaiReads.followed += ippaiFollow(url).length;
+function masuReadStart(url) {
+  if (!masuIsChunk(url) || masuReadSeen.has(url)) return null;
+  if (masuReadSeen.size > 1 << 16) masuReadSeen.clear();
+  masuReadSeen.add(url);
+  const where = masuRecent.has(url) ? 'device' : masuSaving.has(url) ? 'saving' : masuInflight.has(url) ? 'coming' : undefined;
+  masuReads.followed += masuFollow(url).length;
   return { where, t: Date.now() };
 }
-function ippaiReadEnd(start, cached) {
+function masuReadEnd(start, cached) {
   if (!start) return;
-  const r = ippaiReads[start.where ?? (cached ? 'device' : 'none')];
+  const r = masuReads[start.where ?? (cached ? 'device' : 'none')];
   r[0]++;
   r[1] += Date.now() - start.t;
 }
 
 /**
- * A store chunk straight from the bucket (S3) when the server gives a way (ippai serve's
+ * A store chunk straight from the bucket (S3) when the server gives a way (masu serve's
  * /store-direct: a presigned URL, the object's AES-256-GCM key and UUID): fetched, decrypted
  * (nonce first, the UUID as associated data), zstd-decoded (sake/snapz.mjs) and checked
  * against its name, then kept as one from the server would be. The bucket answers every object
@@ -743,40 +743,40 @@ function ippaiReadEnd(start, cached) {
  * (worker2: 4 at once 3 MB/s; this page's own line has more). null: no way (an older server, a
  * store without S3, a chunk only on the server, an expired URL that failed): the server, as before.
  */
-var IPPAI_DIRECT_KEEP_MS = 3600000;
+var MASU_DIRECT_KEEP_MS = 3600000;
 /** How long the server may take to say how to fetch a chunk from the bucket (a stuck server, as
  * worker2's at 19:58 JST 2026-11-09, held a read 80 s): past it, the server's own /store. */
-var IPPAI_DIRECT_ASK_MS = 10000;
-var ippaiDirectInfo = new Map();
-var ippaiDirectOff = false;
-var ippaiZstd;
+var MASU_DIRECT_ASK_MS = 10000;
+var masuDirectInfo = new Map();
+var masuDirectOff = false;
+var masuZstd;
 /** Whether `info` (from /store-direct) still works. */
-function ippaiDirectFresh(info) {
-  return !!info && Date.now() - info.at <= IPPAI_DIRECT_KEEP_MS;
+function masuDirectFresh(info) {
+  return !!info && Date.now() - info.at <= MASU_DIRECT_KEEP_MS;
 }
 
 /** A well-formed answer of /store-direct for one chunk. */
-function ippaiDirectValid(info) {
+function masuDirectValid(info) {
   return !!info && typeof info.url === 'string' && /^[0-9a-f]{64}$/.test(info.key) && /^[0-9a-f-]{36}$/.test(info.object);
 }
 
 /**
  * Asks the server how to fetch many chunks from the bucket at once (`POST store-direct`, a
- * list of chunk paths: crates/ippai/src/store_api.rs `direct_many`), IPPAI_DIRECT_MANY at a
+ * list of chunk paths: crates/masu/src/store_api.rs `direct_many`), MASU_DIRECT_MANY at a
  * time, and keeps the answers: a game's read of one of them then goes to the bucket at once,
  * without first a round trip to the server (which a read of every file the game had not read
  * yet paid before the bucket's own wait). Those the server does not name are only on the server.
- * An older server without the route: asked one by one, as before (ippaiDirect).
+ * An older server without the route: asked one by one, as before (masuDirect).
  */
-var IPPAI_DIRECT_MANY = 512;
-var ippaiDirectAsking = new Map();
-var ippaiDirectManyOff = false;
-async function ippaiDirectMany(urls) {
-  const want = urls.filter((u) => ippaiIsChunk(u) && u.includes('/store/chunks/') && !ippaiDirectFresh(ippaiDirectInfo.get(u)) && !ippaiDirectAsking.has(u));
-  if (ippaiDirectOff || ippaiDirectManyOff || !want.length || typeof fetch === 'undefined') return;
+var MASU_DIRECT_MANY = 512;
+var masuDirectAsking = new Map();
+var masuDirectManyOff = false;
+async function masuDirectMany(urls) {
+  const want = urls.filter((u) => masuIsChunk(u) && u.includes('/store/chunks/') && !masuDirectFresh(masuDirectInfo.get(u)) && !masuDirectAsking.has(u));
+  if (masuDirectOff || masuDirectManyOff || !want.length || typeof fetch === 'undefined') return;
   const runs = [];
-  for (let i = 0; i < want.length; i += IPPAI_DIRECT_MANY) {
-    const part = want.slice(i, i + IPPAI_DIRECT_MANY);
+  for (let i = 0; i < want.length; i += MASU_DIRECT_MANY) {
+    const part = want.slice(i, i + MASU_DIRECT_MANY);
     const at = part[0].lastIndexOf('/store/chunks/');
     const base = part[0].slice(0, at + 1);
     const run = (async () => {
@@ -787,14 +787,14 @@ async function ippaiDirectMany(urls) {
           cache: 'no-store',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(part.map((u) => u.slice(u.lastIndexOf('/store/chunks/') + 7))),
-          signal: AbortSignal.timeout(IPPAI_DIRECT_ASK_MS * 3),
+          signal: AbortSignal.timeout(MASU_DIRECT_ASK_MS * 3),
         });
       } catch (_) {
         return;
       }
-      if (r.status === 501) ippaiDirectOff = true;
+      if (r.status === 501) masuDirectOff = true;
       // (a server without the route)
-      if (r.status === 404 || r.status === 405) ippaiDirectManyOff = true;
+      if (r.status === 404 || r.status === 405) masuDirectManyOff = true;
       if (!r.ok) return;
       let all;
       try {
@@ -803,80 +803,80 @@ async function ippaiDirectMany(urls) {
         return;
       }
       const now = Date.now();
-      if (ippaiDirectInfo.size > 20000) ippaiDirectInfo.clear();
+      if (masuDirectInfo.size > 20000) masuDirectInfo.clear();
       for (const u of part) {
         const info = all?.[u.slice(u.lastIndexOf('/store/chunks/') + 7)];
         // (not named: only on the server, which then answers it as before)
-        const ok = ippaiDirectValid(info);
-        ippaiDirectInfo.set(u, ok ? { url: info.url, key: info.key, object: info.object, pack: ippaiPackValid(info.pack) ? info.pack : undefined, at: now } : { none: true, at: now });
-        if (ok) ippaiPackNote(u, ippaiDirectInfo.get(u));
+        const ok = masuDirectValid(info);
+        masuDirectInfo.set(u, ok ? { url: info.url, key: info.key, object: info.object, pack: masuPackValid(info.pack) ? info.pack : undefined, at: now } : { none: true, at: now });
+        if (ok) masuPackNote(u, masuDirectInfo.get(u));
       }
     })();
-    for (const u of part) ippaiDirectAsking.set(u, run);
-    runs.push(run.finally(() => part.forEach((u) => ippaiDirectAsking.get(u) === run && ippaiDirectAsking.delete(u))));
+    for (const u of part) masuDirectAsking.set(u, run);
+    runs.push(run.finally(() => part.forEach((u) => masuDirectAsking.get(u) === run && masuDirectAsking.delete(u))));
   }
   await Promise.all(runs);
 }
 
 /**
  * Chunk `url` from the bucket itself (as above). `job.cls` is the request's class
- * (IPPAI_CLASS; read again while it waits for the budget: a game read that joins a fetch ahead
+ * (MASU_CLASS; read again while it waits for the budget: a game read that joins a fetch ahead
  * of the same chunk makes it the game's), `size` its decoded length when known; `alone`: not
  * with its delivery pack's neighbours.
  */
-async function ippaiDirect(url, job = { cls: 0 }, size, alone = false) {
+async function masuDirect(url, job = { cls: 0 }, size, alone = false) {
   const at = url.lastIndexOf('/store/chunks/');
-  if (ippaiDirectOff || at < 0 || !ippaiIsChunk(url) || !globalThis.crypto?.subtle || typeof fetch === 'undefined') return null;
+  if (masuDirectOff || at < 0 || !masuIsChunk(url) || !globalThis.crypto?.subtle || typeof fetch === 'undefined') return null;
   const base = url.slice(0, at + 1);
-  let info = ippaiDirectInfo.get(url);
+  let info = masuDirectInfo.get(url);
   // (being asked for with others: that answer)
-  if (!ippaiDirectFresh(info) && ippaiDirectAsking.has(url)) {
-    await ippaiDirectAsking.get(url);
-    info = ippaiDirectInfo.get(url);
+  if (!masuDirectFresh(info) && masuDirectAsking.has(url)) {
+    await masuDirectAsking.get(url);
+    info = masuDirectInfo.get(url);
   }
-  if (!ippaiDirectFresh(info)) {
+  if (!masuDirectFresh(info)) {
     let r;
     try {
-      r = await fetch(`${base}store-direct/${url.slice(at + 7)}`, { cache: 'no-store', signal: AbortSignal.timeout(IPPAI_DIRECT_ASK_MS) });
+      r = await fetch(`${base}store-direct/${url.slice(at + 7)}`, { cache: 'no-store', signal: AbortSignal.timeout(MASU_DIRECT_ASK_MS) });
     } catch (_) {
       return null;
     }
     // (501: a store without S3; 404: this chunk is only on the server)
-    if (r.status === 501) ippaiDirectOff = true;
+    if (r.status === 501) masuDirectOff = true;
     if (!r.ok) return null;
     try {
       info = { ...(await r.json()), at: Date.now() };
     } catch (e) {
       // (not JSON: a server without /store-direct answered with something else; cut short by
       // the time limit: only this once)
-      if (e?.name !== 'TimeoutError' && e?.name !== 'AbortError') ippaiDirectOff = true;
+      if (e?.name !== 'TimeoutError' && e?.name !== 'AbortError') masuDirectOff = true;
       return null;
     }
-    if (!ippaiDirectValid(info)) return null;
-    if (!ippaiPackValid(info.pack)) delete info.pack;
-    if (ippaiDirectInfo.size > 20000) ippaiDirectInfo.clear();
-    ippaiDirectInfo.set(url, info);
-    ippaiPackNote(url, info);
+    if (!masuDirectValid(info)) return null;
+    if (!masuPackValid(info.pack)) delete info.pack;
+    if (masuDirectInfo.size > 20000) masuDirectInfo.clear();
+    masuDirectInfo.set(url, info);
+    masuPackNote(url, info);
   }
   if (info.none) return null;
   // (with the chunks after it in its delivery pack, one GET for them all; failing that, alone)
   if (info.pack && !alone) {
-    const r = await ippaiPackRun(url, info, job, size, base);
+    const r = await masuPackRun(url, info, job, size, base);
     if (r) return r;
   }
-  for (let bad = 0; bad < IPPAI_BAD_CHUNK; bad++) {
+  for (let bad = 0; bad < MASU_BAD_CHUNK; bad++) {
     let got;
     try {
-      got = await ippaiFetchRobust(info.url, { giveUpMs: 60000, job });
+      got = await masuFetchRobust(info.url, { giveUpMs: 60000, job });
     } catch (_) {
-      ippaiDirectInfo.delete(url);
+      masuDirectInfo.delete(url);
       return null;
     }
-    const plain = await ippaiOpen(info, got.data).catch(() => null);
-    const data = plain && (await ippaiUnzstd(base, plain, size).catch(() => null));
-    if (data && ippaiChunkOk(url, data)) {
-      ippaiKeepRecent(url, data);
-      ippaiKeep(await ippaiCache(), url, data);
+    const plain = await masuOpen(info, got.data).catch(() => null);
+    const data = plain && (await masuUnzstd(base, plain, size).catch(() => null));
+    if (data && masuChunkOk(url, data)) {
+      masuKeepRecent(url, data);
+      masuKeep(await masuCache(), url, data);
       return { data, wire: got.wire, cached: got.cached };
     }
   }
@@ -884,47 +884,47 @@ async function ippaiDirect(url, job = { cls: 0 }, size, alone = false) {
 }
 
 /**
- * Delivery packs (docs/s3-reads.md; crates/ippai/src/storage.rs pack_objects): a game's chunk
+ * Delivery packs (docs/s3-reads.md; crates/masu/src/storage.rs pack_objects): a game's chunk
  * objects, as the bucket has them, side by side in big objects in the order the game reads
  * them. A /store-direct answer names where its chunk's object is in one (`pack`: id, URL,
  * offset, length); a read of a chunk then takes the chunks after it in the pack with the same
- * ranged GET (those not on the device nor coming already), up to IPPAI_PACK_SPAN bytes for its
+ * ranged GET (those not on the device nor coming already), up to MASU_PACK_SPAN bytes for its
  * class: the bucket's wait for an object (0.4-2 s) and one request of its budget paid once for
  * them all. A game's read takes fewer (it waits for the whole range); a save to the device many.
  */
-var IPPAI_PACK_SPAN = [4 << 20, 8 << 20, 16 << 20, 32 << 20, 32 << 20];
-var IPPAI_PACK_MAX = 64;
+var MASU_PACK_SPAN = [4 << 20, 8 << 20, 16 << 20, 32 << 20, 32 << 20];
+var MASU_PACK_MAX = 64;
 /** pack id -> Map(offset -> chunk URL), from the answers. */
-var ippaiPacks = new Map();
-function ippaiPackValid(p) {
+var masuPacks = new Map();
+function masuPackValid(p) {
   return !!p && typeof p.url === 'string' && /^[0-9a-f-]{36}$/.test(p.id) && Number.isSafeInteger(p.offset) && p.offset >= 0 && Number.isSafeInteger(p.len) && p.len >= 28;
 }
-function ippaiPackNote(url, info) {
+function masuPackNote(url, info) {
   if (!info?.pack) return;
-  if (ippaiPacks.size > 4096) ippaiPacks.clear();
-  let m = ippaiPacks.get(info.pack.id);
-  if (!m) ippaiPacks.set(info.pack.id, (m = new Map()));
+  if (masuPacks.size > 4096) masuPacks.clear();
+  let m = masuPacks.get(info.pack.id);
+  if (!m) masuPacks.set(info.pack.id, (m = new Map()));
   m.set(info.pack.offset, url);
 }
 
 /** Chunk `url` with the chunks after it in its pack (as above): its result, or null (then alone). */
-async function ippaiPackRun(url, info, job, size, base) {
+async function masuPackRun(url, info, job, size, base) {
   const p = info.pack;
-  const at = ippaiPacks.get(p.id);
+  const at = masuPacks.get(p.id);
   const run = [{ url, info }];
-  const span = IPPAI_PACK_SPAN[job.cls] ?? IPPAI_PACK_SPAN.at(-1);
-  const cache = await ippaiCache();
+  const span = MASU_PACK_SPAN[job.cls] ?? MASU_PACK_SPAN.at(-1);
+  const cache = await masuCache();
   let end = p.offset + p.len;
   let last = end;
-  while (at && run.length < IPPAI_PACK_MAX) {
+  while (at && run.length < MASU_PACK_MAX) {
     const u = at.get(end);
-    const n = u && ippaiDirectInfo.get(u);
-    if (!n || !ippaiDirectFresh(n) || n.pack?.id !== p.id || end + n.pack.len - p.offset > span) break;
+    const n = u && masuDirectInfo.get(u);
+    if (!n || !masuDirectFresh(n) || n.pack?.id !== p.id || end + n.pack.len - p.offset > span) break;
     end += n.pack.len;
     // (here or coming already: its bytes only if a later one is taken)
-    if (ippaiInflight.has(u) || ippaiHeld(u)) continue;
-    const hit = cache && (await ippaiCacheStep(cache.match(u)).catch(() => undefined));
-    if (hit && hit.headers.get(IPPAI_CHECKED) === '1') continue;
+    if (masuInflight.has(u) || masuHeld(u)) continue;
+    const hit = cache && (await masuCacheStep(cache.match(u)).catch(() => undefined));
+    if (hit && hit.headers.get(MASU_CHECKED) === '1') continue;
     run.push({ url: u, info: n });
     last = end;
   }
@@ -936,59 +936,59 @@ async function ippaiPackRun(url, info, job, size, base) {
   for (const n of run.slice(1)) {
     const entry = { promise: undefined, job, locking: false };
     entry.promise = all
-      .then((m) => m.get(n.url) ?? ippaiDirect(n.url, job, undefined, true))
+      .then((m) => m.get(n.url) ?? masuDirect(n.url, job, undefined, true))
       .finally(() => {
-        if (ippaiInflight.get(n.url) === entry) ippaiInflight.delete(n.url);
+        if (masuInflight.get(n.url) === entry) masuInflight.delete(n.url);
       });
-    ippaiInflight.set(n.url, entry);
+    masuInflight.set(n.url, entry);
   }
   const out = new Map();
   try {
-    const got = await ippaiFetchRobust(p.url, { giveUpMs: 60000, range: [p.offset, last - p.offset], job });
+    const got = await masuFetchRobust(p.url, { giveUpMs: 60000, range: [p.offset, last - p.offset], job });
     // (a bucket that sends the whole pack for a range: the range from it)
     const bytes = got.partial ? got.data : got.data.subarray(p.offset, last);
     if (bytes.length === last - p.offset)
       for (const n of run) {
         const off = n.info.pack.offset - p.offset;
-        const plain = await ippaiOpen(n.info, bytes.subarray(off, off + n.info.pack.len)).catch(() => null);
-        const data = plain && (await ippaiUnzstd(base, plain, n.url === url ? size : undefined).catch(() => null));
-        if (!data || !ippaiChunkOk(n.url, data)) continue;
+        const plain = await masuOpen(n.info, bytes.subarray(off, off + n.info.pack.len)).catch(() => null);
+        const data = plain && (await masuUnzstd(base, plain, n.url === url ? size : undefined).catch(() => null));
+        if (!data || !masuChunkOk(n.url, data)) continue;
         out.set(n.url, { data, wire: n.url === url ? got.wire : 0, cached: got.cached });
         // (held until it is on the device: a read of it meanwhile does not fetch it again)
-        ippaiKeep(cache, n.url, data);
+        masuKeep(cache, n.url, data);
       }
   } catch (_) {}
   done(out);
   const r = out.get(url);
-  if (r) ippaiKeepRecent(url, r.data);
+  if (r) masuKeepRecent(url, r.data);
   return r ?? null;
 }
 
 /** Hex `h` as bytes. */
-function ippaiHex(h) {
+function masuHex(h) {
   return Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
 }
 
-/** Object `cipher` (nonce, ciphertext and tag, as crates/ippai/src/envelope.rs seals it) opened with `info`'s key. */
+/** Object `cipher` (nonce, ciphertext and tag, as crates/masu/src/envelope.rs seals it) opened with `info`'s key. */
 /** The AES keys imported so far, by their hex (a game's chunks share one: not imported per chunk). */
-var ippaiKeys = new Map();
-async function ippaiOpen(info, cipher) {
+var masuKeys = new Map();
+async function masuOpen(info, cipher) {
   if (cipher.length < 28) throw new Error('short');
-  let key = ippaiKeys.get(info.key);
+  let key = masuKeys.get(info.key);
   if (!key) {
-    key = crypto.subtle.importKey('raw', ippaiHex(info.key), 'AES-GCM', false, ['decrypt']);
-    if (ippaiKeys.size >= 64) ippaiKeys.clear();
-    ippaiKeys.set(info.key, key);
-    key.catch(() => ippaiKeys.get(info.key) === key && ippaiKeys.delete(info.key));
+    key = crypto.subtle.importKey('raw', masuHex(info.key), 'AES-GCM', false, ['decrypt']);
+    if (masuKeys.size >= 64) masuKeys.clear();
+    masuKeys.set(info.key, key);
+    key.catch(() => masuKeys.get(info.key) === key && masuKeys.delete(info.key));
   }
   // (views, not copies, of the IV and the ciphertext)
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: cipher.subarray(0, 12), additionalData: ippaiHex(info.object.replace(/-/g, '')), tagLength: 128 }, await key, cipher.subarray(12));
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: cipher.subarray(0, 12), additionalData: masuHex(info.object.replace(/-/g, '')), tagLength: 128 }, await key, cipher.subarray(12));
   return new Uint8Array(plain);
 }
 
 /** A zstd frame's decoded size from its header (Frame_Content_Size, RFC 8878 3.1.1.1), 0 when
  * the header does not say (or is not a zstd frame's). */
-function ippaiZstdSize(f) {
+function masuZstdSize(f) {
   if (!f || f.length < 6 || f[0] !== 0x28 || f[1] !== 0xb5 || f[2] !== 0x2f || f[3] !== 0xfd) return 0;
   const fhd = f[4];
   const single = (fhd >> 5) & 1;
@@ -1001,14 +1001,14 @@ function ippaiZstdSize(f) {
 }
 
 /** zstd frame `frame` decoded by sake's snapz (sake/snapz.mjs beside the store): `size` bytes when known, else a chunk is 16 MiB at most (4x FastCDC's 4 MiB average), 64 MiB tried once more. */
-async function ippaiUnzstd(base, frame, size) {
-  ippaiZstd ??= import(`${base}sake/snapz.mjs`).then((m) => m.default());
-  const z = await ippaiZstd;
+async function masuUnzstd(base, frame, size) {
+  masuZstd ??= import(`${base}sake/snapz.mjs`).then((m) => m.default());
+  const z = await masuZstd;
   // (the length when known, from the trees' lists: no 16 MiB buffer for every chunk at once,
   // which several side by side on a phone add up to)
   // (else the frame's own header's size when it gives one, 64 MiB at most: a right-sized
   // buffer, not 16 MiB then 64 MiB that the zstd heap keeps committed for the session)
-  const said = ippaiZstdSize(frame);
+  const said = masuZstdSize(frame);
   for (const cap of size > 0 ? [size] : said > 0 && said <= 64 << 20 ? [said, 16 << 20, 64 << 20] : [16 << 20, 64 << 20]) {
     const src = z._malloc(frame.length) >>> 0;
     const dst = z._malloc(cap) >>> 0;
@@ -1026,7 +1026,7 @@ async function ippaiUnzstd(base, frame, size) {
 }
 
 /**
- * Bytes `from..from + len` of `url`'s (whole when `from` is undefined), as ippaiFetchRobust's
+ * Bytes `from..from + len` of `url`'s (whole when `from` is undefined), as masuFetchRobust's
  * result. Of a chunk, from the first place that has them: this worker's memory (a chunk it
  * fetched whole lately), Cache Storage's copy of the whole chunk (checked when it was kept;
  * Blob.slice reads only those bytes, whatever the chunk's size), its blocks kept alone (`block`
@@ -1034,33 +1034,33 @@ async function ippaiUnzstd(base, frame, size) {
  * (only what is read crosses the network, kept as blocks); a server without ranges sends the
  * whole chunk, then checked and kept whole (and in this worker's memory for the next blocks).
  */
-async function ippaiFetchPart(url, from, len, block, cls = 0) {
-  if (from === undefined) return ippaiIsChunk(url) ? ippaiWhole(url, { cls }) : ippaiFetchRobust(url);
+async function masuFetchPart(url, from, len, block, cls = 0) {
+  if (from === undefined) return masuIsChunk(url) ? masuWhole(url, { cls }) : masuFetchRobust(url);
   const part = (d) => d.subarray(Math.min(from, d.length), Math.min(from + len, d.length));
-  const mem = ippaiHeld(url);
+  const mem = masuHeld(url);
   if (mem) return { data: part(mem), wire: 0, cached: 1 };
-  if (!ippaiIsChunk(url)) return ippaiFetchPart(url).then((r) => ({ ...r, data: part(r.data) }));
-  const cache = await ippaiCache();
+  if (!masuIsChunk(url)) return masuFetchPart(url).then((r) => ({ ...r, data: part(r.data) }));
+  const cache = await masuCache();
   block ||= len || 1;
   const first = Math.floor(from / block);
   const last = Math.max(first, Math.ceil((from + len) / block) - 1);
   if (cache) {
     // (the whole chunk in OPFS: those bytes alone, through a synchronous handle)
-    const quick = cache.read && (await ippaiCacheStep(cache.read(url, from, len)).catch(() => null));
+    const quick = cache.read && (await masuCacheStep(cache.read(url, from, len)).catch(() => null));
     if (quick) return { data: quick, wire: 0, cached: 1 };
-    const hit = await ippaiCacheStep(cache.match(url)).catch(() => undefined);
-    if (hit && hit.headers.get(IPPAI_CHECKED) === '1') {
+    const hit = await masuCacheStep(cache.match(url)).catch(() => undefined);
+    if (hit && hit.headers.get(MASU_CHECKED) === '1') {
       try {
-        const blob = await ippaiCacheStep(hit.blob());
-        return { data: new Uint8Array(await ippaiCacheStep(blob.slice(from, from + len).arrayBuffer())), wire: 0, cached: 1 };
+        const blob = await masuCacheStep(hit.blob());
+        return { data: new Uint8Array(await masuCacheStep(blob.slice(from, from + len).arrayBuffer())), wire: 0, cached: 1 };
       } catch (_) {}
     }
     // (blocks kept alone: all of them, or the network; a block that does not read is not there,
     // not a short last one)
     const parts = [];
     for (let k = first; k <= last; k++) {
-      const b = await ippaiCacheStep(cache.match(ippaiBlockKey(url, k, block))).catch(() => undefined);
-      const bytes = b && (await ippaiCacheStep(b.arrayBuffer()).catch(() => undefined));
+      const b = await masuCacheStep(cache.match(masuBlockKey(url, k, block))).catch(() => undefined);
+      const bytes = b && (await masuCacheStep(b.arrayBuffer()).catch(() => undefined));
       if (!bytes) break;
       parts.push(new Uint8Array(bytes));
       // (a chunk's last block: shorter, nothing after it)
@@ -1075,18 +1075,18 @@ async function ippaiFetchPart(url, from, len, block, cls = 0) {
   }
   // (from the bucket itself: the whole chunk, kept; the next blocks come from memory; one
   // fetch of it whoever else asks for it now)
-  const direct = await ippaiWhole(url, { cls, directOnly: true });
+  const direct = await masuWhole(url, { cls, directOnly: true });
   if (direct?.data) return { ...direct, data: part(direct.data) };
   // (the whole blocks asked for: what is kept)
   const at = first * block;
-  const r = await ippaiFetchRobust(url, { range: [at, (last + 1) * block - at] });
+  const r = await masuFetchRobust(url, { range: [at, (last + 1) * block - at] });
   if (!r.partial) return { ...r, data: part(r.data) };
   if (cache) {
     for (let k = first; k <= last; k++) {
       const d = r.data.subarray((k - first) * block, (k + 1 - first) * block);
       // (a short block only at the chunk's end)
       if (d.length === block || (r.total !== undefined && k * block + d.length === r.total))
-        cache.put(ippaiBlockKey(url, k, block), new Response(d.slice(), { headers: { 'x-ippai-size': String(d.length) } })).catch(() => {});
+        cache.put(masuBlockKey(url, k, block), new Response(d.slice(), { headers: { 'x-ippai-size': String(d.length) } })).catch(() => {});
     }
   }
   return { ...r, data: r.data.subarray(from - at, from - at + len) };
@@ -1096,22 +1096,22 @@ async function ippaiFetchPart(url, from, len, block, cls = 0) {
  * `url`'s bytes, retried as above: { data, wire (bytes over the network), cached (1: no
  * network) }. Throws for a final failure.
  */
-async function ippaiFetchRobust(url, opt = {}) {
-  const stallMs = opt.stallMs ?? IPPAI_STALL_MS;
-  const giveUpMs = opt.giveUpMs ?? IPPAI_GIVE_UP_MS;
-  const chunk = ippaiIsChunk(url);
-  const cache = chunk ? await ippaiCache() : null;
-  // opt.range [from, len]: those bytes of the decoded chunk (ippaiFetchPart looked on the device
-  // already); the answer has `partial` (a 206 of them, ippai serve's store_api.rs) or is the
+async function masuFetchRobust(url, opt = {}) {
+  const stallMs = opt.stallMs ?? MASU_STALL_MS;
+  const giveUpMs = opt.giveUpMs ?? MASU_GIVE_UP_MS;
+  const chunk = masuIsChunk(url);
+  const cache = chunk ? await masuCache() : null;
+  // opt.range [from, len]: those bytes of the decoded chunk (masuFetchPart looked on the device
+  // already); the answer has `partial` (a 206 of them, masu serve's store_api.rs) or is the
   // whole chunk (a server without ranges), checked and kept as any
   const range = opt.range;
-  const hit = range || !cache ? undefined : await ippaiCacheStep(cache.match(url)).catch(() => undefined);
+  const hit = range || !cache ? undefined : await masuCacheStep(cache.match(url)).catch(() => undefined);
   if (hit) {
     try {
-      const data = new Uint8Array(await ippaiCacheStep(hit.arrayBuffer()));
-      if (hit.headers.get(IPPAI_CHECKED) === '1') return { data, wire: 0, cached: 1 };
-      if (ippaiChunkOk(url, data)) {
-        ippaiKeep(cache, url, data);
+      const data = new Uint8Array(await masuCacheStep(hit.arrayBuffer()));
+      if (hit.headers.get(MASU_CHECKED) === '1') return { data, wire: 0, cached: 1 };
+      if (masuChunkOk(url, data)) {
+        masuKeep(cache, url, data);
         return { data, wire: 0, cached: 1 };
       }
       await cache.delete(url).catch(() => {});
@@ -1127,90 +1127,90 @@ async function ippaiFetchRobust(url, opt = {}) {
       try {
         // (the bucket's budget, for each request made: a retry is one more; opt.job's class
         // read again each time)
-        if (opt.job) await ippaiGate(opt.job);
+        if (opt.job) await masuGate(opt.job);
         // (after a chunk that did not match, past the browser's HTTP cache: it keeps chunks for good)
-        const { response, data } = await ippaiFetchOnce(url, stallMs, bad > 0, range && { range: `bytes=${range[0]}-${range[0] + range[1] - 1}` });
+        const { response, data } = await masuFetchOnce(url, stallMs, bad > 0, range && { range: `bytes=${range[0]}-${range[0] + range[1] - 1}` });
         if (data && range && response.status === 206) {
           // (a range: its place and length checked; a block has no name of its own to check)
           const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers?.get?.('content-range') ?? '');
           if (m && +m[1] === range[0] && data.length === +m[2] - +m[1] + 1 && (data.length === range[1] || +m[2] === +m[3] - 1))
             return { data, wire: data.length, cached: 0, partial: true, total: +m[3] };
-          if (++bad >= IPPAI_BAD_CHUNK) throw Object.assign(new Error(`range is not what was asked ${bad} times`), { final: true });
+          if (++bad >= MASU_BAD_CHUNK) throw Object.assign(new Error(`range is not what was asked ${bad} times`), { final: true });
           throw new Error('range is not what was asked');
         }
         if (range && response.status === 416) return { data: new Uint8Array(0), wire: 0, cached: 0, partial: true };
-        if (data && !ippaiChunkOk(url, data)) {
-          if (++bad >= IPPAI_BAD_CHUNK) throw Object.assign(new Error(`chunk does not match its name ${bad} times`), { final: true });
+        if (data && !masuChunkOk(url, data)) {
+          if (++bad >= MASU_BAD_CHUNK) throw Object.assign(new Error(`chunk does not match its name ${bad} times`), { final: true });
           throw new Error('chunk does not match its name');
         }
         if (data) {
-          if (chunk) ippaiKeepRecent(url, data);
+          if (chunk) masuKeepRecent(url, data);
           // (another origin's timing without Timing-Allow-Origin, as the bucket's: all zeros,
           // which said 0 bytes crossed the network for every chunk from the bucket)
           const t = typeof performance !== 'undefined' && performance.getEntriesByName?.(url).at(-1);
           const timing = t && (t.transferSize > 0 || t.decodedBodySize > 0) ? t : undefined;
           const wire = timing ? timing.transferSize : +(response.headers?.get?.('content-length') || data.length);
           const cached = timing && timing.transferSize === 0 && timing.decodedBodySize > 0 ? 1 : 0;
-          ippaiKeep(cache, url, data);
+          masuKeep(cache, url, data);
           return { data, wire, cached };
         }
-        if (!IPPAI_RETRY_STATUS.includes(response.status)) throw Object.assign(new Error(`HTTP ${response.status}`), { final: true });
+        if (!MASU_RETRY_STATUS.includes(response.status)) throw Object.assign(new Error(`HTTP ${response.status}`), { final: true });
         error = `HTTP ${response.status}`;
         // (seconds; a date form counts as none)
         after = Math.min((+(response.headers?.get?.('retry-after')) || 0) * 1000, 30000);
         // (too many requests: every class waits, not only this one)
-        if (response.status === 429) ippaiDrain(after || 5000);
+        if (response.status === 429) masuDrain(after || 5000);
       } catch (e) {
         if (e.final) throw e;
         error = e?.message ?? e;
       }
       if (Date.now() - start > giveUpMs) throw new Error(`${error} (gave up)`);
-      ippaiNet.retrying.set(key, attempt);
-      ippaiNetReport(error);
-      await ippaiPause(after || ippaiBackoff(attempt));
+      masuNet.retrying.set(key, attempt);
+      masuNetReport(error);
+      await masuPause(after || masuBackoff(attempt));
       after = 0;
     }
   } finally {
-    if (ippaiNet.retrying.delete(key)) ippaiNetReport('');
+    if (masuNet.retrying.delete(key)) masuNetReport('');
   }
 }
 
 /**
  * The transfer buffer a synchronous read and the network worker share: a header (status,
- * part length, wire bytes, from the HTTP cache, body length) and IPPAI_BRIDGE_BYTES of body
+ * part length, wire bytes, from the HTTP cache, body length) and MASU_BRIDGE_BYTES of body
  * at a time, one per thread. A/B (node workers, 400 reads, median of 5): a 256 KiB chunk took
  * 0.369 ms with 64 KiB parts copied twice (the old protocol), 0.342 ms copied once, 0.214 ms
  * in one 256 KiB part, 0.216 ms with 1 MiB; a 64 KiB read 0.135-0.139 ms with any. A read
  * asks for 256 KiB blocks (crates/kura/src/vfs.rs), 1 MiB at most at a time; a whole chunk
  * (the page's) goes in several parts.
  */
-var IPPAI_BRIDGE_HEADER = 32;
-var IPPAI_BRIDGE_BYTES = 262144;
+var MASU_BRIDGE_HEADER = 32;
+var MASU_BRIDGE_BYTES = 262144;
 
-function ippaiFetchWorker(event) {
+function masuFetchWorker(event) {
   const m = event.data;
   // (not a read: chunks the game reads soon, the budget the page shares, a warm or save run)
-  if (m.hint) return ippaiHint(m.hint);
-  if (m.budget) return void ippaiBudgetInit(m.budget);
-  if (m.warm) return void ippaiWarmRun(m.warm, (r) => event.target?.postMessage?.(r));
+  if (m.hint) return masuHint(m.hint);
+  if (m.budget) return void masuBudgetInit(m.budget);
+  if (m.warm) return void masuWarmRun(m.warm, (r) => event.target?.postMessage?.(r));
   const { url, shared, from, len, block } = m;
-  const cls = m.cls ?? IPPAI_CLASS.game;
+  const cls = m.cls ?? MASU_CLASS.game;
   const state = new Int32Array(shared, 0, 8);
-  const output = new Uint8Array(shared, IPPAI_BRIDGE_HEADER);
+  const output = new Uint8Array(shared, MASU_BRIDGE_HEADER);
   const publish = (status) => {
     Atomics.store(state, 0, status);
     Atomics.notify(state, 0);
   };
   // (the pthread waits with a timeout: a wake-up without news tells it this worker is alive)
   const alive = setInterval(() => Atomics.notify(state, 0), 5000);
-  if (cls === IPPAI_CLASS.game) ippaiGameWaiting++;
-  const first = cls === IPPAI_CLASS.game ? ippaiReadStart(url) : null;
+  if (cls === MASU_CLASS.game) masuGameWaiting++;
+  const first = cls === MASU_CLASS.game ? masuReadStart(url) : null;
   (async () => {
     try {
-      const { data, wire, cached } = await ippaiFetchPart(url, from, len, block, cls).finally(() => {
-        if (cls === IPPAI_CLASS.game) ippaiGameWaiting--;
+      const { data, wire, cached } = await masuFetchPart(url, from, len, block, cls).finally(() => {
+        if (cls === MASU_CLASS.game) masuGameWaiting--;
       });
-      ippaiReadEnd(first, cached);
+      masuReadEnd(first, cached);
       Atomics.store(state, 2, wire);
       Atomics.store(state, 3, cached);
       Atomics.store(state, 4, data.length);
@@ -1235,27 +1235,27 @@ function ippaiFetchWorker(event) {
 }
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
-function ippaiFetchWorkerSource(main, more = []) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_CACHE_MS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES, IPPAI_RECENT_BYTES, IPPAI_DIRECT_KEEP_MS, IPPAI_DIRECT_ASK_MS, IPPAI_DIRECT_MANY, IPPAI_CLASS, IPPAI_RATE, IPPAI_BURST, IPPAI_RESERVE, IPPAI_HINT_WIDTH, IPPAI_HINT_MAX, IPPAI_PACK_SPAN, IPPAI_PACK_MAX, IPPAI_CHUNK_DIR, IPPAI_HANDLE_MS, IPPAI_HANDLES, IPPAI_BUDGET_BYTES, IPPAI_SAVING_BYTES, IPPAI_LOCK_WAIT_MS, IPPAI_FOLLOW, IPPAI_PUT_MS };
-  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCacheStep, ippaiCache, ippaiChunkFile, ippaiOpfsStore, ippaiRange, ippaiKeepRecent, ippaiKeep, ippaiHeld, ippaiBlockKey, ippaiBudgetInit, ippaiBudgetWith, ippaiTake, ippaiDrain, ippaiGate, ippaiWhole, ippaiRobustOnce, ippaiStartWhole, ippaiHint, ippaiHintPump, ippaiNextAdd, ippaiFollow, ippaiReadStart, ippaiReadEnd, ippaiDirectFresh, ippaiDirectValid, ippaiDirectMany, ippaiPackValid, ippaiPackNote, ippaiPackRun, ippaiDirect, ippaiHex, ippaiOpen, ippaiZstdSize, ippaiUnzstd, ippaiFetchPart, ippaiFetchRobust, ippaiWarmRun, ippaiFetchWorker];
+function masuFetchWorkerSource(main, more = []) {
+  const vars = { MASU_CHUNKS, MASU_STALL_MS, MASU_GIVE_UP_MS, MASU_RETRY_STATUS, MASU_BAD_CHUNK, MASU_CHECKED, MASU_CACHE_MS, MASU_BRIDGE_HEADER, MASU_BRIDGE_BYTES, MASU_RECENT_BYTES, MASU_DIRECT_KEEP_MS, MASU_DIRECT_ASK_MS, MASU_DIRECT_MANY, MASU_CLASS, MASU_RATE, MASU_BURST, MASU_RESERVE, MASU_HINT_WIDTH, MASU_HINT_MAX, MASU_PACK_SPAN, MASU_PACK_MAX, MASU_CHUNK_DIR, MASU_HANDLE_MS, MASU_HANDLES, MASU_BUDGET_BYTES, MASU_SAVING_BYTES, MASU_LOCK_WAIT_MS, MASU_FOLLOW, MASU_PUT_MS };
+  const fns = [masuIsChunk, masuBlake3, masuChunkOk, masuBackoff, masuPause, masuFetchOnce, masuNetReport, masuCacheStep, masuCache, masuChunkFile, masuOpfsStore, masuRange, masuKeepRecent, masuKeep, masuHeld, masuBlockKey, masuBudgetInit, masuBudgetWith, masuTake, masuDrain, masuGate, masuWhole, masuRobustOnce, masuStartWhole, masuHint, masuHintPump, masuNextAdd, masuFollow, masuReadStart, masuReadEnd, masuDirectFresh, masuDirectValid, masuDirectMany, masuPackValid, masuPackNote, masuPackRun, masuDirect, masuHex, masuOpen, masuZstdSize, masuUnzstd, masuFetchPart, masuFetchRobust, masuWarmRun, masuFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
-    'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
-    'var ippaiCacheOpen, ippaiRecent = new Map(), ippaiDirectInfo = new Map(), ippaiDirectOff = false, ippaiZstd;',
-    'var ippaiDirectAsking = new Map(), ippaiDirectManyOff = false, ippaiBudgetBuf, ippaiGameWaiting = 0, ippaiInflight = new Map(), ippaiRobustInflight = new Map(), ippaiKeys = new Map();',
-    'var ippaiHints = [], ippaiHintsSeen = new Set(), ippaiHintsGoing = 0, ippaiPacks = new Map(), ippaiSaving = new Map(), ippaiSavingBytes = 0;',
-    "var ippaiNext = new Map(), ippaiReadSeen = new Set(), ippaiReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };",
-    'ippaiWhole.LATE = {};',
+    'var masuNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
+    'var masuCacheOpen, masuRecent = new Map(), masuDirectInfo = new Map(), masuDirectOff = false, masuZstd;',
+    'var masuDirectAsking = new Map(), masuDirectManyOff = false, masuBudgetBuf, masuGameWaiting = 0, masuInflight = new Map(), masuRobustInflight = new Map(), masuKeys = new Map();',
+    'var masuHints = [], masuHintsSeen = new Set(), masuHintsGoing = 0, masuPacks = new Map(), masuSaving = new Map(), masuSavingBytes = 0;',
+    "var masuNext = new Map(), masuReadSeen = new Set(), masuReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };",
+    'masuWhole.LATE = {};',
     ...[...fns, ...more].map(String),
     main,
   ].join('\n');
 }
 
 /**
- * The game's store chunks fetched onto the device while it plays (ippaiWarm): `urls` in order,
+ * The game's store chunks fetched onto the device while it plays (masuWarm): `urls` in order,
  * `width` at a time, each the device lacks fetched as the game's reads would (from the bucket
  * itself when the server gives a way, else the server) and kept in Cache Storage, where the
- * game's later reads find it (ippaiFetchPart). The bucket answers each object after 1-5 s from
+ * game's later reads find it (masuFetchPart). The bucket answers each object after 1-5 s from
  * far away (worker2 to the Mac: 俺の姿が､透明に!'s CG mode and mode changes waited that long for
  * every file read first), so a file read later is on the device by then. `flag` (Int32Array
  * over a SharedArrayBuffer): [0] != 0 while the game waits for a read of its own (then only
@@ -1263,35 +1263,35 @@ function ippaiFetchWorkerSource(main, more = []) {
  * nearly all the time), [1] != 0 to stop. Reports { done, fetched, bytes } now and then and
  * { end: true, ... }.
  */
-async function ippaiWarmRun(msg, report) {
+async function masuWarmRun(msg, report) {
   const flag = new Int32Array(msg.flag);
-  const cls = msg.cls ?? IPPAI_CLASS.warm;
-  if (msg.next) ippaiNextAdd(msg.next);
-  // (where the game's reads found their chunks, now and then while it plays: ippaiReads)
-  const copy = () => JSON.parse(JSON.stringify(ippaiReads));
+  const cls = msg.cls ?? MASU_CLASS.warm;
+  if (msg.next) masuNextAdd(msg.next);
+  // (where the game's reads found their chunks, now and then while it plays: masuReads)
+  const copy = () => JSON.parse(JSON.stringify(masuReads));
   const reads = msg.readsMs && setInterval(() => (Atomics.load(flag, 1) ? clearInterval(reads) : report({ reads: copy() })), msg.readsMs);
-  const cache = await ippaiCache();
+  const cache = await masuCache();
   let next = 0, done = 0, fetched = 0, bytes = 0, failed = 0;
   const stop = () => Atomics.load(flag, 1) !== 0;
   // (the game waits for a read of its own: in this worker, or as the page says)
-  const busy = () => ippaiGameWaiting > 0 || Atomics.load(flag, 0) !== 0;
+  const busy = () => masuGameWaiting > 0 || Atomics.load(flag, 0) !== 0;
   const one = async (i) => {
     while (next < msg.urls.length && !stop()) {
       while (i >= (msg.busyWidth ?? 0) && busy() && !stop() && next < msg.urls.length) await new Promise((r) => setTimeout(r, 50));
       if (next >= msg.urls.length || stop()) break;
       const k = next++;
-      // (how to fetch the next ones from the bucket: asked for IPPAI_DIRECT_MANY at a time,
+      // (how to fetch the next ones from the bucket: asked for MASU_DIRECT_MANY at a time,
       // a window ahead, so no fetch waits for the server's answer of its own)
-      if (k % (IPPAI_DIRECT_MANY / 2) === 0) void ippaiDirectMany(msg.urls.slice(k, k + IPPAI_DIRECT_MANY));
+      if (k % (MASU_DIRECT_MANY / 2) === 0) void masuDirectMany(msg.urls.slice(k, k + MASU_DIRECT_MANY));
       const url = msg.urls[k];
       try {
-        const d = await ippaiWhole(url, { cls, size: msg.sizes?.[k], want: false });
+        const d = await masuWhole(url, { cls, size: msg.sizes?.[k], want: false });
         if (!d.cached) {
           fetched++;
           bytes += d.data?.length ?? 0;
         }
         // (not this worker's memory: the game's reads look on the device)
-        if (!ippaiInflight.has(url)) ippaiRecent.delete(url);
+        if (!masuInflight.has(url)) masuRecent.delete(url);
       } catch (_) {
         failed++;
       }
@@ -1303,67 +1303,67 @@ async function ippaiWarmRun(msg, report) {
 }
 
 /**
- * Starts ippaiWarmRun in the network worker, beside the game's reads (one scheduler: a chunk the
+ * Starts masuWarmRun in the network worker, beside the game's reads (one scheduler: a chunk the
  * game reads while it is being fetched ahead is fetched once, and the game's go first);
- * `report` gets its reports. `opt.cls`: IPPAI_CLASS.save for a game saved whole, `opt.sizes`
- * the chunks' lengths, `opt.next` what followed each chunk (ippaiNextAdd's pairs), `opt.readsMs`
- * how often to report { reads } (ippaiReads) while the game plays. Returns the port the reports come on.
+ * `report` gets its reports. `opt.cls`: MASU_CLASS.save for a game saved whole, `opt.sizes`
+ * the chunks' lengths, `opt.next` what followed each chunk (masuNextAdd's pairs), `opt.readsMs`
+ * how often to report { reads } (masuReads) while the game plays. Returns the port the reports come on.
  */
-function ippaiWarm(urls, flag, width, report, busyWidth = 0, opt = {}) {
-  const port = ippaiFetchConnect();
+function masuWarm(urls, flag, width, report, busyWidth = 0, opt = {}) {
+  const port = masuFetchConnect();
   port.onmessage = (e) => report(e.data);
   port.postMessage({ warm: { urls, flag, width, busyWidth, cls: opt.cls, sizes: opt.sizes, next: opt.next, readsMs: opt.readsMs } });
   return port;
 }
-if (typeof Module !== 'undefined') Module.ippaiWarm = ippaiWarm;
+if (typeof Module !== 'undefined') Module.masuWarm = masuWarm;
 
-var ippaiFetchWorkerInstance;
-var ippaiFetchPort;
-function ippaiFetchConnect() {
-  if (!ippaiFetchWorkerInstance) {
-    const blob = new Blob([ippaiFetchWorkerSource('self.onmessage = e => { if (e.data.port) e.data.port.onmessage = ippaiFetchWorker; else ippaiFetchWorker(e); };')], {type:'text/javascript'});
+var masuFetchWorkerInstance;
+var masuFetchPort;
+function masuFetchConnect() {
+  if (!masuFetchWorkerInstance) {
+    const blob = new Blob([masuFetchWorkerSource('self.onmessage = e => { if (e.data.port) e.data.port.onmessage = masuFetchWorker; else masuFetchWorker(e); };')], {type:'text/javascript'});
     const url = URL.createObjectURL(blob);
-    ippaiFetchWorkerInstance = new Worker(url);
+    masuFetchWorkerInstance = new Worker(url);
     URL.revokeObjectURL(url);
     // (the page's budget of bucket requests: its own save takes from it too, web/src/net.ts)
-    const budget = typeof Module !== 'undefined' ? Module.ippaiNetBudget : undefined;
-    if (budget) ippaiFetchWorkerInstance.postMessage({ budget });
+    const budget = typeof Module !== 'undefined' ? Module.masuNetBudget : undefined;
+    if (budget) masuFetchWorkerInstance.postMessage({ budget });
   }
   const channel = new MessageChannel();
-  ippaiFetchWorkerInstance.postMessage({port:channel.port1}, [channel.port1]);
+  masuFetchWorkerInstance.postMessage({port:channel.port1}, [channel.port1]);
   return channel.port2;
 }
-function ippaiFetchDispose() {
-  ippaiFetchWorkerInstance?.terminate();
-  ippaiFetchWorkerInstance = undefined;
+function masuFetchDispose() {
+  masuFetchWorkerInstance?.terminate();
+  masuFetchWorkerInstance = undefined;
 }
 
-var ippaiBridgeBuffer;
-/** `url`'s bytes (`from`, `len`: only those; ippaiFetchPart), on a thread that may block. */
-function ippaiFetchSync(url, from, len, block, cls) {
+var masuBridgeBuffer;
+/** `url`'s bytes (`from`, `len`: only those; masuFetchPart), on a thread that may block. */
+function masuFetchSync(url, from, len, block, cls) {
   if (typeof document !== 'undefined') throw new Error('synchronous reads on the page must be preloaded');
-  if (!ippaiFetchPort && !ippaiFetchWorkerInstance) {
-    const blob = new Blob([ippaiFetchWorkerSource('self.onmessage = ippaiFetchWorker;')], {type: 'text/javascript'});
+  if (!masuFetchPort && !masuFetchWorkerInstance) {
+    const blob = new Blob([masuFetchWorkerSource('self.onmessage = masuFetchWorker;')], {type: 'text/javascript'});
     const location = URL.createObjectURL(blob);
-    ippaiFetchWorkerInstance = new Worker(location);
+    masuFetchWorkerInstance = new Worker(location);
     URL.revokeObjectURL(location);
   }
   // (this thread's buffer, kept: one read at a time per thread; a new one after a worker
   // that timed out, which may still write into the old)
-  const shared = (ippaiBridgeBuffer ??= new SharedArrayBuffer(IPPAI_BRIDGE_HEADER + IPPAI_BRIDGE_BYTES));
+  const shared = (masuBridgeBuffer ??= new SharedArrayBuffer(MASU_BRIDGE_HEADER + MASU_BRIDGE_BYTES));
   const state = new Int32Array(shared, 0, 8);
-  const bytes = new Uint8Array(shared, IPPAI_BRIDGE_HEADER);
+  const bytes = new Uint8Array(shared, MASU_BRIDGE_HEADER);
   Atomics.store(state, 0, 0);
   let result;
   let length = 0;
-  (ippaiFetchPort || ippaiFetchWorkerInstance).postMessage({url, shared, from, len, block, cls});
+  (masuFetchPort || masuFetchWorkerInstance).postMessage({url, shared, from, len, block, cls});
   for (;;) {
     while (Atomics.load(state, 0) === 0) {
       if (Atomics.wait(state, 0, 0, 65000) === 'timed-out') {
         Atomics.store(state, 0, -1);
         Atomics.notify(state, 0);
-        ippaiBridgeBuffer = undefined;
-        ippaiFetchDispose();
+        masuBridgeBuffer = undefined;
+        masuFetchDispose();
         throw new Error('fetch worker timed out');
       }
     }
@@ -1384,9 +1384,9 @@ function ippaiFetchSync(url, from, len, block, cls) {
   return result;
 }
 
-/** Chunks (`urls`) a read says the game reads soon: to the network worker (ippaiHint), not waited for. */
-function ippaiFetchHint(urls) {
+/** Chunks (`urls`) a read says the game reads soon: to the network worker (masuHint), not waited for. */
+function masuFetchHint(urls) {
   if (!urls.length) return;
-  const to = ippaiFetchPort || ippaiFetchWorkerInstance;
+  const to = masuFetchPort || masuFetchWorkerInstance;
   to?.postMessage({ hint: urls });
 }

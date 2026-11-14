@@ -75,13 +75,13 @@ fn wixl_package_reads_the_same() {
     let s = suminfo::SummaryInfo::parse(db.summary.as_ref().unwrap());
     // (wixl writes the strings as UTF-8 whatever the codepage says: only ASCII compared)
     assert_eq!(s.props.get(&suminfo::PID_KEYWORDS), Some(&suminfo::Prop::Str("Installer".into())));
-    assert_eq!(s.props.get(&suminfo::PID_AUTHOR), Some(&suminfo::Prop::Str("ippai".into())));
+    assert_eq!(s.props.get(&suminfo::PID_AUTHOR), Some(&suminfo::Prop::Str("masu".into())));
     assert_eq!(s.props.get(&suminfo::PID_WORDCOUNT), Some(&suminfo::Prop::I4(2)));
     assert_eq!(s.codepage(), 932);
     // (wixl drops non-ASCII text: Japanese is checked with our own databases below)
     let mut v = View::new(&db, "SELECT `Value` FROM `Property` WHERE `Property` = 'Manufacturer'").unwrap();
     v.execute(&mut db, None).unwrap();
-    assert_eq!(v.fetch(&db).unwrap().get(1), &Field::Str("ippai".into()));
+    assert_eq!(v.fetch(&db).unwrap().get(1), &Field::Str("masu".into()));
 }
 
 #[test]

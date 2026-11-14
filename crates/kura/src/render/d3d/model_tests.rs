@@ -453,7 +453,7 @@ fn show(c: &[u32]) -> String {
 /// Runs batches on a fresh model, optimized or not; returns what was observed.
 fn run(seed: u64, batches: &[Batch], pass_opt: bool, seg: bool) -> (Vec<Obs>, Vec<String>, (u32, u32, u32)) {
     model::reset();
-    let dump = std::env::var("IPPAI_MODEL_DUMP").ok().and_then(|s| s.parse::<u64>().ok()) == Some(seed);
+    let dump = std::env::var("MASU_MODEL_DUMP").ok().and_then(|s| s.parse::<u64>().ok()) == Some(seed);
     let mut d = D3d::new();
     d.no_pass_opt = !pass_opt;
     d.no_seg = !seg;
@@ -494,7 +494,7 @@ fn check(seeds: std::ops::Range<u64>, make: impl Fn(u64, u32) -> Vec<Batch>) -> 
         let batches = make(seed, dst as usize as u32);
         let (want, e1, _) = run(seed, &batches, false, false);
         assert!(e1.is_empty(), "seed {seed}, plain: WebGPU errors {e1:?}");
-        let (pass_opt, seg) = match std::env::var("IPPAI_MODEL_OPT").as_deref() {
+        let (pass_opt, seg) = match std::env::var("MASU_MODEL_OPT").as_deref() {
             Ok("pass") => (true, false),
             _ => (true, true),
         };
@@ -518,13 +518,13 @@ fn check(seeds: std::ops::Range<u64>, make: impl Fn(u64, u32) -> Vec<Batch>) -> 
     stats
 }
 
-/// (IPPAI_MODEL_FIRST: the first seed, to rerun a failing one)
+/// (MASU_MODEL_FIRST: the first seed, to rerun a failing one)
 fn first() -> u64 {
-    std::env::var("IPPAI_MODEL_FIRST").ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+    std::env::var("MASU_MODEL_FIRST").ok().and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 fn seeds() -> u64 {
-    std::env::var("IPPAI_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200)
+    std::env::var("MASU_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200)
 }
 
 #[test]
@@ -925,7 +925,7 @@ fn every_sampler_state_is_valid_webgpu() {
 /// scenarios above.
 #[test]
 fn every_pipeline_state_is_valid_webgpu() {
-    let n: u32 = std::env::var("IPPAI_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200) * 50;
+    let n: u32 = std::env::var("MASU_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200) * 50;
     model::reset();
     let mut d = D3d::new();
     let mut g = Gen::new(1);

@@ -7,7 +7,7 @@
  * arch: 32 */
 #include "../probe.h"
 
-#define DIR "C:\\ippai-procfiles"
+#define DIR "C:\\masu-procfiles"
 #define BIG (80u << 20)
 
 static unsigned sum(const unsigned char *p, size_t n) {

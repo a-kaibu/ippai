@@ -6,7 +6,7 @@
 // the game while the page was away, the frames piled up in memory (2026-11-14: 金恋 out of
 // memory 6-7 minutes after its tab was hidden).
 //
-//   node tests/hidden-memory-browser.mjs [path to ippai] [presentloop.exe]
+//   node tests/hidden-memory-browser.mjs [path to masu] [presentloop.exe]
 //   (web/dist, or WEB, built with sake in it; PLAYWRIGHT as elsewhere; SECONDS default 180)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -14,8 +14,8 @@ import { cpSync, existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-hidden-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-hidden-"));
 const web = resolve(process.env.WEB ?? "web/dist");
 assert.ok(existsSync(join(web, "sake/sake.wasm")), `${web} has no sake build`);
 let exe = process.argv[3];

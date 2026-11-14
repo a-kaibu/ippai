@@ -271,7 +271,7 @@ fn nothing(c: &mut Ctx) -> u32 {
     0
 }
 
-/// (IPPAI_API_COUNTS: a GL call kura has no function for)
+/// (MASU_API_COUNTS: a GL call kura has no function for)
 fn missing(trap: u32) {
     if kura::usage::on() {
         let n = crate::api::name_of(trap).unwrap_or_default();

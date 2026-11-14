@@ -4,9 +4,9 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 // frame.js: the script of web games' frames (src/frame.ts), a classic script (it must run before
-// the game's own scripts), served by ippai serve's game listener
+// the game's own scripts), served by masu serve's game listener
 const frame = (): Plugin => ({
-  name: "ippai-frame",
+  name: "masu-frame",
   apply: "build",
   async closeBundle() {
     await build({
@@ -16,7 +16,7 @@ const frame = (): Plugin => ({
         outDir: "dist",
         emptyOutDir: false,
         target: "es2022",
-        lib: { entry: "src/frame.ts", formats: ["iife"], name: "ippaiFrame", fileName: () => "frame.js" },
+        lib: { entry: "src/frame.ts", formats: ["iife"], name: "masuFrame", fileName: () => "frame.js" },
       },
     });
   },
@@ -36,7 +36,7 @@ const PUBLIC_SHELL = [
 const serviceWorker = (): Plugin => {
   const shell = new Map<string, string | Uint8Array>();
   return {
-    name: "ippai-sw",
+    name: "masu-sw",
     apply: "build",
     generateBundle(_, bundle) {
       for (const [name, out] of Object.entries(bundle))
@@ -56,19 +56,19 @@ const serviceWorker = (): Plugin => {
       await build({
         configFile: false,
         logLevel: "warn",
-        define: { IPPAI_BUILD: JSON.stringify(id), IPPAI_SHELL: JSON.stringify(["./", ...files]) },
+        define: { MASU_BUILD: JSON.stringify(id), MASU_SHELL: JSON.stringify(["./", ...files]) },
         build: {
           outDir: "dist",
           emptyOutDir: false,
           target: "es2022",
-          lib: { entry: "src/sw.ts", formats: ["iife"], name: "ippaiSw", fileName: () => "sw.js" },
+          lib: { entry: "src/sw.ts", formats: ["iife"], name: "masuSw", fileName: () => "sw.js" },
         },
       });
     },
   };
 };
 
-// Built into web/dist and served by ippai serve next to the store. The UI is React with
+// Built into web/dist and served by masu serve next to the store. The UI is React with
 // Tailwind CSS and shadcn/ui (src/components/ui); sake's files (public/sake/) are copied as-is.
 export default defineConfig({
   base: "./",
@@ -95,7 +95,7 @@ export default defineConfig({
       "cross-origin-opener-policy": "same-origin",
       "cross-origin-embedder-policy": "require-corp",
     },
-    proxy: { "/store": process.env.IPPAI_SERVER ?? "http://127.0.0.1:8080" },
+    proxy: { "/store": process.env.MASU_SERVER ?? "http://127.0.0.1:8080" },
   },
   lint: { ignorePatterns: ["public/**"], options: { typeAware: true, typeCheck: true } },
   fmt: { printWidth: 110, ignorePatterns: ["public/**"] },

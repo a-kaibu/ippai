@@ -79,10 +79,10 @@ fn ring() {
 }
 
 /// Whether a page decodes (none under node: sake says it has no such codec, as before). The page
-/// says so in the environment (IPPAI_ADEC=1: the guest starts before the page first lists
-/// streams), or by listing them. IPPAI_ADEC_OFF: none.
+/// says so in the environment (MASU_ADEC=1: the guest starts before the page first lists
+/// streams), or by listing them. MASU_ADEC_OFF: none.
 pub fn available() -> bool {
-    (PAGE.load(Ordering::Relaxed) || crate::env_on!("IPPAI_ADEC")) && !crate::env_on!("IPPAI_ADEC_OFF")
+    (PAGE.load(Ordering::Relaxed) || crate::env_on!("MASU_ADEC")) && !crate::env_on!("MASU_ADEC_OFF")
 }
 
 /// A stream of `codec` (WebCodecs' name: "mp3", "opus", "mp4a.40.2" ...); None without a page.

@@ -2,7 +2,7 @@
 // tree "gfxtest") with "still" in headless Chromium through tests/play.mjs, then compares pixels
 // of the screen against what the check draws, and its log against what it prints, and (from
 // the &d3dstats lines) that a still picture is not uploaded or drawn again. Needs
-// ippai serve on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.
+// masu serve on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.
 //
 //   node tests/gfx.mjs ["name" ...]    (default: all; OUT=dir keeps the screens and logs;
 //                                       ENV="A=1 B=2" sets environment variables)

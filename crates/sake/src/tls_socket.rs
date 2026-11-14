@@ -68,7 +68,7 @@ fn op_limit(timeout: u32, opened: Instant, now: Instant) -> Option<u32> {
 }
 impl Socket {
     pub fn open(host: &str, timeout: u32) -> io::Result<Self> {
-        let Some(target) = ippai_tls::target(host) else {
+        let Some(target) = masu_tls::target(host) else {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "TLS destination unavailable"));
         };
         let timeout = timeout.clamp(100, 120000);

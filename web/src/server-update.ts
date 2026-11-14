@@ -1,5 +1,5 @@
-// The server updating itself to the newest release (ippai serve: GET / POST /api/update,
-// crates/ippai/src/update.rs), from 設定's サーバー section: ask what is there, install it, wait
+// The server updating itself to the newest release (masu serve: GET / POST /api/update,
+// crates/masu/src/update.rs), from 設定's サーバー section: ask what is there, install it, wait
 // until the restarted server answers with the new version, then reload the page.
 
 export interface UpdateInfo {

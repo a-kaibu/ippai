@@ -9,7 +9,7 @@
 //! Surfaces are 4x4 cells; every write and fill paints whole cells with bytes that name it, so
 //! what is read is a cell's name: the write or fill it came from.
 //!
-//! `IPPAI_TRACE_DIR=dir` writes `dir/d3d9lock-<seed>/`; `IPPAI_TRACE_SEEDS=n` (default 20).
+//! `MASU_TRACE_DIR=dir` writes `dir/d3d9lock-<seed>/`; `MASU_TRACE_SEEDS=n` (default 20).
 
 use super::trace_tests::{alloc, attach_page, hr, seeds, write_module, Rng, CALLS, SERIAL};
 use super::*;
@@ -123,7 +123,7 @@ fn gpu_cells(s: &Surf, n: &mut u32) -> Vec<i64> {
     let req = 0x4000_0000 + *n;
     gpu::record(|b| b.cmd(&[gpu::READBACK, req, s.gpu, 0, 0, 0, s.w, s.h, dst, pitch]));
     assert!(gpu::wait_readback(req));
-    if std::env::var_os("IPPAI_LOCK_DUMP").is_some() {
+    if std::env::var_os("MASU_LOCK_DUMP").is_some() {
         for y in 0..s.h.min(16) {
             let row: Vec<String> = (0..s.w.min(16)).map(|x| format!("{:08x}", unsafe { *((dst + y * pitch + x * 4) as *const u32) })).collect();
             eprintln!("  {}", row.join(" "));

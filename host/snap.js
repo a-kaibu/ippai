@@ -1,10 +1,10 @@
 // Save states under node (the page's are web/src/savestate.ts; docs/savestate.md): the
 // memory image of crates/kura/src/snap.rs, as a file.
 //
-//   IPPAI_SNAP_SAVE=<file>@<s>[,<s>...]  take a state <s> seconds after the start (each time
+//   MASU_SNAP_SAVE=<file>@<s>[,<s>...]  take a state <s> seconds after the start (each time
 //                                       to <file>, or <file>.<n> for the n-th after the first)
-//   IPPAI_SNAP_EXIT=1                   end the process right after the (last) state
-//   IPPAI_SNAP_LOAD=<file>              start from a state instead of the program's beginning
+//   MASU_SNAP_EXIT=1                   end the process right after the (last) state
+//   MASU_SNAP_LOAD=<file>              start from a state instead of the program's beginning
 //
 // File: "IPPAISNP", u32 version (1), u32 header length, the header (JSON: build, ctl, ...),
 // then blocks (u32 address, u32 length, u32 compressed length, a zstd frame), the end marked
@@ -115,10 +115,10 @@ if (ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_PTHREAD && !Module.vnvmKernel) {
   // first tier, and the host's statics are all there: a store to a static atomic is lost; a
   // warning, by console.error: emscripten's err() isn't defined yet here)
   if (+process.versions.node.split('.')[0] < 26) console.error(`sake: node ${process.versions.node}: use node 26 or later (node 22 loses atomic stores)`);
-  if (process.env.IPPAI_SNAP_LOAD) {
-    Module.wasmMemory = vnvmSnap.load(require('fs').readFileSync(process.env.IPPAI_SNAP_LOAD));
+  if (process.env.MASU_SNAP_LOAD) {
+    Module.wasmMemory = vnvmSnap.load(require('fs').readFileSync(process.env.MASU_SNAP_LOAD));
   }
-  const save = process.env.IPPAI_SNAP_SAVE;
+  const save = process.env.MASU_SNAP_SAVE;
   if (save) {
     const at = save.lastIndexOf('@');
     const path = save.slice(0, at);
@@ -128,7 +128,7 @@ if (ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_PTHREAD && !Module.vnvmKernel) {
       times.forEach((s, k) =>
         setTimeout(async () => {
           const out = k ? `${path}.${k}` : path;
-          const last = k === times.length - 1 && process.env.IPPAI_SNAP_EXIT;
+          const last = k === times.length - 1 && process.env.MASU_SNAP_EXIT;
           try {
             require('fs').writeFileSync(out, await vnvmSnap.take({ at: s }, last));
             err(`snap: saved ${out}`);

@@ -2942,7 +2942,7 @@ fn track_clamp(style: u32, (cx, cy): (i32, i32), min: (i32, i32), max: (i32, i32
 /// Z's 1920x1080 window with its frame, 俺の姿が､透明に!) gets a screen it fits on, not a window
 /// kept to the screen and drawn into at full size (the page then showed its top-left part
 /// enlarged). None: it fits, it does not track (a popup), or the screen was given
-/// (IPPAI_SCREEN: winref's probes keep Windows' clamp).
+/// (MASU_SCREEN: winref's probes keep Windows' clamp).
 fn grown_screen(mode: (i32, i32), screen: (i32, i32), style: u32, (x, y): (i32, i32), (cx, cy): (i32, i32)) -> Option<(i32, i32)> {
     let (sw, sh) = screen;
     if !tracks(style) || (cx <= mode.0 + 12 && cy <= mode.1 + 12) {
@@ -2956,7 +2956,7 @@ fn grown_screen(mode: (i32, i32), screen: (i32, i32), style: u32, (x, y): (i32, 
 /// Grows the screen for a top-level window asking `cx` x `cy` at (`x`, `y`) (see
 /// [`grown_screen`]); no WM_DISPLAYCHANGE: the screen was this big all along.
 fn grow_screen_for(style: u32, xy: (i32, i32), size: (i32, i32)) {
-    if std::env::var_os("IPPAI_SCREEN").is_some() {
+    if std::env::var_os("MASU_SCREEN").is_some() {
         return;
     }
     if let Some((w, h)) = grown_screen(with(|s| s.mode), screen(), style, xy, size) {
@@ -5960,7 +5960,7 @@ fn display_device(device: u32, n: u32, p: u32, wide: bool) -> u32 {
         }
         return 0;
     }
-    let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "ippai display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
+    let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "masu display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
     let u = if wide { 2 } else { 1 };
     let mut b = vec![0u8; ((32 + 128 + 128 + 128) * u + 4) as usize];
     let put = |b: &mut [u8], at: usize, s: &str, cap: usize| {

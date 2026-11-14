@@ -64,7 +64,7 @@ jobs:
       # (the trial games' traces pulled from ghcr.io, kept: tests/replay/games.py)
       - uses: actions/cache@v6.1.0
         with:
-          path: ~/.cache/ippai-traces
+          path: ~/.cache/masu-traces
           key: traces-${{ hashFiles('testdata/apitrace/*.txt') }}
           restore-keys: traces-
       - name: Build the probes
@@ -178,13 +178,13 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends fonts-ipafont-gothic fonts-ipafont-mincho
           pip install fonttools
           python3 tools/ci/sake-fonts.py target/winref-fonts
-      - name: The web app and ippai
+      - name: The web app and masu
         run: |
           (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
-          cargo build --release -p ippai
+          cargo build --release -p masu
       # tar preserves the binary's executable bit across artifact downloads.
       - name: Package the exact runtime for every probe runner
-        run: tar -czf "$RUNNER_TEMP/winref-runtime.tar.gz" target/sake-out/*.js target/sake-out/*.wasm target/release/ippai web/dist target/winref-fonts
+        run: tar -czf "$RUNNER_TEMP/winref-runtime.tar.gz" target/sake-out/*.js target/sake-out/*.wasm target/release/masu web/dist target/winref-fonts
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: winref-runtime
@@ -231,7 +231,7 @@ jobs:
       - name: Run the node probes
         env:
           MODE: ${{ matrix.mode }}
-          IPPAI_JIT: ${{ matrix.mode == 'interp' && '0' || '1' }}
+          MASU_JIT: ${{ matrix.mode == 'interp' && '0' || '1' }}
         run: FONTS=$PWD/target/winref-fonts SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe "out/$MODE"
       - name: Compare with Windows immediately (without waiting for the GPU)
         env:
@@ -291,9 +291,9 @@ jobs:
         run: |
           export FONTS=$PWD/target/winref-fonts
           node tests/winref/run-browser.mjs exe out/jit
-          NO_GAMES=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp
+          NO_GAMES=1 MASU_JIT=0 node tests/winref/run-browser.mjs exe out/interp
           BROWSER64=1 node tests/winref/run-browser.mjs exe out/jit d2d-64
-          BROWSER64=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp d2d-64
+          BROWSER64=1 MASU_JIT=0 node tests/winref/run-browser.mjs exe out/interp d2d-64
       # (metamorphic: disabled blending and ONE/ZERO ADD render the same; the submission
       # benchmark's rounds give the same pixels. Both memories' runtimes.)
       - name: Identity blending and D3D9 submission (sake only)

@@ -221,7 +221,7 @@ export function Sidebar({
                 {app.install ? (
                   <>
                     <p className="text-sm text-muted-foreground">
-                      ホーム画面やデスクトップに ippai をアプリとして追加します。
+                      ホーム画面やデスクトップに masu をアプリとして追加します。
                     </p>
                     <Button variant="outline" className="justify-self-start" onClick={app.install}>
                       <MonitorDown /> アプリにする

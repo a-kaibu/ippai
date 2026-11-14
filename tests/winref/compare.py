@@ -130,7 +130,7 @@ def read_quarantine(path):
             continue
         fields = line.rstrip("\n").split("\t", 2)
         if (len(fields) != 3 or fields[0] in ("*", "host_*", "replay_*") or not fields[0]
-                or not re.fullmatch(r"https://github\.com/a-kaibu/ippai/issues/[1-9][0-9]*", fields[1])
+                or not re.fullmatch(r"https://github\.com/a-kaibu/masu/issues/[1-9][0-9]*", fields[1])
                 or not fields[2].strip()):
             raise ValueError(f"{path}:{n}: expected a narrow probe glob, tracking issue URL and reason")
         entries.append(tuple(fields))

@@ -4,7 +4,7 @@
      else if (cmd[0] == 'd' && cmd[1] == 'v' && cmd[2] >= '0' && cmd[2] <= '9')
          return dvCommand();
  
-+    // benchlog "text": the line to stdout, at once (ippai's benchmark harness reads its signals
++    // benchlog "text": the line to stdout, at once (masu's benchmark harness reads its signals
 +    // there: tests/bench/build-onscripter.sh)
 +    if (!strcmp(cmd, "benchlog")) {
 +        printf("%s\n", script_h.readStr());

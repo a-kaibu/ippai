@@ -6,7 +6,7 @@
 // Layout: an Int32 lock word, then [tokens, last refill, blocked until (Date.now())] as Float64:
 // BYTES in all.
 
-/** Request classes, most urgent first (as fetch-bridge.js IPPAI_CLASS). */
+/** Request classes, most urgent first (as fetch-bridge.js MASU_CLASS). */
 export const CLASS = { game: 0, ahead: 1, hint: 2, warm: 3, save: 4 } as const;
 export const RATE = 9;
 export const BURST = 40;
@@ -15,7 +15,7 @@ export const BYTES = 32;
 
 let shared: SharedArrayBuffer | ArrayBuffer | undefined;
 
-/** The page's budget (made once): handed to the network worker (play.ts, Module.ippaiNetBudget). */
+/** The page's budget (made once): handed to the network worker (play.ts, Module.masuNetBudget). */
 export function netBudget(): SharedArrayBuffer | ArrayBuffer {
   if (!shared) {
     shared = typeof SharedArrayBuffer === "undefined" ? new ArrayBuffer(BYTES) : new SharedArrayBuffer(BYTES);

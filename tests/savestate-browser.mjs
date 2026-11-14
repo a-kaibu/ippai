@@ -1,4 +1,4 @@
-// Save states in the page (web/src/savestate.ts, ui/States.tsx, docs/savestate.md): starts ippai
+// Save states in the page (web/src/savestate.ts, ui/States.tsx, docs/savestate.md): starts masu
 // serve on a small store with host/tests/snaptest.c as a game and, in Chromium, takes a state
 // from the dialog while it runs, then loads it: the page starts again from the state and the
 // program prints the rest of its lines, the same as a whole run (its steps and checksums go on
@@ -8,7 +8,7 @@
 // build, the page takes the state's. And host/tests/snapmsaa.c: Direct3D 11 4x targets drawn
 // once, read back sample by sample every step: the same bits after the state.
 //
-//   node tests/savestate-browser.mjs [path to ippai] [snaptest.exe]
+//   node tests/savestate-browser.mjs [path to masu] [snaptest.exe]
 //   (web/dist built with sake in it: crates/sake/build.sh, then pnpm build; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -18,8 +18,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-state-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-state-"));
 // Optional real upgrade: take states in OLD_WEB, serve NEW_WEB on the same store,
 // then open each state from the new root page (also from a fresh browser profile).
 const oldWeb = resolve(process.env.OLD_WEB ?? "web/dist");
@@ -81,7 +81,7 @@ const bytes = (dir) => readdirSync(dir, { withFileTypes: true }).reduce((n, e) =
 async function device(name) {
   const ctx = await chromium.launchPersistentContext(join(work, name), { args: ["--enable-unsafe-webgpu"], viewport: { width: 1280, height: 720 } });
   contexts.add(ctx);
-  await ctx.addInitScript(() => { globalThis.__ippaiStateTestDocument = crypto.randomUUID(); });
+  await ctx.addInitScript(() => { globalThis.__masuStateTestDocument = crypto.randomUUID(); });
   const page = ctx.pages()[0] ?? (await ctx.newPage());
   if (process.env.VERBOSE) {
     page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) console.log(`[${name}] navigation ${frame.url()}`); });
@@ -114,7 +114,7 @@ async function round(tag, start, game = "g", wholeOk = (w) => w.includes("clocks
   const a = await device(`a${tag}`);
   await a.page.goto(`${play}${start}`);
   await until(a.lines, /^step 15:/);
-  const runDocument = await a.page.evaluate(() => globalThis.__ippaiStateTestDocument);
+  const runDocument = await a.page.evaluate(() => globalThis.__masuStateTestDocument);
   await a.page.getByRole("button", { name: "どこでもセーブ" }).click();
   await a.page.getByRole("dialog").getByRole("button", { name: "セーブ" }).first().click();
   await until(a.lines, /^state: .* stood still \d+ ms/, 60000);
@@ -130,7 +130,7 @@ async function round(tag, start, game = "g", wholeOk = (w) => w.includes("clocks
   // Do not let the previous run's leave() interrupt the restoration navigation.
   // history.back changes the URL before leave() reloads the page. Wait for a
   // genuinely new document, or that pending reload can interrupt our goto below.
-  await a.page.waitForFunction((old) => globalThis.__ippaiStateTestDocument !== old && !new URL(location.href).searchParams.has("game"), runDocument, { timeout: 120000 });
+  await a.page.waitForFunction((old) => globalThis.__masuStateTestDocument !== old && !new URL(location.href).searchParams.has("game"), runDocument, { timeout: 120000 });
   await a.page.waitForLoadState("load");
   if (upgrade) await serve(newWeb);
   const builds = await (await fetch(`${base}apps/builds`)).json();

@@ -10100,7 +10100,7 @@ mod mapping_names {
     #[test]
     fn names_are_one_namespace_and_checked() {
         let _g = enter();
-        let name = cstr_arg("ippai-mapping-vs-event");
+        let name = cstr_arg("masu-mapping-vs-event");
         let ev = call(CreateEventA, &[0, 1, 0, name]);
         assert_ne!(ev, 0);
         // (an event has the name: ERROR_INVALID_HANDLE both ways)
@@ -10285,7 +10285,7 @@ mod mapping_names {
         #[test]
         fn model(ops in proptest::collection::vec(op(), 1..40)) {
             let _g = enter();
-            let tag = format!("ippai-pbt-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+            let tag = format!("masu-pbt-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
             let names: Vec<u32> = (0..3).map(|i| cstr_arg(&format!("{tag}-{i}"))).collect();
             // model: sections (live handle count, value), handles (handle, section)
             let mut sections: Vec<(usize, u32, usize)> = Vec::new(); // (name, value, open handles)
@@ -10661,7 +10661,7 @@ mod empty_name_tests {
             let _g = enter();
             guest_thread();
             // (a unique name per case: the table outlives the case)
-            let name = if name.is_empty() { name } else { format!("ippai-pbt-{name}-{tag:08x}") };
+            let name = if name.is_empty() { name } else { format!("masu-pbt-{name}-{tag:08x}") };
             let p = guest_str(&name);
             let (a, ea) = create(kind, p);
             let (b, eb) = create(kind, p);

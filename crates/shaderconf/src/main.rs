@@ -1,4 +1,4 @@
-//! Writes shader conformance cases as JSON (stdout): each case is a pixel shader that ippai's
+//! Writes shader conformance cases as JSON (stdout): each case is a pixel shader that masu's
 //! translators made WGSL of (from HLSL through hlslc and dxwgsl, from D3D9 assembly, from GLSL
 //! through glwgsl), the uniform data of each pixel it is drawn at, and what the Direct3D or
 //! OpenGL rules say each pixel must be. tests/shaders.mjs draws them with WebGPU (Chromium's

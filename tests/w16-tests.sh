@@ -1,16 +1,16 @@
 #!/bin/bash
 # Win16 programs (tests/w16/*.c, 16-bit Windows 3.1 programs built with Open Watcom: a .rc
 # beside one is its resources, "dll: name" lines build tests/w16/<name>.c as a 16-bit DLL beside
-# it) on sake's node build, with the 16-bit JIT and without (IPPAI_JIT16=0). They print what
+# it) on sake's node build, with the 16-bit JIT and without (MASU_JIT16=0). They print what
 # they find; both runs must print tests/w16/expected/<name>.txt. Windows 3.1 itself is not at
 # hand (64-bit Windows runs no 16-bit programs): the expected files are what the programs'
 # own checks and Windows' documented behaviour say. UPDATE=1 rewrites them.
 #
-#   tests/w16-tests.sh [name ...]   SAKE=path/to/sake.js, WATCOM_DIR (default ~/.cache/ippai-watcom)
+#   tests/w16-tests.sh [name ...]   SAKE=path/to/sake.js, WATCOM_DIR (default ~/.cache/masu-watcom)
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
-WD=${WATCOM_DIR:-$HOME/.cache/ippai-watcom}
+WD=${WATCOM_DIR:-$HOME/.cache/masu-watcom}
 OUT=${OUT:-$(mktemp -d)}
 # (Open Watcom, fetched and checked by the Win16 benchmark's build; its game is built too)
 "$ROOT/tests/bench/build-novel16.sh" "$WD" > /dev/null || exit 1
@@ -36,7 +36,7 @@ for t in $TESTS; do
     fi
   ) > "$d/build.log" 2>&1 || { echo "FAIL $t (build)"; cat "$d/build.log"; fail=1; continue; }
   for mode in jit interp; do
-    env=; [ $mode = interp ] && env=IPPAI_JIT16=0
+    env=; [ $mode = interp ] && env=MASU_JIT16=0
     mkdir -p "$d/c-$mode"
     # (sake writes the console to stderr, with its own "sake:" lines)
     (cd "$d" && timeout 120 env $env SAKE_C="$d/c-$mode" node "$SAKE" "$d/$t.exe" > "$d/$mode.raw" 2>&1)

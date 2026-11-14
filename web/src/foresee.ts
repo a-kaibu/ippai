@@ -1,5 +1,5 @@
-// What each script of the game's trees names, read once by ippai serve ahead of any play
-// (crates/ippai/src/foresee.rs, GET /foresee/<tree>), handed to kura at the start
+// What each script of the game's trees names, read once by masu serve ahead of any play
+// (crates/masu/src/foresee.rs, GET /foresee/<tree>), handed to kura at the start
 // (vnhost_vfs_foresee): a script the game reads then foresees the pictures, voices and scripts
 // it names, and what the scripts it goes on to name, whichever way the game goes, on its first
 // run too. The server reads a tree the first time it is asked (202 meanwhile): asked again.
@@ -8,7 +8,7 @@
 export const FORESEE_RETRY_MS = 15000;
 export const FORESEE_TRIES = 40;
 
-/** The trees `mounts` ("<path>=<tree>", as IPPAI_MOUNTS has them) name, each once. */
+/** The trees `mounts` ("<path>=<tree>", as MASU_MOUNTS has them) name, each once. */
 export function mountedTrees(mounts: string[]): string[] {
   const out: string[] = [];
   for (const m of mounts) {

@@ -125,10 +125,10 @@ pub fn write(id: i32, frames: &[f32]) -> usize {
     })
 }
 
-/// IPPAI_AUDIO_STATS=1: the level of what the streams write, every 5 s of frames
+/// MASU_AUDIO_STATS=1: the level of what the streams write, every 5 s of frames
 fn stats() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("IPPAI_AUDIO_STATS").is_some())
+    *ON.get_or_init(|| std::env::var_os("MASU_AUDIO_STATS").is_some())
 }
 
 /// Frames in the ring the page's AudioWorklet reads (a power of two; 0.74 s).

@@ -11,5 +11,5 @@ fuzz_target!(|data: &[u8]| {
     let Some(s) = Shader::parse(&words) else { return };
     let opts = Options { link: 0x3ff, vs_inputs: Vec::new(), alpha_test: (k & 1 != 0).then_some(0x0003_0001), fog: k & 2 != 0, addr: Vec::new(), targets: 1 + (k >> 2) as u32 % 4, flat: k & 0x10 != 0 };
     let code = if s.pixel { Gen::new(&s).pixel(&opts) } else { Gen::new(&s).vertex(&opts) };
-    ippai_fuzz::valid_wgsl(&code);
+    masu_fuzz::valid_wgsl(&code);
 });

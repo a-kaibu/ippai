@@ -1,9 +1,9 @@
-// BLAKE3 for store chunk names: the same function as host/fetch-bridge.js"s ippaiBlake3 (that
+// BLAKE3 for store chunk names: the same function as host/fetch-bridge.js"s masuBlake3 (that
 // one runs as a plain script in the network worker, so it has its own copy); both are checked
 // against the blake3 crate"s answers (testdata/blake3.tsv).
 
 /**
- * The first 16 bytes of `data`"s BLAKE3 hash, as hex: a store chunk"s name (crates/ippai/src/pack.rs).
+ * The first 16 bytes of `data`"s BLAKE3 hash, as hex: a store chunk"s name (crates/masu/src/pack.rs).
  * One-shot (chunks are 256 KiB at most). ~230 MB/s in desktop Chromium.
  */
 export function blake3Hex(data: Uint8Array): string {

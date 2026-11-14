@@ -2,7 +2,7 @@
  * grows the screen instead of being kept to it (user.rs grown_screen): the window gets its whole
  * client area, and the screen's metrics, work area and monitor say the new size. Not Windows'
  * answer (a monitor has a size; Windows keeps the window to it: winref probe user's "big",
- * which runs with IPPAI_SCREEN fixed): sake's screen is no monitor.
+ * which runs with MASU_SCREEN fixed): sake's screen is no monitor.
  * Build: i686-w64-mingw32-gcc -O2 bigwindow.c -o bigwindow.exe */
 #include <stdio.h>
 #include <windows.h>
@@ -26,13 +26,13 @@ int main(void)
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = DefWindowProcA;
     wc.hInstance = GetModuleHandleA(NULL);
-    wc.lpszClassName = "ippai-bigwindow";
+    wc.lpszClassName = "masu-bigwindow";
     RegisterClassA(&wc);
     printf("screen at start: %dx%d\n", GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
     DWORD style = WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
     RECT r = {0, 0, 1920, 1080};
     AdjustWindowRect(&r, style, FALSE);
-    HWND h = CreateWindowExA(0, "ippai-bigwindow", "big", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
+    HWND h = CreateWindowExA(0, "masu-bigwindow", "big", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
     show("1920x1080 created", h);
     ShowWindow(h, SW_SHOW);
     /* (KiriKiri sets its inner size again once shown) */
@@ -47,7 +47,7 @@ int main(void)
     SetWindowPos(h, NULL, 0, 0, 800, 600, SWP_NOMOVE | SWP_NOZORDER);
     show("800x600 set", h);
     /* a popup is never kept to the screen and never grows it */
-    HWND p = CreateWindowExA(0, "ippai-bigwindow", "popup", WS_POPUP, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
+    HWND p = CreateWindowExA(0, "masu-bigwindow", "popup", WS_POPUP, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
     show("5000x5000 popup", p);
     DestroyWindow(p);
     DestroyWindow(h);

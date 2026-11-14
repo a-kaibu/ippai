@@ -1,5 +1,5 @@
 /* Scenario: a small visual novel played from the title to a save, as players play one (Direct3D
- * 9, 1280x720, paced as games are: no IPPAI_NOPACE). The harness (tests/bench/scenario.mjs)
+ * 9, 1280x720, paced as games are: no MASU_NOPACE). The harness (tests/bench/scenario.mjs)
  * clicks when the game waits and measures from the click to what the game shows; the game says
  * where it is on its output:
  *

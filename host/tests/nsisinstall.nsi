@@ -3,7 +3,7 @@
 Unicode true
 SetCompressor /SOLID lzma
 !include "MUI2.nsh"
-Name "ippai nsis test"
+Name "masu nsis test"
 OutFile "nsisinstall-setup.exe"
 InstallDir "$PROGRAMFILES\NsisTest"
 RequestExecutionLevel admin
@@ -19,7 +19,7 @@ Section "Main"
   File a.txt
   SetOutPath "$INSTDIR\sub"
   File b.dat
-  WriteRegStr HKCU "Software\ippai\nsistest" "path" "$INSTDIR"
+  WriteRegStr HKCU "Software\masu\nsistest" "path" "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninst.exe"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\NsisTest" "UninstallString" '"$INSTDIR\uninst.exe"'
 SectionEnd
@@ -29,6 +29,6 @@ Section "Uninstall"
   RMDir "$INSTDIR\sub"
   Delete "$INSTDIR\uninst.exe"
   RMDir "$INSTDIR"
-  DeleteRegKey HKCU "Software\ippai\nsistest"
+  DeleteRegKey HKCU "Software\masu\nsistest"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\NsisTest"
 SectionEnd

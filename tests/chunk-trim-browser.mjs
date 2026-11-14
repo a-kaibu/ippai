@@ -16,7 +16,7 @@ const build = vp.build ?? vp.default.build;
 const built = await build({
   configFile: false,
   logLevel: "silent",
-  build: { write: false, minify: false, lib: { entry: resolve("web/src/net.ts"), formats: ["iife"], name: "ippaiNet" } },
+  build: { write: false, minify: false, lib: { entry: resolve("web/src/net.ts"), formats: ["iife"], name: "masuNet" } },
 });
 const script = (Array.isArray(built) ? built[0] : built).output[0].code;
 
@@ -24,7 +24,7 @@ const MiB = 1 << 20;
 const browser = await chromium.launch({ args: ["--no-proxy-server"] });
 try {
   const page = await browser.newPage();
-  const origin = "https://ippai.test";
+  const origin = "https://masu.test";
   await page.route(`${origin}/**`, (r) => r.fulfill({ contentType: "text/html", body: "<!doctype html><title>chunks</title>" }));
   await page.goto(`${origin}/`);
   // (the quota made small: CDP's Storage.overrideQuotaForOrigin is not honored by headless
@@ -48,7 +48,7 @@ try {
     await w.write(new Uint8Array(30 * MiB).fill(7));
     await w.close();
     const before = await navigator.storage.estimate();
-    await window.ippaiNet.trimChunks();
+    await window.masuNet.trimChunks();
     const keys = await cache.keys();
     let bytes = 0;
     for (const k of keys) bytes += (await (await cache.match(k)).arrayBuffer()).byteLength;
@@ -67,7 +67,7 @@ try {
     const w = await (await dir.getFileHandle("t.snap", { create: true })).createWritable();
     await w.write(new Uint8Array(120 * MiB).fill(8));
     await w.close();
-    await window.ippaiNet.trimChunks();
+    await window.masuNet.trimChunks();
     const cache = await caches.open("ippai-chunks-v1");
     let bytes = 0;
     for (const k of await cache.keys()) bytes += (await (await cache.match(k)).arrayBuffer()).byteLength;
@@ -87,8 +87,8 @@ try {
     const dir = await root.getDirectoryHandle("ippai-chunks", { create: true });
     const hex = (i) => (99 - i).toString(16).padStart(32, "0");
     for (let i = 0; i < 40; i++) {
-      await window.ippaiNet.storeChunk(
-        await window.ippaiNet.chunkCache(),
+      await window.masuNet.storeChunk(
+        await window.masuNet.chunkCache(),
         `${location.origin}/store/chunks/00/${hex(i)}`,
         new Uint8Array(4 * MiB).fill(i),
       );
@@ -97,15 +97,15 @@ try {
     }
     // (the first five written again last: newest by time, first in the folder's own order)
     for (let i = 0; i < 5; i++) {
-      await window.ippaiNet.storeChunk(
-        await window.ippaiNet.chunkCache(),
+      await window.masuNet.storeChunk(
+        await window.masuNet.chunkCache(),
         `${location.origin}/store/chunks/00/${hex(i)}`,
         new Uint8Array(4 * MiB).fill(i),
       );
       await new Promise((r) => setTimeout(r, 5));
     }
     await dir.getFileHandle("f".repeat(32), { create: true });
-    await window.ippaiNet.trimChunks();
+    await window.masuNet.trimChunks();
     const left = [];
     let bytes = 0;
     for await (const [name, h] of dir.entries()) {

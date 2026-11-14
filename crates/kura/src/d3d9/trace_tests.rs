@@ -2,7 +2,7 @@
 //! trace for TLC to check against formal/tla/ComRefs.tla (formal/trace.sh): what each call
 //! returned and handed back, and which of the objects seen so far are alive after it.
 //!
-//! `IPPAI_TRACE_DIR=dir` writes `dir/d3d9-<seed>/ComTrace.tla`; `IPPAI_TRACE_SEEDS=n` (default 20).
+//! `MASU_TRACE_DIR=dir` writes `dir/d3d9-<seed>/ComTrace.tla`; `MASU_TRACE_SEEDS=n` (default 20).
 
 use super::*;
 use std::fmt::Write as _;
@@ -48,7 +48,7 @@ pub(crate) unsafe extern "C" fn free(_: *mut u8) {}
 /// then). Nothing without the sanitizer.
 pub(crate) unsafe fn lsan_root(p: *mut libc::c_void, n: usize) {
     let f = libc::dlsym(libc::RTLD_DEFAULT, c"__lsan_register_root_region".as_ptr());
-    if crate::env_on!("IPPAI_REQUIRE_LSAN_ROOTS") {
+    if crate::env_on!("MASU_REQUIRE_LSAN_ROOTS") {
         assert!(!f.is_null(), "LeakSanitizer root registration is not exported; use tools/ci/sanitize.sh");
     }
     if !f.is_null() {
@@ -194,9 +194,9 @@ pub(crate) fn hr(r: u32) -> String {
 }
 
 /// Writes `dir/name/<module>.tla` (the trace) and `dir/name/SPEC` (the spec it is checked
-/// against: formal/tla/<spec>.tla with <spec>Trace.tla and .cfg) when IPPAI_TRACE_DIR is set.
+/// against: formal/tla/<spec>.tla with <spec>Trace.tla and .cfg) when MASU_TRACE_DIR is set.
 pub(crate) fn write_module(name: &str, spec: &str, module: &str, text: &str) {
-    let Some(dir) = std::env::var_os("IPPAI_TRACE_DIR") else { return };
+    let Some(dir) = std::env::var_os("MASU_TRACE_DIR") else { return };
     let dir = std::path::Path::new(&dir).join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(format!("{module}.tla")), text).unwrap();
@@ -219,7 +219,7 @@ pub(crate) fn write_trace(name: &str, steps: &[Step]) {
 }
 
 pub(crate) fn seeds() -> u64 {
-    std::env::var("IPPAI_TRACE_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20)
+    std::env::var("MASU_TRACE_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20)
 }
 
 /// The page's executor (render/d3d.rs) on a fresh model of WebGPU (render/model.rs), run in this

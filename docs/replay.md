@@ -102,7 +102,7 @@ so no trace is cut short), and `testdata/apitrace/<id>-<bits>.txt` says what was
 exe, seconds, the trace's size and sha256) and where (ref, the blob's digest and size:
 `games.py`). `games.py unpack` pulls it (anonymously while the package is public; `GHCR_TOKEN`,
 in CI the job's token with `packages: read`, otherwise) into `TRACES_CACHE` (default
-`~/.cache/ippai-traces`, cached in CI by the .txt files' hash) and checks both digests. Traces
+`~/.cache/masu-traces`, cached in CI by the .txt files' hash) and checks both digests. Traces
 committed in parts before (the old way) still unpack, and gametrace.yml's `migrate` moves them.
 winref's answers for a game's replay go by the trace's sha256, not by where it is kept. The game is asked to close first (winplay's
 `CLOSE_FIRST`: WM_CLOSE, Return for a "quit?" box, killed after 20 s) so apitrace writes out the

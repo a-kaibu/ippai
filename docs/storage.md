@@ -14,9 +14,9 @@ S3 未設定時は SQLite に保存し、設定時は S3 に暗号化して保�
 他端末で更新されたセーブへの上書きは HTTP 412 で拒否する。
 ネットワーク障害を「セーブなし」として起動しない。
 
-## .ippai パッケージ
+## .masu パッケージ
 
-ゲーム情報画面の「.ippai を書き出す」でダウンロードし、同じ画面から復元する。
+ゲーム情報画面の「.masu を書き出す」でダウンロードし、同じ画面から復元する。
 復元は現在のセーブ、メモ、お気に入りを置き換える。
 プレイ履歴はセッション ID で統合する。
 
@@ -34,22 +34,22 @@ v1 は同じチャンク構成のゲームへの復元に対応する。
 ## S3 の設定
 
 旧 `VNVM_S3_*` 設定は使わない。
-`IPPAI_STORAGE_CONFIG` に次の TOML ファイルのパスを指定する。
+`MASU_STORAGE_CONFIG` に次の TOML ファイルのパスを指定する。
 このファイルはストアと Web 配信ディレクトリの外に置き、読み取り権限を管理者に限定する。
 
 ```toml
-bucket = "ippai"
+bucket = "masu"
 region = "us-east-1"
 # S3 互換サービスを使う場合だけ指定
 # endpoint = "https://s3.example.com"
-prefix = "ippai/"
+prefix = "masu/"
 active_key = "key-2026-11"
 
 [keys]
 key-2026-11 = "<ランダムな32バイト鍵を64文字の16進数で指定>"
 ```
 
-`ippai serve` は S3 から取ったオブジェクトを手元のディスクに保持し、2 回目からはそこから読む
+`masu serve` は S3 から取ったオブジェクトを手元のディスクに保持し、2 回目からはそこから読む
 （既定 `~/.cache/ippai/s3`、上限 64 GiB、最後に読んだのが古いものから消す）。
 保持するのは S3 と同じ暗号文で、読むたびに封筒で復号・検証し、壊れていれば S3 から取り直す。
 変えるときは設定に `cache = "/path"`、`cache_gib = 200` を足す（`cache_gib = 0` で保持しない）。
@@ -59,11 +59,11 @@ key-2026-11 = "<ランダムな32バイト鍵を64文字の16進数で指定>"
 設定ファイルと共通鍵は S3 と別の場所へバックアップする。
 
 ```sh
-export IPPAI_STORAGE_CONFIG=/secure/ippai-storage.toml
-ippai add /path/to/game --id sample --exe game.exe
-ippai storage push
-ippai storage backup
-ippai serve
+export MASU_STORAGE_CONFIG=/secure/masu-storage.toml
+masu add /path/to/game --id sample --exe game.exe
+masu storage push
+masu storage backup
+masu serve
 ```
 
 `push` は登録済みストアを順番にアップロードする。
@@ -82,10 +82,10 @@ S3 取得はストレージインスタンスごとに最大8並列とし、1 Mi
 ## DB バックアップと復元
 
 ```sh
-ippai storage backup
+masu storage backup
 # 表示された UUID を復元用に保存する
-ippai storage restore <UUID> /new-store/library.sqlite3
-ippai --store /new-store serve
+masu storage restore <UUID> /new-store/library.sqlite3
+masu --store /new-store serve
 ```
 
 復元先の親ディレクトリを作成してから実行する。
@@ -109,8 +109,8 @@ S3 ライフサイクルによる一律削除は、保持中バックアップ�
 旧鍵も残して以下を実行する。
 
 ```sh
-ippai storage rotate
-ippai storage rotate-backup <保持するバックアップのUUID>
+masu storage rotate
+masu storage rotate-backup <保持するバックアップのUUID>
 ```
 
 保持する各バックアップに `rotate-backup` を実行する。
@@ -132,7 +132,7 @@ Windows ゲーム側は従来どおり必要なチャンクを取得する。
 ## 検証コマンド
 
 ```sh
-cargo test -p ippai --bin ippai
+cargo test -p masu --bin masu
 node tests/fetch-bridge.test.mjs
 cd web
 vp test

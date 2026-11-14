@@ -449,10 +449,10 @@ enum After {
     Sleep(u64),
 }
 
-/// IPPAI_D3D_TRACE=2 (the shaders' WGSL, each draw's first vertices): read once, not per draw.
+/// MASU_D3D_TRACE=2 (the shaders' WGSL, each draw's first vertices): read once, not per draw.
 fn trace2() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2"))
+    *V.get_or_init(|| std::env::var("MASU_D3D_TRACE").as_deref() == Ok("2"))
 }
 
 unsafe fn rd(p: u32, i: usize) -> u32 {
@@ -760,7 +760,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 next: 0,
                 free_blocks: Vec::new(),
                 calls: std::ptr::null(),
-                trace: crate::env_on!("IPPAI_D3D_TRACE"),
+                trace: crate::env_on!("MASU_D3D_TRACE"),
                 mt_protected: false,
                 counts: HashMap::new(),
                 device: 0,
@@ -1675,7 +1675,7 @@ unsafe fn adapter_desc(p: u32, warp: bool, luid: u32, m: u32) {
     };
     std::ptr::write_bytes(p as *mut u8, 0, n as usize);
     let (name, vendor, device, dedicated, shared) =
-        if warp { ("Microsoft Basic Render Driver", 0x1414, 0x8c, 0, 0xffff_0000) } else { ("ippai WebGPU", 0x10de, 0x1c82, 512 << 20, 1024 << 20) };
+        if warp { ("Microsoft Basic Render Driver", 0x1414, 0x8c, 0, 0xffff_0000) } else { ("masu WebGPU", 0x10de, 0x1c82, 512 << 20, 1024 << 20) };
     for (i, c) in name.encode_utf16().enumerate() {
         *((p + i as u32 * 2) as *mut u16) = c;
     }

@@ -162,7 +162,7 @@ pub fn cases() -> Result<String, String> {
         b.push(r#"{"binding":160,"sampler":{"filter":"linear","address":"clamp-to-edge"}}"#.into());
         b.push(format!(r#"{{"binding":200,"storage":{{"format":"rgba8unorm","w":{ow},"h":{oh}}}}}"#));
         out.push(format!(
-            r#"{{"name":{},"dispatch":[{},{},1],"out":200,"tol":1,"variants":[{{"name":"ippai","wgsl":{}}},{{"name":"slang","wgsl":{}}}],"bindings":[{}]}}"#,
+            r#"{{"name":{},"dispatch":[{},{},1],"out":200,"tol":1,"variants":[{{"name":"masu","wgsl":{}}},{{"name":"slang","wgsl":{}}}],"bindings":[{}]}}"#,
             string(name),
             ow.div_ceil(bw),
             oh.div_ceil(bh),
@@ -184,7 +184,7 @@ pub fn cases() -> Result<String, String> {
         }
     }
     out.push(format!(
-        r#"{{"name":"groupshared scan, barriers in a loop","dispatch":[1,4,1],"out":201,"want":[{}],"variants":[{{"name":"ippai","wgsl":{}}}],"bindings":[{{"binding":201,"storage":{{"format":"r32uint","w":64,"h":4}}}}]}}"#,
+        r#"{{"name":"groupshared scan, barriers in a loop","dispatch":[1,4,1],"out":201,"want":[{}],"variants":[{{"name":"masu","wgsl":{}}}],"bindings":[{{"binding":201,"storage":{{"format":"r32uint","w":64,"h":4}}}}]}}"#,
         list(&want),
         string(&ours)
     ));

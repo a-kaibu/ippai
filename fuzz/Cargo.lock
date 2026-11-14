@@ -1358,7 +1358,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4275b20e6057cd7733fd8df8a5a31701e4fe44497dad0f3fa0e1c4fb971506be"
 
 [[package]]
-name = "ippai-fuzz"
+name = "masu-fuzz"
 version = "0.0.0"
 dependencies = [
  "apitrace",
@@ -1380,7 +1380,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ippai-tls"
+name = "masu-tls"
 version = "0.1.0"
 dependencies = [
  "httparse",
@@ -2314,7 +2314,7 @@ dependencies = [
  "hlslc",
  "hmac",
  "icu_segmenter",
- "ippai-tls",
+ "masu-tls",
  "jpeg-decoder",
  "koji",
  "kura",

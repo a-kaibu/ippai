@@ -111,7 +111,7 @@ static void big(void) {
     WNDCLASSA wc = { 0 };
     wc.lpfnWndProc = bigproc;
     wc.hInstance = GetModuleHandleA(NULL);
-    wc.lpszClassName = "ippai-big";
+    wc.lpszClassName = "masu-big";
     RegisterClassA(&wc);
     printf("maxtrack beyond screen %d %d\n", GetSystemMetrics(SM_CXMAXTRACK) > GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYMAXTRACK) > GetSystemMetrics(SM_CYSCREEN));
     printf("maxtrack x != y %d\n", GetSystemMetrics(SM_CXMAXTRACK) != GetSystemMetrics(SM_CYMAXTRACK));
@@ -124,7 +124,7 @@ static void big(void) {
     };
     for (int k = 0; k < 5; k++) {
         char l[64];
-        HWND h = CreateWindowExA(0, "ippai-big", "big", st[k].style, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
+        HWND h = CreateWindowExA(0, "masu-big", "big", st[k].style, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
         sprintf(l, "create %s", st[k].name); bigsize(l, h);
         SetWindowPos(h, NULL, 0, 0, 100, 100, SWP_NOZORDER | SWP_NOACTIVATE);
         SetWindowPos(h, NULL, 0, 0, 5000, 5000, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -135,14 +135,14 @@ static void big(void) {
     }
     /* a window procedure that allows more: it gets it */
     bigmax = 6000;
-    HWND h = CreateWindowExA(0, "ippai-big", "big", WS_OVERLAPPEDWINDOW, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
+    HWND h = CreateWindowExA(0, "masu-big", "big", WS_OVERLAPPEDWINDOW, 0, 0, 5000, 5000, NULL, NULL, wc.hInstance, NULL);
     bigsize("create allowed", h);
     SetWindowPos(h, NULL, 0, 0, 5500, 5500, SWP_NOZORDER | SWP_NOACTIVATE);
     bigsize("setpos allowed", h);
     DestroyWindow(h);
     /* and one that allows less */
     bigmax = 300;
-    h = CreateWindowExA(0, "ippai-big", "big", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, NULL, NULL, wc.hInstance, NULL);
+    h = CreateWindowExA(0, "masu-big", "big", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, NULL, NULL, wc.hInstance, NULL);
     bigsize("create max 300", h);
     SetWindowPos(h, NULL, 0, 0, 200, 900, SWP_NOZORDER | SWP_NOACTIVATE);
     bigsize("setpos max 300", h);
@@ -151,7 +151,7 @@ static void big(void) {
     bigsize("nosize max 300", h);
     DestroyWindow(h);
     bigmax = 0;
-    UnregisterClassA("ippai-big", wc.hInstance);
+    UnregisterClassA("masu-big", wc.hInstance);
 }
 
 int main(void) {
@@ -161,18 +161,18 @@ int main(void) {
     WNDCLASSA wc = { 0 };
     wc.lpfnWndProc = proc;
     wc.hInstance = GetModuleHandleA(NULL);
-    wc.lpszClassName = "ippai-winref";
+    wc.lpszClassName = "masu-winref";
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     E(RegisterClassA(&wc) != 0);
     E(RegisterClassA(&wc) != 0);
     WNDCLASSA got;
-    E(GetClassInfoA(wc.hInstance, "ippai-winref", &got));
-    E(GetClassInfoA(wc.hInstance, "ippai-nothere", &got));
+    E(GetClassInfoA(wc.hInstance, "masu-winref", &got));
+    E(GetClassInfoA(wc.hInstance, "masu-nothere", &got));
 
     /* creation: the messages, then the rectangles of a fixed-size bordered window */
     logging = 1;
     printf("-- create hidden\n");
-    HWND h = CreateWindowExA(0, "ippai-winref", "title", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 50, 640, 480, NULL, NULL, wc.hInstance, NULL);
+    HWND h = CreateWindowExA(0, "masu-winref", "title", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 100, 50, 640, 480, NULL, NULL, wc.hInstance, NULL);
     logging = 0;
     E(h != NULL);
     RECT wr, cr;
@@ -262,7 +262,7 @@ int main(void) {
     logging = 0;
     E(DestroyWindow(h));
     E(IsWindow(h));
-    E(UnregisterClassA("ippai-winref", wc.hInstance));
-    E(UnregisterClassA("ippai-winref", wc.hInstance));
+    E(UnregisterClassA("masu-winref", wc.hInstance));
+    E(UnregisterClassA("masu-winref", wc.hInstance));
     return 0;
 }

@@ -17,14 +17,14 @@ const build = vp.build ?? vp.default.build;
 const built = await build({
   configFile: false,
   logLevel: "silent",
-  build: { write: false, minify: true, lib: { entry: resolve("web/src/audio.ts"), formats: ["iife"], name: "ippaiAudio" } },
+  build: { write: false, minify: true, lib: { entry: resolve("web/src/audio.ts"), formats: ["iife"], name: "masuAudio" } },
 });
 const script = (Array.isArray(built) ? built[0] : built).output[0].code;
 
 const browser = await chromium.launch({ args: ["--no-proxy-server"] });
 try {
   const page = await browser.newPage();
-  const origin = "https://ippai.test";
+  const origin = "https://masu.test";
   // (cross-origin isolated: SharedArrayBuffer, as play.html is served)
   await page.route(`${origin}/**`, (r) =>
     r.fulfill({
@@ -45,7 +45,7 @@ try {
     for (let i = 0; i < FRAMES; i++) data[2 * i] = data[2 * i + 1] = i & 64 ? 0.9 : -0.9;
     const LEN = RATE; // one second
     const ctx = new OfflineAudioContext(2, LEN, RATE);
-    const url = URL.createObjectURL(new Blob([window.ippaiAudio.worklet], { type: "text/javascript" }));
+    const url = URL.createObjectURL(new Blob([window.masuAudio.worklet], { type: "text/javascript" }));
     await ctx.audioWorklet.addModule(url);
     const node = new AudioWorkletNode(ctx, "vnvm-sink", { numberOfInputs: 0, outputChannelCount: [2] });
     node.connect(ctx.destination);

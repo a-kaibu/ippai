@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Shader conformance cases: HLSL (DXBC, D3D9 bytecode), D3D9 assembly and GLSL through ippai's translators to WGSL, with the results the Direct3D and OpenGL rules give (tests/shaders.mjs runs them on WebGPU)"
+description = "Shader conformance cases: HLSL (DXBC, D3D9 bytecode), D3D9 assembly and GLSL through masu's translators to WGSL, with the results the Direct3D and OpenGL rules give (tests/shaders.mjs runs them on WebGPU)"
 
 [dependencies]
 hlslc = { path = "../hlslc" }

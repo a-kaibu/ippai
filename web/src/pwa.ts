@@ -33,7 +33,7 @@ export function useApp(): AppState {
 }
 
 /**
- * Not in dev (vp dev serves sources) nor in headless runs (tests, benchmarks, ippai serve's
+ * Not in dev (vp dev serves sources) nor in headless runs (tests, benchmarks, masu serve's
  * pre-runs: they measure the network as it is).
  */
 export function startApp(): void {
@@ -51,7 +51,7 @@ export function startApp(): void {
   });
   addEventListener("appinstalled", () => set({ install: null }));
   const params = new URLSearchParams(location.search);
-  // (a kept app of an older build, crates/ippai/src/apps.rs: the root's worker is the app's)
+  // (a kept app of an older build, crates/masu/src/apps.rs: the root's worker is the app's)
   const kept = /\/apps\/[0-9a-f]{16}\/[^/]*$/.test(location.pathname);
   if (!import.meta.env.PROD || !("serviceWorker" in navigator) || params.has("headless") || kept) return;
   const had = !!navigator.serviceWorker.controller;

@@ -5,10 +5,10 @@
 #
 #     tools/gamedb/update.sh [work dir]      (default ~/.cache/ippai/gamedb)
 #
-# ippai: $IPPAI, else `ippai` on PATH when it has `gamedb update --mirror`, else the latest release's.
+# masu: $MASU, else `masu` on PATH when it has `gamedb update --mirror`, else the latest release's.
 set -eu
 
-repo=a-kaibu/ippai
+repo=a-kaibu/masu
 dir=${1:-$HOME/.cache/ippai/gamedb}
 
 command -v gh >/dev/null 2>&1 || { echo "gh (GitHub CLI) が要ります: https://cli.github.com/" >&2; exit 1; }
@@ -21,37 +21,37 @@ fi
 # Require the mirror importer; older binaries still query the live website.
 has_update() { "$1" gamedb update --help 2>/dev/null | grep -q -- "--mirror"; }
 
-ippai=${IPPAI:-}
-if [ -z "$ippai" ] && command -v ippai >/dev/null 2>&1 && has_update ippai; then
-    ippai=ippai
+masu=${MASU:-}
+if [ -z "$masu" ] && command -v masu >/dev/null 2>&1 && has_update masu; then
+    masu=masu
 fi
-if [ -z "$ippai" ]; then
+if [ -z "$masu" ]; then
     case "$(uname -s)" in
         Linux) os=linux ext=tar.gz ;;
         MINGW* | MSYS* | CYGWIN*) os=windows ext=zip ;;
-        *) echo "$(uname -s): ippai のリリースがありません (IPPAI=<ippai> で指定してください)" >&2; exit 1 ;;
+        *) echo "$(uname -s): masu のリリースがありません (MASU=<masu> で指定してください)" >&2; exit 1 ;;
     esac
     case "$(uname -m)" in
         x86_64 | amd64) arch=amd64 ;;
         aarch64 | arm64) arch=arm64 ;;
-        *) echo "$(uname -m): ippai のリリースがありません" >&2; exit 1 ;;
+        *) echo "$(uname -m): masu のリリースがありません" >&2; exit 1 ;;
     esac
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
-    gh release download -R "$repo" -p "ippai_*_${os}_${arch}.${ext}" -D "$tmp"
+    gh release download -R "$repo" -p "masu_*_${os}_${arch}.${ext}" -D "$tmp"
     if [ "$ext" = zip ]; then
-        (cd "$tmp" && unzip -q ippai_*.zip)
-        ippai=$tmp/ippai.exe
+        (cd "$tmp" && unzip -q masu_*.zip)
+        masu=$tmp/masu.exe
     else
-        tar -xzf "$tmp"/ippai_*.tar.gz -C "$tmp"
-        ippai=$tmp/ippai
+        tar -xzf "$tmp"/masu_*.tar.gz -C "$tmp"
+        masu=$tmp/masu
     fi
-    has_update "$ippai" || { echo "最新リリースに SQLite ミラー対応がまだありません。main をビルドして IPPAI で指定してください" >&2; exit 1; }
+    has_update "$masu" || { echo "最新リリースに SQLite ミラー対応がまだありません。main をビルドして MASU で指定してください" >&2; exit 1; }
 fi
 
-has_update "$ippai" || { echo "SQLite ミラー対応の ippai を IPPAI で指定してください" >&2; exit 1; }
+has_update "$masu" || { echo "SQLite ミラー対応の masu を MASU で指定してください" >&2; exit 1; }
 
-echo "ippai: $ippai ($("$ippai" --version 2>/dev/null || echo '?'))"
+echo "masu: $masu ($("$masu" --version 2>/dev/null || echo '?'))"
 GHCR_TOKEN=$(gh auth token -h github.com)
 export GHCR_TOKEN
-"$ippai" gamedb update --part egs "$dir"
+"$masu" gamedb update --part egs "$dir"

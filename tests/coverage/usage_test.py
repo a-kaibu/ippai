@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests of tests/coverage/usage.py: a game's log counts by its last tally line only, a tests'
-file by every line (a process each: IPPAI_API_COUNTS_OUT appends one at each exit), and the
+file by every line (a process each: MASU_API_COUNTS_OUT appends one at each exit), and the
 report's tested column is the keys both sides have (a property test over random tallies,
 fixed seed); end to end through the command line on files as CI writes them.
 

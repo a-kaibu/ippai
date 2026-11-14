@@ -22,7 +22,7 @@ int main(void) {
     find(sys, "d3d9.dll");
     find(sys, "ddraw.dll");
     find(sys, "kernel32.dll");
-    find(sys, "ippai-no-such-lib.dll");
+    find(sys, "masu-no-such-lib.dll");
     printf("attrs %lx\n", GetFileAttributesA(strcat(sys, "\\d3d9.dll")) & ~FILE_ATTRIBUTE_NOT_CONTENT_INDEXED);
     return 0;
 }

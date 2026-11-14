@@ -1,8 +1,8 @@
-// A game's metadata from a page the user pastes (批評空間 / VNDB): ippai serve fetches it in the
-// background and keeps the result in its database (crates/ippai/src/library_api.rs,
+// A game's metadata from a page the user pastes (批評空間 / VNDB): masu serve fetches it in the
+// background and keeps the result in its database (crates/masu/src/library_api.rs,
 // PUT/GET /api/library/<game>/meta); the list (GET /games) then shows it.
 
-/** The state of the last fetch (crates/ippai/src/library.rs, MetaStatus). */
+/** The state of the last fetch (crates/masu/src/library.rs, MetaStatus). */
 export interface MetaStatus {
   url: string;
   state: "pending" | "ok" | "error";
@@ -92,7 +92,7 @@ export async function untilSettled(
   }
 }
 
-/** An ErogameScape game like this one (crates/ippai/src/library_api.rs candidates). */
+/** An ErogameScape game like this one (crates/masu/src/library_api.rs candidates). */
 export interface Candidate {
   id: number;
   name: string;

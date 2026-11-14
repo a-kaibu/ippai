@@ -1,4 +1,4 @@
-// The game list (web/src/ui/Library.tsx) in Chromium, at a desktop and a phone size, on ippai
+// The game list (web/src/ui/Library.tsx) in Chromium, at a desktop and a phone size, on masu
 // serve with a small store: the app's name and 🍶 icons everywhere (no "vnvm" left on screen,
 // favicon/manifest icons are PNGs that load), no debug switch and no log page, the sidebar's button at the top
 // right opening the sidebar (not modal: the list beside it stays in use; tabs 詳細 / 統計 / 設定,
@@ -11,7 +11,7 @@
 // played offered to continue, search, and a favorite set from a game's dialog showing on its
 // card and under the お気に入り tab after a reload. SHOTS=<dir> keeps screenshots.
 //
-//   node tests/library-browser.mjs [path to ippai]   (web/dist built; PLAYWRIGHT as elsewhere)
+//   node tests/library-browser.mjs [path to masu]   (web/dist built; PLAYWRIGHT as elsewhere)
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
@@ -21,8 +21,8 @@ import { join, resolve } from "node:path";
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
-const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const work = mkdtempSync(join(tmpdir(), "ippai-library-"));
+const bin = resolve(process.argv[2] ?? "target/debug/masu");
+const work = mkdtempSync(join(tmpdir(), "masu-library-"));
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });
 const shots = process.env.SHOTS && resolve(process.env.SHOTS);
@@ -36,7 +36,7 @@ for (const [id, title] of Object.entries(TITLES)) {
   run("pack", dir, id);
   run("add-game", id, "--title", title, "--tree", id, "--exe", "game.exe", "--no-meta");
 }
-// brand, release and score as `ippai meta` would put them
+// brand, release and score as `masu meta` would put them
 const META = {
   sakura: { brand: "Key", release: "2004-06-25", score: 80 },
   tsuki: { brand: "Key", release: "2011-09-30", score: 90 },
@@ -61,7 +61,7 @@ const port = 8900 + Math.floor(Math.random() * 200) * 2;
 const server = spawn(
   bin,
   ["serve", "--foreground", "--web", resolve("web/dist"), "--store", store, "--jit", join(work, "jit"), "--listen", `127.0.0.1:${port}`, "--no-prerun"],
-  { stdio: "inherit", env: { ...process.env, IPPAI_UPDATE_URL: `http://127.0.0.1:${releases.address().port}/r`, IPPAI_UPDATE_API: `http://127.0.0.1:${releases.address().port}/api` } },
+  { stdio: "inherit", env: { ...process.env, MASU_UPDATE_URL: `http://127.0.0.1:${releases.address().port}/r`, MASU_UPDATE_API: `http://127.0.0.1:${releases.address().port}/api` } },
 );
 // (an assertion failing before the browser's try still stops the server)
 process.on("exit", () => server.kill());
@@ -81,10 +81,10 @@ await put({ id: crypto.randomUUID(), game: "sakura", started_ms: Date.parse("202
 
 // the files the pages name: the icons are PNGs and load; the log page is gone
 const html = await (await fetch(base)).text();
-assert.match(html, /<title>ippai<\/title>/);
+assert.match(html, /<title>masu<\/title>/);
 assert.doesNotMatch(html, /vnvm|icon\.svg/i);
 const manifest = await (await fetch(`${base}manifest.webmanifest`)).json();
-assert.equal(manifest.name, "ippai");
+assert.equal(manifest.name, "masu");
 const icons = [...html.matchAll(/<link rel="(?:icon|apple-touch-icon)" href="\.\/([^"]+)"/g)].map((m) => m[1]);
 assert.ok(icons.includes("icons/favicon-48.png"), `favicon: ${icons}`);
 for (const src of [...icons, ...manifest.icons.map((i) => i.src)]) {
@@ -114,13 +114,13 @@ try {
     // 星のかけら last played in this browser
     await page.addInitScript(() => localStorage.setItem("vnvm-played", JSON.stringify({ hoshi: Date.parse("2026-11-06T21:30:00") })));
     await page.goto(base);
-    await page.getByRole("heading", { name: "ippai", level: 1 }).waitFor();
+    await page.getByRole("heading", { name: "masu", level: 1 }).waitFor();
     const shot = (what) => shots && page.screenshot({ path: join(shots, `${view.name}-${what}.png`) });
     await page.locator("[data-game]").first().waitFor();
     await shot("list");
 
     // the name and the mark
-    assert.equal(await page.title(), "ippai");
+    assert.equal(await page.title(), "masu");
     const text = await page.locator("body").innerText();
     assert.doesNotMatch(text, /vnvm/i, `${view.name}: "vnvm" on screen`);
     const logo = page.locator("header img").first();
@@ -344,7 +344,7 @@ try {
       assert.ok(version >= 3, `polled /version ${version} times`);
       await page.unrouteAll();
       // the reset, confirmed: the server forgets every session and the statistics are empty
-      await page.getByRole("heading", { name: "ippai", level: 1 }).waitFor();
+      await page.getByRole("heading", { name: "masu", level: 1 }).waitFor();
       await page.getByRole("button", { name: "サイドバー", exact: true }).click();
       await page.getByRole("dialog", { name: "設定" }).getByRole("tab", { name: "統計" }).click();
       const stats = page.getByRole("dialog", { name: "統計" }).getByRole("region", { name: "プレイ統計" });

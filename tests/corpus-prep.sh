@@ -1,5 +1,5 @@
 #!/bin/bash
-# Downloads, extracts and packs one vnbox corpus title for tests/corpus.mjs:
+# Downloads, extracts and packs one masu corpus title for tests/corpus.mjs:
 #   tests/corpus-prep.sh ID URL EXE_REL STORE
 # -> TRIALS/ID/x (extracted), STORE (hard-linked copy of BASE_STORE + tree "g"; "": none)
 # prints the exe path inside the tree on success (C:\...: the game a setup program installed)
@@ -96,7 +96,7 @@ if [ ! -d x ]; then
       fi
     done
   fi
-  # installers (vnbox ran the installed game): unpack InstallShield setups, Windows Installer
+  # installers (masu ran the installed game): unpack InstallShield setups, Windows Installer
   # packages and Inno Setup installers here rather than run them in the browser (an installer
   # writing a 1 GB package into the in-memory file system runs out of wasm memory)
   # (rounds: an installer can come out of another one, kagura_r_trial010a.exe is a self-extracting
@@ -137,7 +137,7 @@ if [ ! -d x ]; then
         mkdir -p "$s.lzh" && (cd "$s.lzh" && LC_ALL=C.UTF-8 7z x -y "$OLDPWD/$s" >/dev/null 2>&1) && [ -n "$(ls "$s.lzh")" ]; then rm -f "$s"
     # an electron-builder NSIS installer (あにまるめいど!'s animal_maid-1.0.0-x64.exe): the app is
     # $PLUGINSDIR/app-64.7z (or app-32.7z), what the installer would put in its folder. Unpacked
-    # here, the page runs its resources/app.asar as a web game (ippai pack: asar.rs) instead of
+    # here, the page runs its resources/app.asar as a web game (masu pack: asar.rs) instead of
     # sake running the installer (#234: 914 MB in the page) and then Electron's x64 Chromium
     elif a=$(python3 -I "$HERE/corpus/electron_nsis.py" "$s" "$s.app" 2>/dev/null) && [ -n "$(ls "$s.app")" ]; then rm -f "$s"
     else rm -rf "$s.is" "$s.inno" "$s.zip" "$s.sfx" "$s.cab" "$s.lzh" "$s.app"
@@ -167,7 +167,7 @@ if [ ! -d x ]; then
   rm -f "$f"
 fi
 cd x
-# the exe: vnbox's path (Games/<id>/...), else tests/corpus/pickexe.py's
+# the exe: masu's path (Games/<id>/...), else tests/corpus/pickexe.py's
 if [ -n "$exe" ] && [ -f "$exe" ]; then e=$exe
 # (the same file one folder further down: silimagi_trial.zip has dl/startup.exe)
 elif [ -n "$exe" ] && e=$(find . -ipath "*/$exe" -printf '%P\n' | head -1) && [ -n "$e" ]; then :
@@ -206,7 +206,7 @@ g=$(find . -iname cs2.exe -printf '%P\n' | head -1)
 if [ -n "$store" ] && [ ! -d "$store" ]; then
   rm -rf "$store.part"
   cp -al "$BASE" "$store.part"
-  ippai --store "$store.part" pack . g >/dev/null
+  masu --store "$store.part" pack . g >/dev/null
   # (an installed game: the title's own C:\, the installer's with sake's fonts, as prefix32;
   # the base's tree list is a hard link, removed rather than written through)
   if [ -d "$T/c" ] && [ -n "${SAKE_FONTS:-}" ] && [ -n "$(find "$T/c" -type f -not -ipath '*/windows/system32/msiexec.exe' -print -quit)" ]; then
@@ -217,7 +217,7 @@ if [ -n "$store" ] && [ ! -d "$store" ]; then
     [ -n "$(find "$w" -mindepth 1 -maxdepth 1 -iname temp -print -quit)" ] || mkdir "$w/temp"
     [ -n "$(find "$w" -mindepth 1 -maxdepth 1 -iname fonts -print -quit)" ] || cp -r "$SAKE_FONTS" "$w/Fonts"
     rm -f "$store.part/trees/prefix32.tsv"
-    ippai --store "$store.part" pack "$T/prefix" prefix32 >/dev/null
+    masu --store "$store.part" pack "$T/prefix" prefix32 >/dev/null
     rm -rf "$T/prefix"
   fi
   mv "$store.part" "$store"

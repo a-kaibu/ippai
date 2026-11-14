@@ -2,7 +2,7 @@
 // whoever asks for it, the game's reads first, the bucket's budget of requests shared by every
 // class with each leaving a reserve to the classes above it, the bucket's addresses asked for
 // many at once, hints and warm runs in the same worker. The bridge's own source runs in a vm
-// context with a stand-in server and bucket (objects sealed as crates/ippai/src/envelope.rs
+// context with a stand-in server and bucket (objects sealed as crates/masu/src/envelope.rs
 // seals them: AES-256-GCM, nonce first, the object's UUID as associated data).
 //   node --test tests/sched.test.mjs
 import { test } from 'node:test';
@@ -138,19 +138,19 @@ async function bridge(opt = {}) {
   });
   vm.runInContext(source, ctx);
   // (the stand-in objects are not zstd frames: the plain chunk)
-  vm.runInContext('ippaiUnzstd = async (base, frame) => frame; IPPAI_BAD_CHUNK = 1;', ctx);
+  vm.runInContext('masuUnzstd = async (base, frame) => frame; MASU_BAD_CHUNK = 1;', ctx);
   return { ctx, log, kept, pack };
 }
 
 test('one fetch of a chunk however many ask for it at once, of any class', async () => {
   const { ctx, log } = await bridge();
   const h = HASHES[5];
-  const all = await Promise.all([0, 1, 2, 3, 3, 4, 0].map((cls) => ctx.ippaiWhole(url(h), { cls })));
+  const all = await Promise.all([0, 1, 2, 3, 3, 4, 0].map((cls) => ctx.masuWhole(url(h), { cls })));
   assert.equal(log.bucket.length, 1);
   for (const r of all) assert.deepEqual(r.data, CHUNKS.get(h));
   // (kept: again, nothing over the network)
-  ctx.ippaiRecent.clear();
-  const again = await ctx.ippaiWhole(url(h), { cls: 3 });
+  ctx.masuRecent.clear();
+  const again = await ctx.masuWhole(url(h), { cls: 3 });
   assert.equal(log.bucket.length, 1);
   assert.deepEqual(again.data, CHUNKS.get(h));
 });
@@ -160,21 +160,21 @@ test("a fetch ahead holds the lock the page's save holds for the chunk (web/src/
   const locks = { request: async (name, f) => (names.push(name), f()) };
   const { ctx } = await bridge({ locks });
   const [a, b] = HASHES;
-  await ctx.ippaiWhole(url(a), { cls: 4 });
-  await ctx.ippaiWhole(url(b), { cls: 0 });
-  assert.deepEqual(names, [`ippai-chunk:${a}`]);
+  await ctx.masuWhole(url(a), { cls: 4 });
+  await ctx.masuWhole(url(b), { cls: 0 });
+  assert.deepEqual(names, [`masu-chunk:${a}`]);
 });
 
 test('a game read joining a fetch ahead that waits for the budget makes it the game\'s', async () => {
   const { ctx, log } = await bridge();
   // (the budget spent: a warm fetch waits at its reserve, the game's goes into debt)
-  ctx.ippaiBudgetWith((v) => void (v[0] = 0, v[1] = Date.now()));
+  ctx.masuBudgetWith((v) => void (v[0] = 0, v[1] = Date.now()));
   const h = HASHES[7];
-  const warm = ctx.ippaiWhole(url(h), { cls: ctx.IPPAI_CLASS.warm, want: false });
+  const warm = ctx.masuWhole(url(h), { cls: ctx.MASU_CLASS.warm, want: false });
   await new Promise((r) => setTimeout(r, 120));
   assert.equal(log.bucket.length, 0, 'warm waits for the budget');
   const t = Date.now();
-  const game = await ctx.ippaiWhole(url(h), { cls: ctx.IPPAI_CLASS.game });
+  const game = await ctx.masuWhole(url(h), { cls: ctx.MASU_CLASS.game });
   assert.ok(Date.now() - t < 1000, `the game's read waited ${Date.now() - t} ms`);
   assert.deepEqual(game.data, CHUNKS.get(h));
   await warm;
@@ -189,24 +189,24 @@ test('budget: no class past the game takes more than the burst and the rate allo
     const ctx = vm.createContext({ SharedArrayBuffer, Atomics, Int32Array, Float64Array, Math, Date });
     vm.runInContext(source, ctx);
     const t0 = 1_000_000;
-    ctx.ippaiBudgetWith((v) => void (v[0] = ctx.IPPAI_BURST, v[1] = t0));
+    ctx.masuBudgetWith((v) => void (v[0] = ctx.MASU_BURST, v[1] = t0));
     let now = t0;
     const took = [0, 0, 0, 0, 0];
     for (let i = 0; i < 400; i++) {
       now += rnd(200);
       const cls = rnd(5);
-      if (ctx.ippaiTake(cls, now)) took[cls]++;
-      const tokens = ctx.ippaiBudgetWith((v) => v[0]);
-      assert.ok(tokens <= ctx.IPPAI_BURST + 1e-9);
+      if (ctx.masuTake(cls, now)) took[cls]++;
+      const tokens = ctx.masuBudgetWith((v) => v[0]);
+      assert.ok(tokens <= ctx.MASU_BURST + 1e-9);
       // (never below the game's floor)
-      assert.ok(tokens >= ctx.IPPAI_RESERVE[0] - 1e-9);
+      assert.ok(tokens >= ctx.MASU_RESERVE[0] - 1e-9);
     }
     const secs = (now - t0) / 1000;
     const low = took.slice(1).reduce((a, b) => a + b, 0);
-    assert.ok(low <= ctx.IPPAI_BURST + ctx.IPPAI_RATE * secs + 1e-6, `run ${run}: ${low} in ${secs} s`);
+    assert.ok(low <= ctx.MASU_BURST + ctx.MASU_RATE * secs + 1e-6, `run ${run}: ${low} in ${secs} s`);
     // (the game's never refused while the debt allows)
     const all = took.reduce((a, b) => a + b, 0);
-    assert.ok(all <= ctx.IPPAI_BURST + ctx.IPPAI_RATE * secs - ctx.IPPAI_RESERVE[0] + 1e-6);
+    assert.ok(all <= ctx.MASU_BURST + ctx.MASU_RATE * secs - ctx.MASU_RESERVE[0] + 1e-6);
   }
 });
 
@@ -214,36 +214,36 @@ test('a class leaves its reserve: warm stops where hints still go, hints where t
   const ctx = vm.createContext({ SharedArrayBuffer, Atomics, Int32Array, Float64Array, Math, Date });
   vm.runInContext(source, ctx);
   const now = 5_000_000;
-  const set = (n) => ctx.ippaiBudgetWith((v) => void (v[0] = n, v[1] = now));
-  const C = ctx.IPPAI_CLASS;
-  set(ctx.IPPAI_RESERVE[C.warm] + 0.5);
-  assert.equal(ctx.ippaiTake(C.warm, now), false);
-  assert.equal(ctx.ippaiTake(C.hint, now), true);
-  set(ctx.IPPAI_RESERVE[C.hint] + 0.5);
-  assert.equal(ctx.ippaiTake(C.hint, now), false);
-  assert.equal(ctx.ippaiTake(C.ahead, now), true);
+  const set = (n) => ctx.masuBudgetWith((v) => void (v[0] = n, v[1] = now));
+  const C = ctx.MASU_CLASS;
+  set(ctx.MASU_RESERVE[C.warm] + 0.5);
+  assert.equal(ctx.masuTake(C.warm, now), false);
+  assert.equal(ctx.masuTake(C.hint, now), true);
+  set(ctx.MASU_RESERVE[C.hint] + 0.5);
+  assert.equal(ctx.masuTake(C.hint, now), false);
+  assert.equal(ctx.masuTake(C.ahead, now), true);
   set(0.5);
-  assert.equal(ctx.ippaiTake(C.ahead, now), false);
-  assert.equal(ctx.ippaiTake(C.game, now), true);
+  assert.equal(ctx.masuTake(C.ahead, now), false);
+  assert.equal(ctx.masuTake(C.game, now), true);
   // (the game's debt has a floor)
-  set(ctx.IPPAI_RESERVE[C.game] + 0.5);
-  assert.equal(ctx.ippaiTake(C.game, now), false);
+  set(ctx.MASU_RESERVE[C.game] + 0.5);
+  assert.equal(ctx.masuTake(C.game, now), false);
   // (429: everybody waits)
-  set(ctx.IPPAI_BURST);
-  ctx.ippaiDrain(2000);
-  assert.equal(ctx.ippaiTake(C.ahead, now), false);
+  set(ctx.MASU_BURST);
+  ctx.masuDrain(2000);
+  assert.equal(ctx.masuTake(C.ahead, now), false);
 });
 
 test('the bucket\'s addresses asked for many at once: one POST per 512, none one by one after', async () => {
   const { ctx, log } = await bridge();
   // (the same few chunks under many names would not be chunks: use the real ones, many times over)
   const urls = HASHES.map(url);
-  await ctx.ippaiDirectMany(urls);
+  await ctx.masuDirectMany(urls);
   assert.equal(log.many, 1);
   // (asked again: fresh, no POST)
-  await ctx.ippaiDirectMany(urls);
+  await ctx.masuDirectMany(urls);
   assert.equal(log.many, 1);
-  for (const u of urls.slice(0, 6)) await ctx.ippaiWhole(u, { cls: 0 });
+  for (const u of urls.slice(0, 6)) await ctx.masuWhole(u, { cls: 0 });
   assert.equal(log.one, 0, 'no single ask after the batch');
   assert.equal(log.bucket.length, 6);
 });
@@ -251,8 +251,8 @@ test('the bucket\'s addresses asked for many at once: one POST per 512, none one
 test('a chunk only on the server: the batch leaves it out, the read goes to /store without a single ask', async () => {
   const h = HASHES[3];
   const { ctx, log } = await bridge({ onlyServer: [h] });
-  await ctx.ippaiDirectMany([url(h), url(HASHES[4])]);
-  const r = await ctx.ippaiWhole(url(h), { cls: 0 });
+  await ctx.masuDirectMany([url(h), url(HASHES[4])]);
+  const r = await ctx.masuWhole(url(h), { cls: 0 });
   assert.deepEqual(r.data, CHUNKS.get(h));
   assert.equal(log.one, 0);
   assert.equal(log.store, 1);
@@ -264,9 +264,9 @@ test('a warm run fetches each chunk once, asks for addresses in batches, and a g
   const urls = HASHES.map(url);
   const flag = new SharedArrayBuffer(8);
   const reports = [];
-  const run = ctx.ippaiWarmRun({ urls, flag, width: 6, busyWidth: 2, cls: ctx.IPPAI_CLASS.save }, (r) => reports.push(r));
+  const run = ctx.masuWarmRun({ urls, flag, width: 6, busyWidth: 2, cls: ctx.MASU_CLASS.save }, (r) => reports.push(r));
   // (the game reads one of them meanwhile)
-  const g = await ctx.ippaiWhole(urls[10], { cls: 0 });
+  const g = await ctx.masuWhole(urls[10], { cls: 0 });
   assert.deepEqual(g.data, CHUNKS.get(HASHES[10]));
   await run;
   const end = reports.at(-1);
@@ -279,7 +279,7 @@ test('a warm run fetches each chunk once, asks for addresses in batches, and a g
   for (const u of urls) assert.ok(kept.has(u), `kept ${u}`);
   // (again: all on the device, nothing fetched)
   const again = [];
-  await ctx.ippaiWarmRun({ urls, flag, width: 6 }, (r) => again.push(r));
+  await ctx.masuWarmRun({ urls, flag, width: 6 }, (r) => again.push(r));
   assert.equal(again.at(-1).fetched, 0);
   assert.equal(log.bucket.length, urls.length);
 });
@@ -289,7 +289,7 @@ test('a warm run stops when told', async () => {
   const flag = new SharedArrayBuffer(8);
   const f = new Int32Array(flag);
   const reports = [];
-  const run = ctx.ippaiWarmRun({ urls: HASHES.map(url), flag, width: 2 }, (r) => reports.push(r));
+  const run = ctx.masuWarmRun({ urls: HASHES.map(url), flag, width: 2 }, (r) => reports.push(r));
   setTimeout(() => Atomics.store(f, 1, 1), 30);
   await run;
   assert.ok(reports.at(-1).end);
@@ -299,61 +299,61 @@ test('a warm run stops when told', async () => {
 test('hints: newest first, each once, a few at a time, kept on the device and not in memory', async () => {
   const { ctx, log, kept } = await bridge({ delay: 15 });
   const urls = HASHES.slice(0, 20).map(url);
-  ctx.ippaiHint(urls.slice(0, 10));
-  ctx.ippaiHint(urls.slice(5, 20));
-  assert.ok(ctx.ippaiHintsGoing <= ctx.IPPAI_HINT_WIDTH);
+  ctx.masuHint(urls.slice(0, 10));
+  ctx.masuHint(urls.slice(5, 20));
+  assert.ok(ctx.masuHintsGoing <= ctx.MASU_HINT_WIDTH);
   // (the ones asked for twice queued once: no slot spent on a chunk already coming)
-  assert.equal(ctx.ippaiHintsGoing + ctx.ippaiHints.length, 20);
-  for (let i = 0; i < 200 && (ctx.ippaiHintsGoing || ctx.ippaiHints.length); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ctx.masuHintsGoing + ctx.masuHints.length, 20);
+  for (let i = 0; i < 200 && (ctx.masuHintsGoing || ctx.masuHints.length); i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(log.bucket.length, 20, 'each once');
   for (const u of urls) assert.ok(kept.has(u));
-  assert.equal(ctx.ippaiRecent.size, 0);
+  assert.equal(ctx.masuRecent.size, 0);
   // (hinted again: nothing)
-  ctx.ippaiHint(urls);
+  ctx.masuHint(urls);
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(log.bucket.length, 20);
 });
 
 test('a 429 from the bucket: retried after its wait, and the budget drained for every class', async () => {
   const { ctx, log } = await bridge({ fail429: 1 });
-  const r = await ctx.ippaiWhole(url(HASHES[2]), { cls: 0 });
+  const r = await ctx.masuWhole(url(HASHES[2]), { cls: 0 });
   assert.deepEqual(r.data, CHUNKS.get(HASHES[2]));
   assert.equal(log.bucket.length, 2);
-  assert.equal(ctx.ippaiTake(ctx.IPPAI_CLASS.warm), false);
+  assert.equal(ctx.masuTake(ctx.MASU_CLASS.warm), false);
 });
 
-// ---- delivery packs (crates/ippai/src/storage.rs pack_objects)
+// ---- delivery packs (crates/masu/src/storage.rs pack_objects)
 const settle = async (ctx) => {
-  for (let i = 0; i < 100 && ctx.ippaiInflight.size; i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 100 && ctx.masuInflight.size; i++) await new Promise((r) => setTimeout(r, 10));
 };
 
 test('a read takes the chunks after it in its pack with one ranged GET; reads of them then fetch nothing', async () => {
   const order = HASHES.slice(0, 10);
   const { ctx, log, pack } = await bridge({ packs: order });
-  await ctx.ippaiDirectMany(order.map(url));
-  const r = await ctx.ippaiWhole(url(order[0]), { cls: 2 });
+  await ctx.masuDirectMany(order.map(url));
+  const r = await ctx.masuWhole(url(order[0]), { cls: 2 });
   assert.deepEqual(r.data, CHUNKS.get(order[0]));
   await settle(ctx);
   assert.equal(log.bucket.length, 1);
   const end = pack.at.get(order[9]).offset + pack.at.get(order[9]).len;
   assert.deepEqual(pack.ranges, [`bytes=0-${end - 1}`]);
   assert.deepEqual(pack.caches, ['no-store'], 'a pack range past the HTTP cache (#213)');
-  ctx.ippaiRecent.clear();
-  for (const h of order) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+  ctx.masuRecent.clear();
+  for (const h of order) assert.deepEqual((await ctx.masuWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
   assert.equal(log.bucket.length, 1, 'all from the one GET');
 });
 
 test('a read in the middle of a pack: from it on; a game read takes fewer bytes than a save', async () => {
   const order = HASHES.slice(0, 12);
   const { ctx, pack } = await bridge({ packs: order });
-  await ctx.ippaiDirectMany(order.map(url));
+  await ctx.masuDirectMany(order.map(url));
   const at = (h) => pack.at.get(h);
   // (the span: 3 chunks for the game's class, all for a save's)
-  ctx.IPPAI_PACK_SPAN[0] = at(order[6]).offset + at(order[6]).len - at(order[4]).offset;
-  await ctx.ippaiWhole(url(order[4]), { cls: 0 });
+  ctx.MASU_PACK_SPAN[0] = at(order[6]).offset + at(order[6]).len - at(order[4]).offset;
+  await ctx.masuWhole(url(order[4]), { cls: 0 });
   await settle(ctx);
   assert.deepEqual(pack.ranges, [`bytes=${at(order[4]).offset}-${at(order[6]).offset + at(order[6]).len - 1}`]);
-  await ctx.ippaiWhole(url(order[7]), { cls: 4 });
+  await ctx.masuWhole(url(order[7]), { cls: 4 });
   await settle(ctx);
   assert.equal(pack.ranges.length, 2);
   assert.equal(pack.ranges[1], `bytes=${at(order[7]).offset}-${at(order[11]).offset + at(order[11]).len - 1}`);
@@ -362,18 +362,18 @@ test('a read in the middle of a pack: from it on; a game read takes fewer bytes 
 test('neighbours on the device or coming already: left out, the range ends at the last one taken', async () => {
   const order = HASHES.slice(0, 8);
   const { ctx, log, pack, kept } = await bridge({ packs: order });
-  await ctx.ippaiDirectMany(order.map(url));
+  await ctx.masuDirectMany(order.map(url));
   // (2 on the device, 7 on the device: the range ends with 6)
   for (const i of [2, 7]) {
     // (alone: not with its own neighbours)
-    await ctx.ippaiDirect(url(order[i]), { cls: 0 }, undefined, true);
+    await ctx.masuDirect(url(order[i]), { cls: 0 }, undefined, true);
     await new Promise((r) => setTimeout(r, 5));
     assert.ok(kept.has(url(order[i])));
   }
   const before = log.bucket.length;
   pack.ranges.length = 0;
-  ctx.ippaiRecent.clear();
-  await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  ctx.masuRecent.clear();
+  await ctx.masuWhole(url(order[0]), { cls: 3 });
   await settle(ctx);
   const at = (h) => pack.at.get(h);
   assert.deepEqual(pack.ranges, [`bytes=0-${at(order[6]).offset + at(order[6]).len - 1}`]);
@@ -384,36 +384,36 @@ test('neighbours on the device or coming already: left out, the range ends at th
 test('a neighbour in this worker\'s memory is left out too', async () => {
   const order = HASHES.slice(0, 6);
   const { ctx, pack } = await bridge({ packs: order });
-  await ctx.ippaiDirectMany(order.map(url));
-  ctx.ippaiRecent.set(url(order[3]), CHUNKS.get(order[3]));
-  await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  await ctx.masuDirectMany(order.map(url));
+  ctx.masuRecent.set(url(order[3]), CHUNKS.get(order[3]));
+  await ctx.masuWhole(url(order[0]), { cls: 3 });
   await settle(ctx);
   // (3's bytes only because 4 and 5 come after it)
   const at = (h) => pack.at.get(h);
   assert.deepEqual(pack.ranges, [`bytes=0-${at(order[5]).offset + at(order[5]).len - 1}`]);
-  assert.equal(ctx.ippaiInflight.size, 0);
+  assert.equal(ctx.masuInflight.size, 0);
 });
 
 test('a span that opens but is not the chunk its name says: not kept, the chunk from the server', async () => {
   const order = HASHES.slice(0, 5);
   const { ctx, log, kept } = await bridge({ packs: order, wrong: order[2] });
-  await ctx.ippaiDirectMany(order.map(url));
-  await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  await ctx.masuDirectMany(order.map(url));
+  await ctx.masuWhole(url(order[0]), { cls: 3 });
   await settle(ctx);
   assert.ok(!kept.has(url(order[2])), 'not kept');
   for (const i of [1, 3, 4]) assert.ok(kept.has(url(order[i])));
   // (read: from the server, once)
-  assert.deepEqual((await ctx.ippaiWhole(url(order[2]), { cls: 0 })).data, CHUNKS.get(order[2]));
+  assert.deepEqual((await ctx.masuWhole(url(order[2]), { cls: 0 })).data, CHUNKS.get(order[2]));
   assert.equal(log.store, 1);
 });
 
 test('a game read of a neighbour while the GET is going joins it', async () => {
   const order = HASHES.slice(0, 6);
   const { ctx, log } = await bridge({ packs: order, delay: 30 });
-  await ctx.ippaiDirectMany(order.map(url));
-  const a = ctx.ippaiWhole(url(order[0]), { cls: 3 });
+  await ctx.masuDirectMany(order.map(url));
+  const a = ctx.masuWhole(url(order[0]), { cls: 3 });
   await new Promise((r) => setTimeout(r, 5));
-  const b = ctx.ippaiWhole(url(order[3]), { cls: 0 });
+  const b = ctx.masuWhole(url(order[3]), { cls: 0 });
   assert.deepEqual((await b).data, CHUNKS.get(order[3]));
   assert.deepEqual((await a).data, CHUNKS.get(order[0]));
   assert.equal(log.bucket.length, 1);
@@ -423,31 +423,31 @@ test('packs gone wrong: a damaged span alone again, a bucket without ranges slic
   const order = HASHES.slice(0, 6);
   {
     const { ctx, log } = await bridge({ packs: order, damage: order[2] });
-    await ctx.ippaiDirectMany(order.map(url));
-    await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+    await ctx.masuDirectMany(order.map(url));
+    await ctx.masuWhole(url(order[0]), { cls: 3 });
     await settle(ctx);
-    ctx.ippaiRecent.clear();
-    for (const h of order) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+    ctx.masuRecent.clear();
+    for (const h of order) assert.deepEqual((await ctx.masuWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
     // (the pack, then the damaged one's own object)
     assert.deepEqual(log.bucket.map((u) => u.includes('/pack/')), [true, false]);
   }
   {
     const { ctx, log } = await bridge({ packs: order, noRange: true });
-    await ctx.ippaiDirectMany(order.map(url));
-    await ctx.ippaiWhole(url(order[1]), { cls: 3 });
+    await ctx.masuDirectMany(order.map(url));
+    await ctx.masuWhole(url(order[1]), { cls: 3 });
     await settle(ctx);
-    ctx.ippaiRecent.clear();
-    for (const h of order.slice(1)) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+    ctx.masuRecent.clear();
+    for (const h of order.slice(1)) assert.deepEqual((await ctx.masuWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
     assert.equal(log.bucket.length, 1);
   }
   {
     const { ctx, log } = await bridge({ packs: order, packGone: true });
-    await ctx.ippaiDirectMany(order.map(url));
-    const r = await ctx.ippaiWhole(url(order[0]), { cls: 3 });
+    await ctx.masuDirectMany(order.map(url));
+    const r = await ctx.masuWhole(url(order[0]), { cls: 3 });
     assert.deepEqual(r.data, CHUNKS.get(order[0]));
     await settle(ctx);
-    ctx.ippaiRecent.clear();
-    for (const h of order) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+    ctx.masuRecent.clear();
+    for (const h of order) assert.deepEqual((await ctx.masuWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
     // (the pack once, then each alone)
     assert.equal(log.bucket.filter((u) => u.includes('/pack/')).length, 1);
     assert.equal(log.bucket.length, 1 + order.length);
@@ -457,22 +457,22 @@ test('packs gone wrong: a damaged span alone again, a bucket without ranges slic
 test('a malformed pack in an answer is no pack', async () => {
   const { ctx } = await bridge();
   for (const bad of [{}, { id: 'x', url: 'u', offset: 0, len: 100 }, { id: PACK_ID, url: 1, offset: 0, len: 100 }, { id: PACK_ID, url: 'u', offset: -1, len: 100 }, { id: PACK_ID, url: 'u', offset: 0, len: 27 }, { id: PACK_ID, url: 'u', offset: 0.5, len: 100 }])
-    assert.equal(ctx.ippaiPackValid(bad), false, JSON.stringify(bad));
-  assert.equal(ctx.ippaiPackValid({ id: PACK_ID, url: 'u', offset: 0, len: 28 }), true);
+    assert.equal(ctx.masuPackValid(bad), false, JSON.stringify(bad));
+  assert.equal(ctx.masuPackValid({ id: PACK_ID, url: 'u', offset: 0, len: 28 }), true);
 });
 const PACK_ID = '0f0e0d0c-0b0a-4908-8706-050403020100';
 
 test('ranges name the fetcher threads\' reads', () => {
   const ctx = vm.createContext({ SharedArrayBuffer, Atomics, Int32Array, Float64Array, Math, Date });
   vm.runInContext(source, ctx);
-  assert.deepEqual([...ctx.ippaiRange('chunks/ab/x#0+10/256')], ['chunks/ab/x', 0, 10, 256, 0]);
-  assert.deepEqual([...ctx.ippaiRange('chunks/ab/x#262144+4/262144!a')], ['chunks/ab/x', 262144, 4, 262144, 1]);
+  assert.deepEqual([...ctx.masuRange('chunks/ab/x#0+10/256')], ['chunks/ab/x', 0, 10, 256, 0]);
+  assert.deepEqual([...ctx.masuRange('chunks/ab/x#262144+4/262144!a')], ['chunks/ab/x', 262144, 4, 262144, 1]);
 });
 
 // ---------------------------------------------------------------------------------------------
 // Cache Storage that does not answer (Chromium left a cached chunk's body read pending for good
 // under load: a read ahead waited on it, the game's read behind it, no window ever): each step of
-// a read of it given IPPAI_CACHE_MS, then the network.
+// a read of it given MASU_CACHE_MS, then the network.
 
 /** Cache Storage over `kept` (url -> { b, h }) whose steps (open, match, arrayBuffer, blob,
  * slice) never settle when `hang(step)` says so, and reject when `fail(step)` does. */
@@ -514,18 +514,18 @@ test('Cache Storage that never answers, at any step of any read: every read stil
     // (on the device as a whole chunk, as blocks kept alone, or not at all)
     const where = Math.floor(r() * 3);
     if (where === 0) kept.set(url(h), { b: data, h: { 'x-ippai-checked': '1' } });
-    if (where === 1) for (let k = 0; k * block < data.length; k++) kept.set(ctx.ippaiBlockKey(url(h), k, block), { b: data.slice(k * block, (k + 1) * block), h: {} });
+    if (where === 1) for (let k = 0; k * block < data.length; k++) kept.set(ctx.masuBlockKey(url(h), k, block), { b: data.slice(k * block, (k + 1) * block), h: {} });
     const p = r();
     const hung = new Set();
     ctx.caches = stalling(kept, (s) => r() < p && (hung.add(s), true));
-    ctx.ippaiCacheOpen = undefined;
-    ctx.IPPAI_CACHE_MS = 15;
+    ctx.masuCacheOpen = undefined;
+    ctx.MASU_CACHE_MS = 15;
     const whole = r() < 0.3;
     const from = Math.floor((r() * data.length) / block) * block;
     const len = 1 + Math.floor(r() * Math.min(3 * block, data.length - from));
     const cls = Math.floor(r() * 2);
     const t = Date.now();
-    const got = whole ? await ctx.ippaiWhole(url(h), { cls }) : await ctx.ippaiFetchPart(url(h), from, len, block, cls);
+    const got = whole ? await ctx.masuWhole(url(h), { cls }) : await ctx.masuFetchPart(url(h), from, len, block, cls);
     const want = whole ? data : data.subarray(from, from + len);
     assert.deepEqual(got.data, want, `seed ${seed}: where ${where}, hung ${[...hung]}, ${whole ? 'whole' : `${from}+${len}`}`);
     assert.ok(Date.now() - t < 2000, `seed ${seed}: ${Date.now() - t} ms`);
@@ -540,14 +540,14 @@ test("a block kept alone that does not read is not there: not taken for the chun
   const block = 1024;
   for (const mode of ['reject', 'hang']) {
     const { ctx, kept, log } = await bridge({ delay: 1 });
-    for (let k = 0; k * block < data.length; k++) kept.set(ctx.ippaiBlockKey(url(h), k, block), { b: data.slice(k * block, (k + 1) * block), h: {} });
+    for (let k = 0; k * block < data.length; k++) kept.set(ctx.masuBlockKey(url(h), k, block), { b: data.slice(k * block, (k + 1) * block), h: {} });
     // (the second block's body does not read)
     let n = 0;
     const second = (s) => s === 'arrayBuffer' && ++n === 2;
     ctx.caches = mode === 'hang' ? stalling(kept, second) : stalling(kept, () => false, second);
-    ctx.ippaiCacheOpen = undefined;
-    ctx.IPPAI_CACHE_MS = 15;
-    const got = await ctx.ippaiFetchPart(url(h), 0, 3 * block, block, 0);
+    ctx.masuCacheOpen = undefined;
+    ctx.MASU_CACHE_MS = 15;
+    const got = await ctx.masuFetchPart(url(h), 0, 3 * block, block, 0);
     assert.deepEqual(got.data, data.subarray(0, 3 * block), mode);
     assert.ok(log.bucket.length + log.store > 0, `${mode}: from the network`);
   }
@@ -565,7 +565,7 @@ test("every range goes past the browser's HTTP cache (its bodies of one chunk wa
       return inner(u, init);
     };
     // (a server without the bucket: reads of blocks are ranges of /store)
-    ctx.ippaiDirectOff = r() < 0.5;
+    ctx.masuDirectOff = r() < 0.5;
     const h = big[Math.floor(r() * big.length)];
     const data = CHUNKS.get(h);
     const block = 1024;
@@ -573,11 +573,11 @@ test("every range goes past the browser's HTTP cache (its bodies of one chunk wa
       const from = Math.floor((r() * data.length) / block) * block;
       return [from, 1 + Math.floor(r() * Math.min(2 * block, data.length - from))];
     });
-    const got = await Promise.all(reads.map(([from, len]) => ctx.ippaiFetchPart(url(h), from, len, block, Math.floor(r() * 2))));
+    const got = await Promise.all(reads.map(([from, len]) => ctx.masuFetchPart(url(h), from, len, block, Math.floor(r() * 2))));
     got.forEach((g, i) => assert.deepEqual(g.data, data.subarray(reads[i][0], reads[i][0] + reads[i][1]), `seed ${seed}`));
     const store = seen.filter((s) => s.u.includes('/store/chunks/'));
     for (const s of store) assert.equal(s.cache === 'no-store', !!s.range, `seed ${seed}: ${JSON.stringify(s)}`);
-    if (ctx.ippaiDirectOff) assert.ok(store.some((s) => s.range), `seed ${seed}: ranges asked for`);
+    if (ctx.masuDirectOff) assert.ok(store.some((s) => s.range), `seed ${seed}: ranges asked for`);
   }
 });
 
@@ -590,15 +590,15 @@ const until = async (f, ms = 3000) => {
 test("a game read of a pack neighbour makes the pack's GET the game's (one job, not a copy)", async () => {
   const order = HASHES.slice(0, 6);
   const { ctx, log } = await bridge({ packs: order });
-  await ctx.ippaiDirectMany(order.map(url));
+  await ctx.masuDirectMany(order.map(url));
   // (the budget spent: the warm read of the first waits at its reserve, its neighbours with it)
-  ctx.ippaiBudgetWith((v) => void ((v[0] = 0), (v[1] = Date.now() + 60000)));
-  const warm = ctx.ippaiWhole(url(order[0]), { cls: ctx.IPPAI_CLASS.warm });
+  ctx.masuBudgetWith((v) => void ((v[0] = 0), (v[1] = Date.now() + 60000)));
+  const warm = ctx.masuWhole(url(order[0]), { cls: ctx.MASU_CLASS.warm });
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(log.bucket.length, 0, 'warm waits for the budget');
-  assert.ok(ctx.ippaiInflight.has(url(order[3])), 'the neighbour is coming with it');
+  assert.ok(ctx.masuInflight.has(url(order[3])), 'the neighbour is coming with it');
   const t0 = Date.now();
-  const game = await Promise.race([ctx.ippaiWhole(url(order[3]), { cls: 0 }), new Promise((r) => setTimeout(() => r({ late: true }), 2000))]);
+  const game = await Promise.race([ctx.masuWhole(url(order[3]), { cls: 0 }), new Promise((r) => setTimeout(() => r({ late: true }), 2000))]);
   assert.ok(!game.late, `the game waited ${Date.now() - t0} ms behind the warm class's budget`);
   assert.deepEqual(game.data, CHUNKS.get(order[3]));
   assert.equal(log.bucket.length, 1, 'the one GET, gone at the game\'s class');
@@ -611,11 +611,11 @@ test("a game read joining a fetch ahead that waits for the chunk's lock fetches 
   const held = new Promise((r) => (release = r));
   const locks = { request: async (name, f) => (await held, f()) };
   const { ctx, log } = await bridge({ locks });
-  ctx.IPPAI_LOCK_WAIT_MS = 50;
+  ctx.MASU_LOCK_WAIT_MS = 50;
   const h = HASHES[4];
-  const ahead = ctx.ippaiWhole(url(h), { cls: ctx.IPPAI_CLASS.hint });
+  const ahead = ctx.masuWhole(url(h), { cls: ctx.MASU_CLASS.hint });
   const t0 = Date.now();
-  const game = await Promise.race([ctx.ippaiWhole(url(h), { cls: 0 }), new Promise((r) => setTimeout(() => r({ late: true }), 2000))]);
+  const game = await Promise.race([ctx.masuWhole(url(h), { cls: 0 }), new Promise((r) => setTimeout(() => r({ late: true }), 2000))]);
   assert.ok(!game.late, 'the game waited for the lock');
   assert.deepEqual(game.data, CHUNKS.get(h));
   assert.ok(Date.now() - t0 < 1000, `the game waited ${Date.now() - t0} ms for a lock`);
@@ -631,32 +631,32 @@ test('a pack neighbour checked but not yet on the device is read from memory, no
   let write;
   const putGate = new Promise((r) => (write = r));
   const { ctx, log, kept } = await bridge({ packs: order, putGate });
-  await ctx.ippaiDirectMany(order.map(url));
-  await ctx.ippaiWhole(url(order[0]), { cls: 0 });
+  await ctx.masuDirectMany(order.map(url));
+  await ctx.masuWhole(url(order[0]), { cls: 0 });
   await settle(ctx);
   assert.equal(log.bucket.length, 1);
-  ctx.ippaiRecent.clear();
+  ctx.masuRecent.clear();
   assert.equal(kept.size, 0, 'the device has none of them yet');
-  for (const h of order.slice(1)) assert.deepEqual((await ctx.ippaiWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
+  for (const h of order.slice(1)) assert.deepEqual((await ctx.masuWhole(url(h), { cls: 0 })).data, CHUNKS.get(h));
   assert.equal(log.bucket.length, 1, 'none fetched again while being written');
-  assert.ok(ctx.ippaiSavingBytes > 0);
+  assert.ok(ctx.masuSavingBytes > 0);
   write();
-  assert.ok(await until(() => ctx.ippaiSaving.size === 0 && kept.size >= order.length), 'written, then let go');
-  assert.equal(ctx.ippaiSavingBytes, 0);
+  assert.ok(await until(() => ctx.masuSaving.size === 0 && kept.size >= order.length), 'written, then let go');
+  assert.equal(ctx.masuSavingBytes, 0);
 });
 
 test('chunks waiting to be written past the cap hold fetches ahead, not the game', async () => {
   let write;
   const putGate = new Promise((r) => (write = r));
   const { ctx, log } = await bridge({ putGate });
-  ctx.IPPAI_SAVING_BYTES = 1;
-  ctx.IPPAI_RECENT_BYTES = 0;
-  await ctx.ippaiWhole(url(HASHES[1]), { cls: 0 });
-  assert.ok(ctx.ippaiSavingBytes > 1);
-  const warm = ctx.ippaiWhole(url(HASHES[2]), { cls: ctx.IPPAI_CLASS.warm });
+  ctx.MASU_SAVING_BYTES = 1;
+  ctx.MASU_RECENT_BYTES = 0;
+  await ctx.masuWhole(url(HASHES[1]), { cls: 0 });
+  assert.ok(ctx.masuSavingBytes > 1);
+  const warm = ctx.masuWhole(url(HASHES[2]), { cls: ctx.MASU_CLASS.warm });
   await new Promise((r) => setTimeout(r, 120));
   assert.equal(log.bucket.length, 1, 'warm waits for the device to catch up');
-  await ctx.ippaiWhole(url(HASHES[3]), { cls: 0 });
+  await ctx.masuWhole(url(HASHES[3]), { cls: 0 });
   assert.equal(log.bucket.length, 2, 'the game does not');
   write();
   await warm;
@@ -665,11 +665,11 @@ test('chunks waiting to be written past the cap hold fetches ahead, not the game
 
 test('each request to the bucket takes from the budget, retries too', async () => {
   const { ctx, log } = await bridge({ fail429: 2 });
-  vm.runInContext('ippaiPause = async () => {}; ippaiDrain = () => {};', ctx);
+  vm.runInContext('masuPause = async () => {}; masuDrain = () => {};', ctx);
   let takes = 0;
-  const take = ctx.ippaiTake;
-  ctx.ippaiTake = (cls, now) => (takes++, take(cls, now));
-  await ctx.ippaiWhole(url(HASHES[6]), { cls: 0 });
+  const take = ctx.masuTake;
+  ctx.masuTake = (cls, now) => (takes++, take(cls, now));
+  await ctx.masuWhole(url(HASHES[6]), { cls: 0 });
   assert.equal(log.bucket.length, 3);
   assert.equal(takes, 3, 'one per request made');
 });
@@ -677,35 +677,35 @@ test('each request to the bucket takes from the budget, retries too', async () =
 test('a 429 stops every class for its whole wait, the game\'s too, then the budget refills from none', () => {
   const ctx = vm.createContext({ SharedArrayBuffer, Atomics, Int32Array, Float64Array, Math, Date });
   vm.runInContext(source, ctx);
-  const C = ctx.IPPAI_CLASS;
+  const C = ctx.MASU_CLASS;
   const now = 7_000_000;
-  ctx.ippaiBudgetWith((v) => void ((v[0] = ctx.IPPAI_BURST), (v[1] = now), (v[2] = 0)));
-  ctx.ippaiDrain(5000, now);
-  for (const dt of [0, 112, 1000, 4999]) for (const cls of Object.values(C)) assert.equal(ctx.ippaiTake(cls, now + dt), false, `class ${cls} at +${dt} ms`);
+  ctx.masuBudgetWith((v) => void ((v[0] = ctx.MASU_BURST), (v[1] = now), (v[2] = 0)));
+  ctx.masuDrain(5000, now);
+  for (const dt of [0, 112, 1000, 4999]) for (const cls of Object.values(C)) assert.equal(ctx.masuTake(cls, now + dt), false, `class ${cls} at +${dt} ms`);
   // (after it: the game first; the others when the budget is back over their reserve)
-  assert.equal(ctx.ippaiTake(C.ahead, now + 5000), false);
-  assert.equal(ctx.ippaiTake(C.game, now + 5000), true);
-  assert.equal(ctx.ippaiTake(C.warm, now + 5000 + 1000), false);
-  assert.equal(ctx.ippaiTake(C.warm, now + 5000 + 4000), true);
+  assert.equal(ctx.masuTake(C.ahead, now + 5000), false);
+  assert.equal(ctx.masuTake(C.game, now + 5000), true);
+  assert.equal(ctx.masuTake(C.warm, now + 5000 + 1000), false);
+  assert.equal(ctx.masuTake(C.warm, now + 5000 + 4000), true);
   // (a shorter 429 meanwhile does not shorten it)
-  ctx.ippaiDrain(10000, now + 6000);
-  ctx.ippaiDrain(1000, now + 6000);
-  assert.equal(ctx.ippaiTake(C.game, now + 15000), false);
-  assert.equal(ctx.ippaiTake(C.game, now + 16000), true);
+  ctx.masuDrain(10000, now + 6000);
+  ctx.masuDrain(1000, now + 6000);
+  assert.equal(ctx.masuTake(C.game, now + 15000), false);
+  assert.equal(ctx.masuTake(C.game, now + 16000), true);
 });
 
 /** The game's read of `u` through the worker's message (as the bridge's pthread asks): its bytes. */
 async function gameRead(ctx, u) {
-  const shared = new SharedArrayBuffer(ctx.IPPAI_BRIDGE_HEADER + ctx.IPPAI_BRIDGE_BYTES);
+  const shared = new SharedArrayBuffer(ctx.MASU_BRIDGE_HEADER + ctx.MASU_BRIDGE_BYTES);
   const state = new Int32Array(shared, 0, 8);
-  ctx.ippaiFetchWorker({ data: { url: u, shared, cls: 0 } });
+  ctx.masuFetchWorker({ data: { url: u, shared, cls: 0 } });
   const parts = [];
   for (;;) {
     while (Atomics.load(state, 0) === 0) await new Promise((r) => setTimeout(r, 2));
     const s = Atomics.load(state, 0);
     if (s === -1) throw new Error('read failed');
     if (s === 2) break;
-    parts.push(new Uint8Array(shared, ctx.IPPAI_BRIDGE_HEADER, Atomics.load(state, 1)).slice());
+    parts.push(new Uint8Array(shared, ctx.MASU_BRIDGE_HEADER, Atomics.load(state, 1)).slice());
     Atomics.store(state, 0, 0);
     Atomics.notify(state, 0);
   }
@@ -713,26 +713,26 @@ async function gameRead(ctx, u) {
 }
 const pairs = (...ps) => Uint8Array.from(ps.flatMap(([a, b]) => [...Buffer.from(HASHES[a], 'hex'), ...Buffer.from(HASHES[b], 'hex')]));
 const hintsDone = async (ctx) => {
-  for (let i = 0; i < 300 && (ctx.ippaiHintsGoing || ctx.ippaiHints.length); i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 300 && (ctx.masuHintsGoing || ctx.masuHints.length); i++) await new Promise((r) => setTimeout(r, 10));
 };
 
 test('a first read follows what came next in earlier runs, every branch, nearest first, capped', async () => {
   const { ctx } = await bridge();
   // title 0 -> story 1 -> 2 -> 3, title 0 -> gallery 10 -> 11; a loop back 3 -> 0
-  ctx.ippaiNextAdd(pairs([0, 1], [1, 2], [2, 3], [0, 10], [10, 11], [3, 0], [0, 1], [4, 4]));
-  const got = [...ctx.ippaiFollow(url(HASHES[0]))].map((u) => u.slice(-32));
+  ctx.masuNextAdd(pairs([0, 1], [1, 2], [2, 3], [0, 10], [10, 11], [3, 0], [0, 1], [4, 4]));
+  const got = [...ctx.masuFollow(url(HASHES[0]))].map((u) => u.slice(-32));
   assert.deepEqual(got, [1, 10, 2, 11, 3].map((i) => HASHES[i]), 'both ways, by distance, each once');
-  assert.equal(ctx.ippaiFollow(url(HASHES[30])).length, 0, 'nothing known: nothing');
-  assert.deepEqual(ctx.ippaiNext.get(HASHES[4]), undefined, 'a chunk is no follower of itself');
-  // (a long way: IPPAI_FOLLOW of it)
+  assert.equal(ctx.masuFollow(url(HASHES[30])).length, 0, 'nothing known: nothing');
+  assert.deepEqual(ctx.masuNext.get(HASHES[4]), undefined, 'a chunk is no follower of itself');
+  // (a long way: MASU_FOLLOW of it)
   const chain = Array.from({ length: 40 }, (_, i) => [20 + i, 21 + i]).filter(([, b]) => b < HASHES.length);
-  ctx.ippaiNextAdd(pairs(...chain));
-  assert.equal(ctx.ippaiFollow(url(HASHES[20])).length, ctx.IPPAI_FOLLOW);
+  ctx.masuNextAdd(pairs(...chain));
+  assert.equal(ctx.masuFollow(url(HASHES[20])).length, ctx.MASU_FOLLOW);
 });
 
 test("the game's first read of a chunk fetches its followers ahead; where each read found its chunk is counted", async () => {
   const { ctx, log, kept } = await bridge({ delay: 10 });
-  ctx.ippaiNextAdd(pairs([0, 1], [1, 2], [0, 5]));
+  ctx.masuNextAdd(pairs([0, 1], [1, 2], [0, 5]));
   assert.deepEqual(await gameRead(ctx, url(HASHES[0])), CHUNKS.get(HASHES[0]));
   await hintsDone(ctx);
   for (const i of [1, 2, 5]) assert.ok(kept.has(url(HASHES[i])), `follower ${i} on the device`);
@@ -741,14 +741,14 @@ test("the game's first read of a chunk fetches its followers ahead; where each r
   assert.deepEqual(await gameRead(ctx, url(HASHES[5])), CHUNKS.get(HASHES[5]));
   assert.equal(log.bucket.length, before);
   // (a follower still on its way when the game reads it: coming)
-  ctx.ippaiNextAdd(pairs([6, 7]));
+  ctx.masuNextAdd(pairs([6, 7]));
   const slow = gameRead(ctx, url(HASHES[6]));
   await new Promise((r) => setTimeout(r, 1));
   assert.deepEqual(await gameRead(ctx, url(HASHES[7])), CHUNKS.get(HASHES[7]));
   await slow;
   // (read again: counted once)
   await gameRead(ctx, url(HASHES[0]));
-  const r = ctx.ippaiReads;
+  const r = ctx.masuReads;
   assert.equal(r.none[0], 2, 'the first and 6 went to the network');
   assert.equal(r.device[0], 1, 'the gallery chunk was on the device');
   assert.equal(r.coming[0], 1, '7 was coming');
@@ -759,9 +759,9 @@ test('a warm run takes what followed each chunk, and reports the reads while the
   const { ctx } = await bridge();
   const flag = new SharedArrayBuffer(8);
   const reports = [];
-  const run = ctx.ippaiWarmRun({ urls: [], flag, width: 1, next: pairs([8, 9]), readsMs: 20 }, (r) => reports.push(r));
+  const run = ctx.masuWarmRun({ urls: [], flag, width: 1, next: pairs([8, 9]), readsMs: 20 }, (r) => reports.push(r));
   await run;
-  assert.deepEqual([...ctx.ippaiNext.get(HASHES[8])], [HASHES[9]]);
+  assert.deepEqual([...ctx.masuNext.get(HASHES[8])], [HASHES[9]]);
   await gameRead(ctx, url(HASHES[8]));
   await new Promise((r) => setTimeout(r, 60));
   const last = reports.filter((r) => r.reads).at(-1);
