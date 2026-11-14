@@ -154,7 +154,13 @@ static WAKE: Condvar = Condvar::new();
 
 fn with<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Queue {
+    f(queue(&mut g))
+}
+
+/// The queue, made at its first use (a Present or a wait before any command was recorded:
+/// a back buffer that could not be made, a game's first call a Present).
+fn queue(g: &mut Option<Queue>) -> &mut Queue {
+    g.get_or_insert_with(|| Queue {
         open: Batch::default(),
         closed: VecDeque::new(),
         reading: None,
@@ -166,7 +172,7 @@ fn with<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
         readbacks_dropped: Vec::new(),
         gen: 0,
         done: 0,
-    }))
+    })
 }
 
 /// Tests: whether readback `id` was said to be done (and not taken by its waiter yet).
@@ -359,7 +365,7 @@ fn flush_now() {
 pub fn present() {
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     {
-        let q = g.as_mut().unwrap();
+        let q = queue(&mut g);
         q.open.presents += 1;
         q.presented += 1;
         let mut b = std::mem::take(&mut q.open);
@@ -381,7 +387,7 @@ pub fn present() {
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     let deadline = now() + 250.0;
     loop {
-        let q = g.as_ref().unwrap();
+        let q = queue(&mut g);
         // (a state being taken: the game must reach its pause, not wait here)
         if q.presented <= q.shown + 2 || (now() >= deadline && page_attached(q)) || crate::snap::pausing() {
             return;
@@ -398,7 +404,7 @@ pub fn wait_done(gen: u64) {
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     let deadline = now() + 1000.0;
     loop {
-        let q = g.as_mut().unwrap();
+        let q = queue(&mut g);
         if q.done > gen || q.last_poll.is_none() || !page_attached(q) || now() >= deadline {
             if q.last_poll.is_none() {
                 q.done = q.done.max(gen + 1);
@@ -457,7 +463,7 @@ pub fn wait_readback(id: u32) -> bool {
     let mut deadline = now() + 10000.0;
     let mut done = g.as_ref().map_or(0, |q| q.done);
     loop {
-        let q = g.as_mut().unwrap();
+        let q = queue(&mut g);
         if q.done != done {
             done = q.done;
             deadline = now() + 10000.0;
@@ -582,6 +588,26 @@ mod hidden_tests {
 
     fn queued() -> (usize, usize) {
         with(|q| (q.closed.len(), q.closed.iter().map(|b| b.blob.len()).sum()))
+    }
+
+    /// A Present, a wait for a batch and a wait for a readback before anything was ever
+    /// recorded (no queue yet) go on as without a page; they used to abort the VM.
+    #[test]
+    fn waits_before_the_first_command_go_on() {
+        let _g = super::super::trace_tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        for first in 0..3 {
+            set_pump(None);
+            assert!(QUEUE.lock().unwrap().is_none());
+            match first {
+                0 => present(),
+                1 => wait_done(3),
+                _ => assert!(!wait_readback(7)),
+            }
+            present();
+            wait_done(0);
+            assert!(is_done(0));
+            assert_eq!(with(|q| q.presented), 1 + (first == 0) as u64);
+        }
     }
 
     /// A game presenting 1 MiB frames into a page that stopped polling (a hidden tab) waits
