@@ -22,6 +22,17 @@ const FOURCC_MEM: u32 = u32::from_le_bytes(*b"MEM ");
 const FOURCC_DOS: u32 = u32::from_le_bytes(*b"DOS ");
 const FOURCC_RIFF: u32 = u32::from_le_bytes(*b"RIFF");
 const FOURCC_LIST: u32 = u32::from_le_bytes(*b"LIST");
+/// The largest file mmio holds in memory for writing (a seek of a writable file to 3 GB and a
+/// write there would grow it to that much host memory: refused instead, as a full disk).
+const MAX_WRITE: u64 = 512 << 20;
+
+/// Where the chunk after the one at `at` of `size` data bytes starts (8 header bytes, the data
+/// padded to even), or None when that is not past `at` in a 32-bit file (a size near 4 GB:
+/// the walk would come back to `at`, or before it, for ever).
+fn chunk_after(at: u32, size: u32) -> Option<u32> {
+    let next = at as u64 + 8 + ((size as u64 + 1) & !1);
+    (next <= u32::MAX as u64).then_some(next as u32)
+}
 
 enum Data {
     File(Vec<u8>),
@@ -88,7 +99,7 @@ impl Mmio {
     fn put_buffer(&mut self, info: u32) {
         let Some((b, n)) = self.buf else { return };
         let mi = self::info();
-        if self.pos < self.buf_off || self.pos > self.buf_off + self.buf_len {
+        if self.pos < self.buf_off || self.pos as u64 > self.buf_off as u64 + self.buf_len as u64 {
             self.buf_off = self.pos;
             self.buf_len = 0;
         }
@@ -98,14 +109,14 @@ impl Mmio {
         mem::wp(info + mi.end_read, b + self.buf_len);
         mem::wp(info + mi.end_read + mem::ps(), b + n);
         w32(info + mi.disk - 4, self.buf_off);
-        w32(info + mi.disk, self.buf_off + self.buf_len);
+        w32(info + mi.disk, self.buf_off.wrapping_add(self.buf_len));
     }
     /// The position MMIOINFO's pchNext stands for (the program read from the buffer itself), if it
     /// points into this buffer's bytes.
     fn pos_of(&self, info: u32) -> Option<u32> {
         let (b, _) = self.buf?;
         let next = mem::rp(info + self::info().next);
-        (next >= b && next <= b + self.buf_len).then(|| self.buf_off + (next - b))
+        (next >= b && next as u64 <= b as u64 + self.buf_len as u64).then(|| self.buf_off.wrapping_add(next - b))
     }
     fn len(&self) -> u32 {
         match &self.data {
@@ -132,7 +143,11 @@ impl Mmio {
     fn write(&mut self, src: u32, n: u32) -> u32 {
         let n = match &mut self.data {
             Data::File(v) => {
-                let end = (self.pos + n) as usize;
+                let end = self.pos as u64 + n as u64;
+                if end > MAX_WRITE {
+                    return u32::MAX;
+                }
+                let end = end as usize;
                 if v.len() < end {
                     v.resize(end, 0);
                 }
@@ -154,26 +169,30 @@ impl Mmio {
         let t = v.to_le_bytes();
         match &mut self.data {
             Data::File(d) => {
-                let end = self.pos as usize + 4;
+                let end = self.pos as u64 + 4;
+                if end > MAX_WRITE {
+                    return;
+                }
+                let end = end as usize;
                 if d.len() < end {
                     d.resize(end, 0);
                 }
                 d[self.pos as usize..end].copy_from_slice(&t);
             }
             Data::Mem(a, len) => {
-                if self.pos + 4 <= *len {
+                if self.pos as u64 + 4 <= *len as u64 {
                     w32(*a + self.pos, v);
                 }
             }
             Data::Handle(..) => return,
         }
-        self.pos += 4;
+        self.pos = self.pos.wrapping_add(4);
         self.dirty = true;
     }
     fn flush(&mut self) -> bool {
         if let (Some(p), true, Data::File(v)) = (&self.out, self.dirty, &self.data) {
             let h = crate::files::resolve(p).unwrap_or_else(|| crate::files::resolve_new(p));
-            if kura::fs::write(h, v.clone()).is_err() {
+            if kura::fs::write(h, v).is_err() {
                 return false;
             }
             self.dirty = false;
@@ -181,7 +200,7 @@ impl Mmio {
         true
     }
     fn u32_at(&self, off: u32) -> Option<u32> {
-        if off + 4 > self.len() {
+        if off as u64 + 4 > self.len() as u64 {
             return None;
         }
         Some(match &self.data {
@@ -199,7 +218,7 @@ static FILES: Mutex<Option<HashMap<u32, Mmio>>> = Mutex::new(None);
 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x6d00);
 
 fn with<R>(h: u32, f: impl FnOnce(&mut Mmio) -> R) -> Option<R> {
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&h).map(f)
+    FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::default).get_mut(&h).map(f)
 }
 
 /// mmioOpen(name, MMIOINFO*, flags)
@@ -241,7 +260,10 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
             return fail(MMIOERR_CANNOTOPEN);
         }
         let path = crate::k32::arg_str(name, wide);
-        let old = crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok());
+        if flags & 0x5000 == 0x4000 {
+            // MMIO_EXIST: only whether it is there (a file: not read)
+            return crate::files::resolve(&path).and_then(|h| kura::fs::metadata(h).ok()).is_some_and(|m| !m.is_dir()) as u32;
+        }
         if flags & 0x1000 != 0 {
             // MMIO_CREATE: a new, empty file
             let h = crate::files::resolve(&path).unwrap_or_else(|| crate::files::resolve_new(&path));
@@ -251,11 +273,7 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
             out = Some(path);
             Data::File(Vec::new())
         } else {
-            let Some(v) = old else { return fail(MMIOERR_CANNOTOPEN) };
-            if flags & 0x4000 != 0 {
-                // MMIO_EXIST: only whether it is there
-                return 1;
-            }
+            let Some(v) = crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok()) else { return fail(MMIOERR_CANNOTOPEN) };
             if writing {
                 out = Some(path);
             }
@@ -263,7 +281,7 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
         }
     };
     let h = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Mmio { data, pos: 0, out, dirty: false, buf: None, buf_off: 0, buf_len: 0 });
+    FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::default).insert(h, Mmio { data, pos: 0, out, dirty: false, buf: None, buf_off: 0, buf_len: 0 });
     if flags & MMIO_ALLOCBUF != 0 {
         let want = if info != 0 { r32(info + mi.cch) } else { 0 };
         with(h, |f| f.buffer(want));
@@ -347,7 +365,8 @@ fn read_via(c: &mut Ctx, proc: u32, name: u32, info: u32, flags: u32) -> Option<
         if n <= 0 || v.len() > 256 << 20 {
             break;
         }
-        v.extend_from_slice(mem::slice(tmp, n as u32));
+        // (no more than it was asked for: a procedure answering more would copy past `tmp`)
+        v.extend_from_slice(mem::slice(tmp, (n as u32).min(0x10000)));
     }
     c.call(proc, &[mi, MMIOM_CLOSE, 0, 0]);
     mem::release(tmp);
@@ -378,9 +397,13 @@ fn mmioOpenW(c: &mut Ctx) -> u32 {
     open(c, true)
 }
 fn mmioClose(c: &mut Ctx) -> u32 {
-    let f = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
+    let f = FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::default).remove(&c.a(0));
     match f {
         Some(mut f) => {
+            // the I/O buffer goes with the file (MMIO_ALLOCBUF or mmioAdvance's)
+            if let Some((b, _)) = f.buf.take() {
+                mem::heap_free(b);
+            }
             // the DOS I/O procedure closes the program's file too, unless MMIO_FHOPEN (0x10)
             if let Data::Handle(.., h) = f.data {
                 if c.a(1) & 0x10 == 0 {
@@ -431,11 +454,11 @@ fn mmioSeek(c: &mut Ctx) -> u32 {
 fn mmioDescend(c: &mut Ctx) -> u32 {
     let (h, ck, parent, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let (want_id, want_type) = (r32(ck), r32(ck + 8));
-    let end_limit = if parent != 0 { r32(parent + 12) + r32(parent + 4) } else { u32::MAX };
+    let end_limit = if parent != 0 { r32(parent + 12).saturating_add(r32(parent + 4)) } else { u32::MAX };
     with(h, |f| {
         loop {
             let at = f.pos;
-            if at + 8 > end_limit.min(f.len()) {
+            if at as u64 + 8 > end_limit.min(f.len()) as u64 {
                 return MMIOERR_CHUNKNOTFOUND;
             }
             let (Some(id), Some(size)) = (f.u32_at(at), f.u32_at(at + 4)) else { return MMIOERR_CHUNKNOTFOUND };
@@ -456,7 +479,11 @@ fn mmioDescend(c: &mut Ctx) -> u32 {
                 f.pos = at + 8 + if list { 4 } else { 0 };
                 return 0;
             }
-            f.pos = at + 8 + ((size + 1) & !1);
+            // (a chunk size that would end the walk at or before `at`: no such chunk)
+            match chunk_after(at, size) {
+                Some(next) => f.pos = next,
+                None => return MMIOERR_CHUNKNOTFOUND,
+            }
         }
     })
     .unwrap_or(MMIOERR_CHUNKNOTFOUND)
@@ -471,7 +498,7 @@ fn mmioAscend(c: &mut Ctx) -> u32 {
         if r32(ck + 16) & MMIO_DIRTY != 0 {
             let size = f.pos.saturating_sub(data);
             let at = f.pos;
-            if size != r32(ck + 4) {
+            if size != r32(ck + 4) && data >= 4 {
                 f.pos = data - 4;
                 f.put_u32(size);
                 f.pos = at;
@@ -479,7 +506,7 @@ fn mmioAscend(c: &mut Ctx) -> u32 {
             }
             if size & 1 != 0 {
                 let z = [0u8];
-                if let Data::File(v) = &mut f.data {
+                if let (Data::File(v), true) = (&mut f.data, (at as u64) < MAX_WRITE) {
                     if v.len() <= at as usize {
                         v.resize(at as usize + 1, 0);
                     }
@@ -488,7 +515,7 @@ fn mmioAscend(c: &mut Ctx) -> u32 {
                 }
             }
         }
-        f.pos = data + ((r32(ck + 4) + 1) & !1);
+        f.pos = data.saturating_add(((r32(ck + 4) as u64 + 1) & !1).min(u32::MAX as u64) as u32);
     })
     .map_or(MMIOERR_CHUNKNOTFOUND, |_| 0)
 }
@@ -515,7 +542,7 @@ fn mmioCreateChunk(c: &mut Ctx) -> u32 {
         if list.is_some() {
             f.put_u32(r32(ck + 8));
         }
-        w32(ck + 12, start + 8);
+        w32(ck + 12, start.saturating_add(8));
         w32(ck + 16, MMIO_DIRTY);
         0
     })
@@ -680,6 +707,173 @@ mod tests {
             head.extend_from_slice(&size.to_le_bytes());
             let n = handle_len(&head, rest);
             prop_assert_eq!(n as u64, (size as u64 + 8).min(u32::MAX as u64).min(rest));
+        }
+    }
+
+    use crate::test_guest::{call, enter};
+
+    /// An mmio file of `bytes` (as mmioOpen of a file makes, writable with `out`).
+    fn file(bytes: Vec<u8>, writable: bool) -> u32 {
+        let h = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let out = writable.then(|| "C:\\mmio-test-never-flushed.wav".to_string());
+        FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::default).insert(h, Mmio { data: Data::File(bytes), pos: 0, out, dirty: false, buf: None, buf_off: 0, buf_len: 0 });
+        h
+    }
+    fn chunk(id: &[u8; 4], size: u32, data: &[u8]) -> Vec<u8> {
+        let mut v = id.to_vec();
+        v.extend_from_slice(&size.to_le_bytes());
+        v.extend_from_slice(data);
+        v
+    }
+    fn ckinfo(id: &[u8; 4]) -> u32 {
+        let ck = mem::heap_alloc(20, true);
+        w32(ck, u32::from_le_bytes(*id));
+        ck
+    }
+
+    #[test]
+    fn chunk_after_never_comes_back() {
+        assert_eq!(chunk_after(0, 4), Some(12));
+        assert_eq!(chunk_after(12, 3), Some(24));
+        // (0xfffffff8 + 8 wrapped to 0: the walk stood still at `at` for ever, the lock held)
+        assert_eq!(chunk_after(0, 0xffff_fff8), None);
+        assert_eq!(chunk_after(0, 0xffff_fff7), None);
+        assert_eq!(chunk_after(0, u32::MAX), None);
+        assert_eq!(chunk_after(16, 0xffff_ffe0), Some(0xffff_fff8));
+        assert_eq!(chunk_after(u32::MAX - 7, 0), None);
+    }
+
+    #[test]
+    fn descend_past_a_chunk_of_4_gb_ends() {
+        let _g = enter();
+        // "junk" claiming 0xfffffff8 bytes, then the chunk asked for: not found, not a hang
+        let mut v = chunk(b"junk", 0xffff_fff8, b"");
+        v.extend(chunk(b"fmt ", 2, b"ab"));
+        let h = file(v, false);
+        let ck = ckinfo(b"fmt ");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ckp = ck;
+        std::thread::spawn(move || tx.send(call(mmioDescend, &[h, ckp, 0, 0x10])).unwrap());
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)), Ok(MMIOERR_CHUNKNOTFOUND));
+        assert_eq!(call(mmioClose, &[h, 0]), 0);
+        mem::heap_free(ck);
+    }
+
+    #[test]
+    fn close_frees_the_io_buffer() {
+        let _g = enter();
+        let h = file(chunk(b"RIFF", 4, b"WAVE"), false);
+        let (b, _) = with(h, |f| f.buffer(0)).unwrap();
+        assert!(mem::heap_owns(b));
+        assert_eq!(call(mmioClose, &[h, 0]), 0);
+        // (it stayed in the guest heap: 8 KiB per sound the DirectX SDK's CWaveFile opened)
+        assert!(!mem::heap_owns(b));
+    }
+
+    #[test]
+    fn writes_past_the_limit_fail() {
+        let _g = enter();
+        let h = file(Vec::new(), true);
+        let src = mem::heap_alloc(16, true);
+        assert_eq!(call(mmioSeek, &[h, 0x7000_0000, 0]), 0x7000_0000);
+        // (a 1.8 GB Vec::resize before)
+        assert_eq!(call(mmioWrite, &[h, src, 16]), u32::MAX);
+        assert_eq!(call(mmioSeek, &[h, 0, 0]), 0);
+        assert_eq!(call(mmioWrite, &[h, src, 16]), 16);
+        // an ascend of a dirty chunk whose data offset is below 4 (no header before it)
+        let ck = ckinfo(b"data");
+        w32(ck + 12, 2);
+        w32(ck + 16, MMIO_DIRTY);
+        assert_eq!(call(mmioAscend, &[h, ck, 0]), 0);
+        FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::default).remove(&h);
+        mem::heap_free(src);
+        mem::heap_free(ck);
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Descend(u8, u32),
+        Ascend,
+        Read(u32),
+        Seek(i32, u8),
+        Write(u32),
+        Create(u8),
+        Advance,
+    }
+    fn arb_op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (0u8..4, any::<u32>()).prop_map(|(f, i)| Op::Descend(f, i)),
+            Just(Op::Ascend),
+            (0u32..300).prop_map(Op::Read),
+            (any::<i32>(), 0u8..3).prop_map(|(o, w)| Op::Seek(o, w)),
+            (0u32..64).prop_map(Op::Write),
+            (0u8..3).prop_map(Op::Create),
+            Just(Op::Advance),
+        ]
+    }
+    /// RIFF-shaped bytes with any chunk sizes (as a damaged or hostile .wav has).
+    fn arb_riff() -> impl Strategy<Value = Vec<u8>> {
+        let ids = prop_oneof![Just(*b"RIFF"), Just(*b"LIST"), Just(*b"fmt "), Just(*b"data"), any::<[u8; 4]>()];
+        let size = prop_oneof![0u32..64, Just(0xffff_fff8), Just(0xffff_fff7), Just(u32::MAX), any::<u32>()];
+        prop::collection::vec((ids, size, prop::collection::vec(any::<u8>(), 0..40)), 0..8)
+            .prop_map(|cs| cs.into_iter().flat_map(|(id, size, d)| chunk(&id, size, &d)).collect())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(150))]
+        /// Any sequence of mmio calls on any RIFF-shaped file, read-only or writable: no panic
+        /// (abort), every descend ends (each step of its walk past the last), the file never
+        /// grows past MAX_WRITE, and a read gives no more than was asked and the file holds.
+        #[test]
+        fn any_calls_on_any_riff(bytes in arb_riff(), writable in any::<bool>(), ops in prop::collection::vec(arb_op(), 0..24)) {
+            let _g = enter();
+            let h = file(bytes, writable);
+            let (ck, parent, buf, info) = (mem::heap_alloc(20, true), mem::heap_alloc(20, true), mem::heap_alloc(300, true), mem::heap_alloc(info().size, true));
+            for op in ops {
+                match op {
+                    Op::Descend(f, id) => {
+                        w32(ck, id);
+                        w32(ck + 8, id.rotate_left(8));
+                        let p = if f & 1 != 0 { parent } else { 0 };
+                        let r = call(mmioDescend, &[h, ck, p, [0, 0x10, 0x20, 0x40][f as usize]]);
+                        prop_assert!(r == 0 || r == MMIOERR_CHUNKNOTFOUND);
+                        if r == 0 {
+                            mem::copy(parent, ck, 20);
+                        }
+                    }
+                    Op::Ascend => {
+                        call(mmioAscend, &[h, ck, 0]);
+                    }
+                    Op::Read(n) => {
+                        let (pos, len) = with(h, |f| (f.pos, f.len())).unwrap();
+                        let got = call(mmioRead, &[h, buf, n]);
+                        prop_assert!(got <= n && got <= len.saturating_sub(pos));
+                    }
+                    Op::Seek(o, w) => {
+                        call(mmioSeek, &[h, o as u32, w as u32]);
+                    }
+                    Op::Write(n) => {
+                        call(mmioWrite, &[h, buf, n]);
+                    }
+                    Op::Create(f) => {
+                        w32(ck + 4, 0);
+                        call(mmioCreateChunk, &[h, ck, [0, 0x20, 0x40][f as usize]]);
+                    }
+                    Op::Advance => {
+                        call(mmioGetInfo, &[h, info, 0]);
+                        call(mmioAdvance, &[h, info, 0]);
+                    }
+                }
+                prop_assert!(with(h, |f| f.len() as u64).unwrap() <= MAX_WRITE.max(1 << 16));
+            }
+            // (not flushed: the test's file is never written out)
+            let f = FILES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::default).remove(&h).unwrap();
+            if let Some((b, _)) = f.buf {
+                mem::heap_free(b);
+            }
+            for p in [ck, parent, buf, info] {
+                mem::heap_free(p);
+            }
         }
     }
 }

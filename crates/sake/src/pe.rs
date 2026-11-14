@@ -458,6 +458,64 @@ pub fn file_resource(data: &[u8], ty: u32) -> Option<&[u8]> {
     rva(dword(leaf as usize)?, dword((leaf as usize).checked_add(4)?)?)
 }
 
+/// [`file_resource`] of a file read in pieces (`read(offset, n)`: up to n bytes there): its
+/// headers and the section the resource directory is in, not the whole file (a 300 MB
+/// single-file exe was read whole, twice, for GetFileVersionInfo). Those pieces make a PE of one
+/// section that `file_resource` then reads; None where that one section does not hold it all.
+pub fn file_resource_read(read: &mut dyn FnMut(u64, usize) -> Option<Vec<u8>>, ty: u32) -> Option<Vec<u8>> {
+    const MAX_HEAD: usize = 1 << 20;
+    const MAX_SECTION: u32 = 64 << 20;
+    let mut head = read(0, 0x1000)?;
+    let u16_at = |d: &[u8], o: usize| Some(u16::from_le_bytes(d.get(o..o.checked_add(2)?)?.try_into().ok()?));
+    let u32_at = |d: &[u8], o: usize| Some(u32::from_le_bytes(d.get(o..o.checked_add(4)?)?.try_into().ok()?));
+    if head.get(..2)? != b"MZ" {
+        return None;
+    }
+    let pe = u32_at(&head, 0x3c)? as usize;
+    // (the PE header, then the section table: past the first 4 KB in some files)
+    if pe.checked_add(24)? > head.len() {
+        head = read(0, pe.checked_add(24)?.min(MAX_HEAD))?;
+    }
+    let opt = pe.checked_add(24)?;
+    let optlen = u16_at(&head, pe.checked_add(20)?)? as usize;
+    let count = u16_at(&head, pe.checked_add(6)?)? as usize;
+    let sections = opt.checked_add(optlen)?;
+    let end = sections.checked_add(count.checked_mul(40)?)?;
+    if end > MAX_HEAD {
+        return None;
+    }
+    if end > head.len() {
+        head = read(0, end)?;
+    }
+    let dirs = match u16_at(&head, opt)? {
+        0x10b => 96,
+        0x20b => 112,
+        _ => return None,
+    };
+    let (dir, _) = (u32_at(&head, opt.checked_add(dirs + 16)?)?, u32_at(&head, opt.checked_add(dirs + 20)?)?);
+    let s = (0..count).map(|i| sections + i * 40).find(|&s| {
+        let (start, rawlen) = (u32_at(&head, s + 12).unwrap_or(0), u32_at(&head, s + 16).unwrap_or(0));
+        dir.checked_sub(start).is_some_and(|off| off < rawlen)
+    })?;
+    let (rawlen, rawptr) = (u32_at(&head, s + 16)?, u32_at(&head, s + 20)?);
+    if rawlen > MAX_SECTION {
+        return None;
+    }
+    let raw = read(rawptr as u64, rawlen as usize)?;
+    if raw.len() != rawlen as usize {
+        return None;
+    }
+    // the headers with that one section, its bytes right after the table
+    let mut one = head.get(..end)?.to_vec();
+    one.copy_within(s..s + 40, sections);
+    one.truncate(sections + 40);
+    one[pe + 6..pe + 8].copy_from_slice(&1u16.to_le_bytes());
+    let at = one.len() as u32;
+    one[sections + 20..sections + 24].copy_from_slice(&at.to_le_bytes());
+    one.extend_from_slice(&raw);
+    file_resource(&one, ty).map(<[u8]>::to_vec)
+}
+
 /// Maps the image in `data`; `resolve(dll, import)` gives import addresses.
 /// The bytes of an image of SizeOfImage `size` from RVA `va` on.
 fn image_room(size: u32, va: u32) -> u32 {
@@ -2375,5 +2433,100 @@ mod proofs {
         let (size, va): (u32, u32) = (kani::any(), kani::any());
         let n = image_room(size, va);
         assert!(n == 0 || va as u64 + n as u64 <= size as u64);
+    }
+}
+
+#[cfg(test)]
+mod resource_read_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A PE32 file: e_lfanew `lfanew`, `before` sections of filler, the resource section (a
+    /// type 16 / name 1 / one language tree holding `value`), `after` sections more.
+    fn pe_with_version(lfanew: usize, before: usize, after: usize, value: &[u8]) -> Vec<u8> {
+        let count = before + 1 + after;
+        let sections = lfanew + 24 + 224;
+        let mut v = vec![0u8; sections + count * 40];
+        v[..2].copy_from_slice(b"MZ");
+        v[0x3c..0x40].copy_from_slice(&(lfanew as u32).to_le_bytes());
+        v[lfanew..lfanew + 4].copy_from_slice(b"PE\0\0");
+        v[lfanew + 4..lfanew + 6].copy_from_slice(&0x14cu16.to_le_bytes());
+        v[lfanew + 6..lfanew + 8].copy_from_slice(&(count as u16).to_le_bytes());
+        v[lfanew + 20..lfanew + 22].copy_from_slice(&224u16.to_le_bytes());
+        let opt = lfanew + 24;
+        v[opt..opt + 2].copy_from_slice(&0x10bu16.to_le_bytes());
+        v[opt + 92..opt + 96].copy_from_slice(&16u32.to_le_bytes());
+        let mut raw_at = v.len().next_multiple_of(0x200) as u32;
+        let rsrc_rva = 0x1000 * (before as u32 + 1);
+        for i in 0..count {
+            let rva = 0x1000 * (i as u32 + 1);
+            let body: Vec<u8> = if i == before {
+                // root -> 16 -> 1 -> language -> data entry -> value
+                let mut d = vec![0u8; 0x60];
+                let dir = |d: &mut Vec<u8>, at: usize, id: u32, to: u32| {
+                    d[at + 14..at + 16].copy_from_slice(&1u16.to_le_bytes());
+                    d[at + 16..at + 20].copy_from_slice(&id.to_le_bytes());
+                    d[at + 20..at + 24].copy_from_slice(&to.to_le_bytes());
+                };
+                dir(&mut d, 0, 16, 0x8000_0018);
+                dir(&mut d, 0x18, 1, 0x8000_0030);
+                dir(&mut d, 0x30, 0x411, 0x48);
+                d[0x48..0x4c].copy_from_slice(&(rsrc_rva + 0x60).to_le_bytes());
+                d[0x4c..0x50].copy_from_slice(&(value.len() as u32).to_le_bytes());
+                d.extend_from_slice(value);
+                d
+            } else {
+                vec![i as u8; 0x80 + 7 * i]
+            };
+            let s = sections + i * 40;
+            v[s + 12..s + 16].copy_from_slice(&rva.to_le_bytes());
+            v[s + 16..s + 20].copy_from_slice(&(body.len() as u32).to_le_bytes());
+            v[s + 20..s + 24].copy_from_slice(&raw_at.to_le_bytes());
+            if i == before {
+                v[opt + 96 + 16..opt + 96 + 20].copy_from_slice(&rva.to_le_bytes());
+                v[opt + 96 + 20..opt + 96 + 24].copy_from_slice(&0x60u32.to_le_bytes());
+            }
+            v.resize(raw_at as usize, 0);
+            v.extend_from_slice(&body);
+            raw_at = v.len().next_multiple_of(0x200) as u32;
+        }
+        v
+    }
+    fn read_of(data: &[u8]) -> impl FnMut(u64, usize) -> Option<Vec<u8>> + '_ {
+        |at, n| {
+            let at = (at as usize).min(data.len());
+            Some(data[at..at.saturating_add(n).min(data.len())].to_vec())
+        }
+    }
+
+    #[test]
+    fn version_read_by_offset_as_from_the_whole_file() {
+        for (lfanew, before, after) in [(0x80, 0, 0), (0x80, 3, 2), (0x1ff0, 1, 1), (0x40, 0, 5)] {
+            let v = pe_with_version(lfanew, before, after, b"version bytes");
+            assert_eq!(file_resource(&v, 16), Some(&b"version bytes"[..]));
+            assert_eq!(file_resource_read(&mut read_of(&v), 16).as_deref(), Some(&b"version bytes"[..]));
+            assert_eq!(file_resource_read(&mut read_of(&v), 3), None);
+        }
+    }
+
+    proptest! {
+        /// Any such file, then damaged at any bytes: what the pieces give is what the whole file
+        /// gives whenever they give something (else the caller reads the whole of a small file),
+        /// and an undamaged one always gives it; no panic either way.
+        #[test]
+        fn pieces_agree_with_the_whole(lfanew in 0x40usize..0x1200, before in 0usize..4, after in 0usize..4, value in prop::collection::vec(any::<u8>(), 0..64), damage in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..6)) {
+            let mut v = pe_with_version(lfanew & !3, before, after, &value);
+            let first = file_resource_read(&mut read_of(&v), 16);
+            prop_assert_eq!(first.as_deref(), Some(&value[..]));
+            for (i, b) in damage {
+                let k = i.index(v.len());
+                v[k] = b;
+            }
+            let whole = file_resource(&v, 16).map(<[u8]>::to_vec);
+            let pieces = file_resource_read(&mut read_of(&v), 16);
+            if pieces.is_some() {
+                prop_assert_eq!(pieces, whole);
+            }
+        }
     }
 }

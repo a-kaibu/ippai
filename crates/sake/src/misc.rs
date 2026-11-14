@@ -1231,12 +1231,8 @@ fn version_resource(path: &str) -> Option<Vec<u8>> {
     let Some(base) = base else {
         // Inspect the file as data: querying an installed runtime's version must
         // neither require it to be loaded nor execute its initialization code.
-        if let Some(host) = crate::files::resolve(&full) {
-            if let Ok(data) = kura::fs::read(&host) {
-                if let Some(version) = crate::pe::file_resource(&data, 16) {
-                    return Some(version.to_vec());
-                }
-            }
+        if let Some(version) = crate::files::resolve(&full).and_then(|host| file_resource_of(&host, 16)) {
+            return Some(version);
         }
         return ours();
     };
@@ -1249,12 +1245,35 @@ fn version_resource(path: &str) -> Option<Vec<u8>> {
     Some(mem::slice(p, n).to_vec())
 }
 
+/// Resource `ty` of the PE file at host path `host`, its headers and resource section read by
+/// offset (`pe::file_resource_read`); the whole file only when that section does not hold it
+/// and the file is small.
+fn file_resource_of(host: &str, ty: u32) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = kura::fs::File::open(host).ok()?;
+    let mut read = |at: u64, n: usize| -> Option<Vec<u8>> {
+        f.seek(SeekFrom::Start(at)).ok()?;
+        let mut v = Vec::new();
+        (&mut f).take(n as u64).read_to_end(&mut v).ok()?;
+        Some(v)
+    };
+    if let Some(v) = crate::pe::file_resource_read(&mut read, ty) {
+        return Some(v);
+    }
+    let len = kura::fs::metadata(host).ok()?.len();
+    if len > 64 << 20 {
+        return None;
+    }
+    let data = read(0, len as usize)?;
+    crate::pe::file_resource(&data, ty).map(<[u8]>::to_vec)
+}
+
 /// A file's VS_FIXEDFILEINFO version (MS, LS) and its Translation languages (msi's
 /// signatures).
 pub(crate) fn file_version(path: &str) -> Option<(u32, u32, Vec<u16>)> {
     let host = crate::files::resolve(&crate::files::full_path(path))?;
-    let data = kura::fs::read(&host).ok()?;
-    let v = crate::pe::file_resource(&data, 16)?;
+    let v = file_resource_of(&host, 16)?;
+    let v = &v[..];
     let at = v.windows(4).position(|w| w == [0xbd, 0x04, 0xef, 0xfe])?;
     let d = |k: usize| v.get(at + k..at + k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
     let (ms, ls) = (d(8)?, d(12)?);
@@ -1263,7 +1282,8 @@ pub(crate) fn file_version(path: &str) -> Option<(u32, u32, Vec<u16>)> {
     if let Some(k) = v.windows(key.len()).position(|w| w == key.as_slice()) {
         // (the key, its NUL, padding to 4: then LANGID/codepage pairs; wValueLength before)
         let start = (k + key.len() + 2 + 3) & !3;
-        let len = u16::from_le_bytes([v[k - 4], v[k - 3]]) as usize;
+        // (a key at the very start of the block has no header before it: no languages)
+        let len = k.checked_sub(4).map_or(0, |h| u16::from_le_bytes([v[h], v[h + 1]]) as usize);
         for c in v.get(start..start + len).unwrap_or(&[]).chunks_exact(4) {
             langs.push(u16::from_le_bytes([c[0], c[1]]));
         }
@@ -1972,6 +1992,7 @@ fn CoMarshalInterface(c: &mut Ctx) -> u32 {
     let out = mem::heap_alloc(16, true);
     let hr = crate::d3dx9::com_call(c, unk, 0, &[iid, out]);
     if hr != 0 {
+        mem::heap_free(out);
         return hr;
     }
     let p = mem::rp(out);
@@ -1983,6 +2004,8 @@ fn CoMarshalInterface(c: &mut Ctx) -> u32 {
     if hr != 0 {
         crate::d3dx9::com_call(c, p, 2, &[]);
     }
+    // (the stream has its copy: the block went with every call before)
+    mem::heap_free(out);
     hr
 }
 /// The interface pointer CoMarshalInterface wrote to `stm` (it holds a reference), or an error
@@ -1992,11 +2015,13 @@ fn read_marshaled(c: &mut Ctx, stm: u32) -> Result<u32, u32> {
     }
     let buf = mem::heap_alloc(16, true);
     let hr = crate::d3dx9::com_call(c, stm, 3, &[buf, 12, buf + 12]);
-    if hr != 0 || mem::r32(buf + 12) != 12 || mem::r32(buf) != MARSHAL_TAG {
+    let (got, tag, p) = (mem::r32(buf + 12), mem::r32(buf), mem::r32(buf + 4));
+    mem::heap_free(buf);
+    if hr != 0 || got != 12 || tag != MARSHAL_TAG {
         // (STG_E_READFAULT)
         return Err(if hr != 0 { hr } else { 0x8003_001e });
     }
-    Ok(mem::r32(buf + 4))
+    Ok(p)
 }
 /// CoUnmarshalInterface(stream, riid, void**)
 fn CoUnmarshalInterface(c: &mut Ctx) -> u32 {
@@ -2413,7 +2438,9 @@ fn DoDragDrop(c: &mut Ctx) -> u32 {
                     accepted = r32(ef) & allowed;
                 }
                 method(c, src, 4, &[Arg::P(accepted)]);
-                std::thread::sleep(Duration::from_millis(10));
+                // (a save state taken meanwhile parks this thread here, as at any wait)
+                kura::snap::sleep(Duration::from_millis(10));
+                crate::snap::point();
             }
             DRAGDROP_S_DROP => {
                 let mut effect = 0;
@@ -2448,10 +2475,30 @@ fn DoDragDrop(c: &mut Ctx) -> u32 {
 }
 
 pub(crate) fn bstr_alloc(chars: &[u16]) -> u32 {
-    let p = mem::heap_alloc(4 + 2 * chars.len() as u32 + 2, true);
-    w32(p, 2 * chars.len() as u32);
+    let Some(p) = bstr_block(chars.len() as u64 * 2) else { return 0 };
     for (i, &c) in chars.iter().enumerate() {
         w16(p + 4 + 2 * i as u32, c);
+    }
+    p + 4
+}
+/// A BSTR's block for `bytes` bytes of text (its length word set, zeroed): its address, or None
+/// past what a BSTR holds (0x7fffffff bytes less its header) or the heap gives.
+fn bstr_block(bytes: u64) -> Option<u32> {
+    if bytes > 0x7fff_fff0 - 6 {
+        return None;
+    }
+    let p = mem::heap_alloc(bytes as u32 + 6, true);
+    if p == 0 {
+        return None;
+    }
+    w32(p, bytes as u32);
+    Some(p)
+}
+/// A BSTR of `units` UTF-16 units copied from guest `src` (0: zeros): SysAllocStringLen.
+fn bstr_from_guest(src: u32, units: u32) -> u32 {
+    let Some(p) = bstr_block(units as u64 * 2) else { return 0 };
+    if src != 0 {
+        mem::copy(p + 4, src, 2 * units);
     }
     p + 4
 }
@@ -2484,13 +2531,11 @@ fn SysAllocString(c: &mut Ctx) -> u32 {
 }
 fn SysAllocStringLen(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
-    let v: Vec<u16> = if p == 0 { vec![0; n as usize] } else { (0..n).map(|i| r16(p + 2 * i)).collect() };
-    bstr_alloc(&v)
+    bstr_from_guest(p, n)
 }
 fn SysAllocStringByteLen(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
-    let b = mem::heap_alloc(4 + n + 2, true);
-    w32(b, n);
+    let Some(b) = bstr_block(n as u64) else { return 0 };
     if p != 0 {
         mem::copy(b + 4, p, n);
     }
@@ -2505,8 +2550,10 @@ fn SysReAllocString(c: &mut Ctx) -> u32 {
 }
 fn SysReAllocStringLen(c: &mut Ctx) -> u32 {
     let (pb, s, n) = (c.a(0), c.a(1), c.a(2));
-    let v: Vec<u16> = if s == 0 { vec![0; n as usize] } else { (0..n).map(|i| r16(s + 2 * i)).collect() };
-    let nb = bstr_alloc(&v);
+    let nb = bstr_from_guest(s, n);
+    if nb == 0 {
+        return 0;
+    }
     bstr_free(r32(pb));
     w32(pb, nb);
     1
@@ -2721,6 +2768,15 @@ fn parse_date(s: &str) -> Option<f64> {
 /// A double as VarBstrFromR8 writes it: 15 significant digits (7 for a float), trailing zeros
 /// dropped, an exponent ("1E+20") past them
 fn real_str(f: f64, digits: usize) -> String {
+    // (not numbers: msvcrt's spellings, which oleaut32's "%.15G" gives; "inf" / "NaN" have no
+    // 'e' for the split below, which panicked)
+    if f.is_infinite() {
+        return if f < 0.0 { "-1.#INF".into() } else { "1.#INF".into() };
+    }
+    if f.is_nan() {
+        return if f.is_sign_negative() { "-1.#IND".into() } else { "1.#QNAN".into() };
+    }
+    let digits = digits.max(1);
     if f == 0.0 {
         return if f.is_sign_negative() { "-0".into() } else { "0".into() };
     }
@@ -2885,7 +2941,11 @@ pub(crate) fn special_folder(csidl: u32) -> Option<&'static str> {
 
 fn folder_path(csidl: u32, create: bool) -> Option<String> {
     let p = special_folder(csidl)?;
-    if create || csidl & 0x8000 != 0 || true {
+    // (made whether asked or not, as the folders of a Windows install are there; one look when
+    // it is there already, not a resolve of each of its parents per call: engines ask for it on
+    // every save path they build)
+    let _ = create;
+    if !crate::files::resolve(p).is_some_and(|h| crate::files::is_dir(&h)) {
         crate::files::make_dirs(p);
     }
     Some(p.to_string())
@@ -3642,13 +3702,25 @@ fn skip_bitmap(c: &mut Ctx, stream: u32, buf: u32) -> bool {
     }
     let bi = buf + 14;
     let (w, h, bpp) = (r32(bi + 4), (r32(bi + 8) as i32).unsigned_abs(), r16(bi + 14) as u32);
-    let pal = if bpp <= 8 { (1u32 << bpp) * 4 } else { 0 };
-    let bits = h * ((w * bpp + 31) / 32) * 4;
-    let rest = pal + bits;
-    let tmp = mem::heap_alloc(rest.max(4), false);
-    let ok = stream_read(c, stream, tmp, rest);
+    let Some(mut rest) = bitmap_rest(w, h, bpp) else { return false };
+    // (read past in pieces: not one block of what the header claims)
+    let tmp = mem::heap_alloc(0x10000, false);
+    let mut ok = true;
+    while ok && rest > 0 {
+        let n = rest.min(0x10000);
+        ok = stream_read(c, stream, tmp, n);
+        rest -= n;
+    }
     mem::heap_free(tmp);
     ok
+}
+/// The palette and pixel bytes after an image list bitmap's headers (w x h at bpp), or None
+/// for one past 256 MB (the u32 products wrapped: a small read, the stream left mid-bitmap).
+fn bitmap_rest(w: u32, h: u32, bpp: u32) -> Option<u32> {
+    let pal = if bpp <= 8 { (1u64 << bpp) * 4 } else { 0 };
+    let row = (w as u64 * bpp as u64).div_ceil(32) * 4;
+    let n = (h as u64).checked_mul(row)?.checked_add(pal)?;
+    (n <= 256 << 20).then_some(n as u32)
 }
 
 fn ImageList_Read(c: &mut Ctx) -> u32 {
@@ -4606,14 +4678,7 @@ fn CryptGenRandom(c: &mut Ctx) -> u32 {
     if let Err(e) = crate::capi::provider(c.a(0)) { return crypto_result(Err(e)); }
     // (the host's random bytes, as RtlGenRandom)
     let (n, p) = (c.a(1), c.a(2));
-    let mut buf = vec![0u8; n as usize];
-    for chunk in buf.chunks_mut(256) {
-        if unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0 {
-            return 0;
-        }
-    }
-    mem::write(p, &buf);
-    1
+    random_into(p, n) as u32
 }
 fn CryptCreateHash(c: &mut Ctx) -> u32 {
     if let Err(e) = crate::capi::provider(c.a(0)) { return crypto_result(Err(e)); }
@@ -4657,15 +4722,16 @@ fn CryptGetHashParam(c: &mut Ctx) -> u32 {
         crate::k32::last_error(87);
         return 0;
     };
-    let (alg, digest): (u32, Vec<u8>) = match &*hs {
-        Hasher::Md5(x) => (0x8003, x.clone().finalize().0.to_vec()),
-        Hasher::Sha1(x) => (0x8004, x.clone().finish().to_vec()),
-        Hasher::Sha256(x) => (0x800c, sha2::Digest::finalize(x.clone()).to_vec()),
+    let (alg, size) = match &*hs {
+        Hasher::Md5(_) => (0x8003u32, 16u32),
+        Hasher::Sha1(_) => (0x8004, 20),
+        Hasher::Sha256(_) => (0x800c, 32),
     };
+    // (the digest only when it is asked for: not for HP_ALGID or HP_HASHSIZE)
     let val: Vec<u8> = match param {
         1 => alg.to_le_bytes().to_vec(),
-        2 => digest,
-        4 => (digest.len() as u32).to_le_bytes().to_vec(),
+        2 => hs.digest().1,
+        4 => size.to_le_bytes().to_vec(),
         _ => return 0,
     };
     if out != 0 {
@@ -4770,10 +4836,16 @@ fn rc4_call(c: &mut Ctx) -> u32 {
         crate::k32::last_error(87);
         return 0;
     };
-    if data != 0 && n != 0 {
-        let mut buf = mem::slice(data, n).to_vec();
-        k.apply(&mut buf);
-        mem::write(data, &buf);
+    // (in pieces: not a copy of the whole buffer out and back)
+    let mut at = 0u32;
+    let mut buf = [0u8; 4096];
+    while data != 0 && at < n {
+        let m = (n - at).min(4096);
+        let piece = &mut buf[..m as usize];
+        piece.copy_from_slice(mem::slice(data.wrapping_add(at), m));
+        k.apply(piece);
+        mem::write(data.wrapping_add(at), piece);
+        at += m;
     }
     if fin {
         k.reset();
@@ -4831,55 +4903,19 @@ fn CryptGetKeyParam(c: &mut Ctx) -> u32 {
     1
 }
 
-/// SHA-1 (no crate for it here; small enough to keep).
+/// SHA-1 (CALG_SHA1) as it goes: the sha1 crate's state, 64 bytes buffered at most (it held
+/// everything hashed and hashed it at the end: a launcher checking a 500 MB archive kept it
+/// twice in sake's heap).
 #[derive(Clone, Default)]
 struct Sha1 {
-    buf: Vec<u8>,
+    h: sha1::Sha1,
 }
 impl Sha1 {
     fn update(&mut self, d: &[u8]) {
-        self.buf.extend_from_slice(d);
+        sha1::Digest::update(&mut self.h, d);
     }
-    fn finish(mut self) -> [u8; 20] {
-        let bits = (self.buf.len() as u64) * 8;
-        self.buf.push(0x80);
-        while self.buf.len() % 64 != 56 {
-            self.buf.push(0);
-        }
-        self.buf.extend_from_slice(&bits.to_be_bytes());
-        let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
-        for chunk in self.buf.chunks(64) {
-            let mut w = [0u32; 80];
-            for i in 0..16 {
-                w[i] = u32::from_be_bytes(chunk[4 * i..4 * i + 4].try_into().unwrap());
-            }
-            for i in 16..80 {
-                w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-            }
-            let [mut a, mut b, mut c, mut d, mut e] = h;
-            for (i, &wi) in w.iter().enumerate() {
-                let (f, k) = match i {
-                    0..=19 => ((b & c) | (!b & d), 0x5A827999),
-                    20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
-                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
-                    _ => (b ^ c ^ d, 0xCA62C1D6),
-                };
-                let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wi);
-                e = d;
-                d = c;
-                c = b.rotate_left(30);
-                b = a;
-                a = t;
-            }
-            for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
-                *x = x.wrapping_add(y);
-            }
-        }
-        let mut out = [0u8; 20];
-        for (i, v) in h.iter().enumerate() {
-            out[4 * i..4 * i + 4].copy_from_slice(&v.to_be_bytes());
-        }
-        out
+    fn finish(self) -> [u8; 20] {
+        sha1::Digest::finalize(self.h).into()
     }
 }
 
@@ -5280,12 +5316,23 @@ fn ProcessIdToSessionId(c: &mut Ctx) -> u32 {
 
 /// ProcessPrng(buf, len): always TRUE (Chromium's base calls it for every random byte).
 fn ProcessPrng(c: &mut Ctx) -> u32 {
-    let mut buf = vec![0u8; c.a(1) as usize];
-    for chunk in buf.chunks_mut(256) {
-        unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
-    }
-    mem::write(c.a(0), &buf);
+    random_into(c.a(0), c.a(1));
     1
+}
+/// The host's random bytes into guest [p, p + n), 256 at a time (not a host buffer of n bytes
+/// first: a guest n up to 4 GB). Whether the host gave them.
+fn random_into(p: u32, n: u32) -> bool {
+    let mut b = [0u8; 256];
+    let mut at = 0u32;
+    while at < n {
+        let k = (n - at).min(256);
+        if unsafe { libc::getentropy(b.as_mut_ptr().cast(), k as usize) } != 0 {
+            return false;
+        }
+        mem::write(p.wrapping_add(at), &b[..k as usize]);
+        at += k;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6029,7 +6076,19 @@ mod safearray {
         }
     }
     fn cells(sa: u32) -> u32 {
-        (0..dims(sa)).map(|i| r32(bounds(sa) + 8 * i)).product()
+        (0..dims(sa)).map(|i| r32(bounds(sa) + 8 * i)).fold(1u32, u32::wrapping_mul)
+    }
+    /// The largest data block a safe array gets (the guest's heap is below 2 GB).
+    const MAX_DATA: u64 = 0x7fff_0000;
+    /// The bytes of `cells` elements of `es` bytes, or None past MAX_DATA (the u32 product
+    /// wrapped: a 65536 x 65536 array of 4-byte cells allocated 1 byte, then was written whole).
+    fn data_size(cells: u64, es: u32) -> Option<u32> {
+        let n = cells.checked_mul(es as u64)?;
+        (n <= MAX_DATA).then_some(n as u32)
+    }
+    /// The cells of the array's bounds, counted without wrapping.
+    fn cells_wide(sa: u32) -> u64 {
+        (0..dims(sa)).map(|i| r32(bounds(sa) + 8 * i) as u64).fold(1u64, |a, b| a.saturating_mul(b))
     }
     fn alloc_desc(vt: u32, n: u32, extra: u32) -> u32 {
         let size = 16 + 4 * mem::ps() + 8 * n.max(1);
@@ -6097,7 +6156,11 @@ mod safearray {
         for d in 1..=n {
             mem::copy(bound(sa, d), sab + 8 * (d - 1), 8);
         }
-        let data = mem::heap_alloc((cells(sa) * es).max(1), true);
+        let data = data_size(cells_wide(sa), es).map_or(0, |n| mem::heap_alloc(n.max(1), true));
+        if data == 0 {
+            mem::heap_free(sa - 16);
+            return 0;
+        }
         mem::wp(data_at(sa), data);
         sa
     }
@@ -6116,7 +6179,11 @@ mod safearray {
         if es == 0 {
             return 0;
         }
-        let sa = alloc_desc(vt, 1, n * es);
+        let Some(bytes) = data_size(n as u64, es).filter(|&b| b < MAX_DATA as u32 - 0x100) else { return 0 };
+        let sa = alloc_desc(vt, 1, bytes);
+        if sa == 16 {
+            return 0;
+        }
         w16(sa + 2, r16(sa + 2) | F_CREATEVECTOR);
         w32(bounds(sa), n);
         w32(bounds(sa) + 4, lb);
@@ -6153,7 +6220,10 @@ mod safearray {
         if sa == 0 {
             return INVALIDARG;
         }
-        let d = mem::heap_alloc((cells(sa) * r32(sa + 4)).max(1), true);
+        let d = data_size(cells_wide(sa), r32(sa + 4)).map_or(0, |n| mem::heap_alloc(n.max(1), true));
+        if d == 0 {
+            return 0x8007_000e;
+        }
         mem::wp(data_at(sa), d);
         0
     }
@@ -6371,12 +6441,17 @@ mod safearray {
         let old_cells = cells(sa);
         let b = bounds(sa);
         let (old_n, new_n) = (r32(b), r32(nb));
-        let new_cells = if old_n == 0 { 0 } else { old_cells / old_n * new_n };
+        let new_cells = if old_n == 0 { 0 } else { (old_cells / old_n) as u64 * new_n as u64 };
+        let Some(new_size) = data_size(new_cells, es) else { return 0x8007_000e };
+        let new_cells = new_cells as u32;
         if new_cells < old_cells {
             free_elems_from(sa, new_cells);
         }
         let old = mem::rp(data_at(sa));
-        let nd = mem::heap_alloc((new_cells * es).max(1), true);
+        let nd = mem::heap_alloc(new_size.max(1), true);
+        if nd == 0 {
+            return 0x8007_000e;
+        }
         if old != 0 {
             mem::copy(nd, old, old_cells.min(new_cells) * es);
             if r16(sa + 2) & F_CREATEVECTOR == 0 {
@@ -7107,6 +7182,189 @@ mod rstr_tests {
                 prop_assert!(next - at[k] == 1 || next - at[k] == 2);
             }
             prop_assert!(at.first().is_none_or(|&f| f == 0));
+        }
+    }
+}
+
+#[cfg(test)]
+mod b08_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+
+    #[test]
+    fn image_list_bitmaps_of_any_size() {
+        assert_eq!(bitmap_rest(16, 16, 32), Some(1024));
+        assert_eq!(bitmap_rest(3, 2, 8), Some(1024 + 8));
+        assert_eq!(bitmap_rest(1, 1, 1), Some(8 + 4));
+        // (65536 x 65536 x 32 bits wrapped to 0 in u32)
+        assert_eq!(bitmap_rest(65536, 65536, 32), None);
+        assert_eq!(bitmap_rest(u32::MAX, 1, 0xffff), None);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn bitmap_rest_is_the_exact_size(w in proptest::prelude::any::<u32>(), h in proptest::prelude::any::<u32>(), bpp in 0u32..0x10000) {
+            let exact = if bpp <= 8 { 4u128 << bpp } else { 0 } + h as u128 * ((w as u128 * bpp as u128 + 31) / 32) * 4;
+            match bitmap_rest(w, h, bpp) {
+                Some(n) => proptest::prop_assert_eq!(n as u128, exact),
+                None => proptest::prop_assert!(exact > 256 << 20),
+            }
+        }
+    }
+
+    #[test]
+    fn bstr_lengths_past_a_bstr_are_null() {
+        let _g = enter();
+        // (n * 2 + 6 wrapped in u32: a 4-byte block, then n UTF-16 units read into a host Vec)
+        for n in [0x8000_0000u32, 0xffff_fffd, u32::MAX, 0x3fff_fffd] {
+            assert_eq!(call(SysAllocStringLen, &[0, n]), 0, "{n:#x}");
+        }
+        assert_eq!(call(SysAllocStringByteLen, &[0, u32::MAX - 2]), 0);
+        let src = bstr_alloc(&[0x41, 0x42, 0x43]);
+        let b = call(SysAllocStringLen, &[src, 2]);
+        assert_eq!((r32(b - 4), r16(b), r16(b + 2), r16(b + 4)), (4, 0x41, 0x42, 0));
+        // a failed SysReAllocStringLen leaves the old string
+        let pb = mem::heap_alloc(4, true);
+        w32(pb, b);
+        assert_eq!(call(SysReAllocStringLen, &[pb, 0, u32::MAX]), 0);
+        assert_eq!(r32(pb), b);
+        assert_eq!(call(SysReAllocStringLen, &[pb, src, 3]), 1);
+        assert_eq!(r32(r32(pb) - 4), 6);
+        bstr_free(r32(pb));
+        bstr_free(src);
+        mem::heap_free(pb);
+    }
+
+    proptest::proptest! {
+        /// Safe arrays of any bounds (counts up to 2^32 - 1 in up to 3 dimensions): either
+        /// refused (NULL) or a data block holding every cell; never one smaller than its
+        /// cells (the u32 product wrapped).
+        #[test]
+        fn safe_array_data_holds_every_cell(dims in proptest::collection::vec(proptest::prop_oneof![0u32..5, 0x8000u32..0x1_0001, proptest::prelude::any::<u32>()], 1..4), vt in proptest::prop_oneof![proptest::strategy::Just(2u32), proptest::strategy::Just(3), proptest::strategy::Just(5), proptest::strategy::Just(12)]) {
+            // (between 64 MB and the limit the test's guest heap may run out before Windows'
+            // would: not what this is about)
+            let cells = dims.iter().fold(1u64, |a, &b| a.saturating_mul(b as u64));
+            proptest::prop_assume!(cells.saturating_mul(16) <= 64 << 20 || cells > 0x7fff_0000);
+            let _g = enter();
+            let sab = mem::heap_alloc(8 * dims.len() as u32, true);
+            for (i, &n) in dims.iter().enumerate() {
+                w32(sab + 8 * i as u32, n);
+            }
+            let sa = call(safearray::SafeArrayCreate, &[vt, dims.len() as u32, sab]);
+            if sa != 0 {
+                let want = cells.saturating_mul(r32(sa + 4) as u64);
+                let data = mem::rp(sa + 12);
+                proptest::prop_assert!(mem::heap_size(data) as u64 >= want.max(1));
+                call(safearray::SafeArrayDestroy, &[sa]);
+            } else {
+                proptest::prop_assert!(cells > 0x7fff_0000 / 16, "a small array refused: {:?}", dims);
+            }
+            mem::heap_free(sab);
+        }
+    }
+
+    #[test]
+    fn reals_that_are_no_numbers_as_strings() {
+        assert_eq!(real_str(f64::INFINITY, 15), "1.#INF");
+        assert_eq!(real_str(f64::NEG_INFINITY, 7), "-1.#INF");
+        assert_eq!(real_str(f64::NAN, 15), "1.#QNAN");
+        assert_eq!(real_str(-f64::NAN, 15), "-1.#IND");
+        assert_eq!(real_str(1e20, 15), "1E+20");
+        assert_eq!(real_str(0.5, 15), "0.5");
+    }
+
+    proptest::proptest! {
+        /// Any double (bits: NaNs of every payload, infinities, subnormals) at any precision:
+        /// no panic, and a finite one reads back within its digits.
+        #[test]
+        fn real_str_of_any_double(bits in proptest::prelude::any::<u64>(), digits in 1usize..18) {
+            let f = f64::from_bits(bits);
+            let t = real_str(f, digits);
+            if f.is_finite() {
+                let back: f64 = t.replace("E+", "e").replace("E-", "e-").parse().unwrap();
+                let tol = f.abs() * 10f64.powi(1 - digits as i32) + f64::MIN_POSITIVE;
+                proptest::prop_assert!((back - f).abs() <= tol, "{} -> {} -> {}", f, t, back);
+            }
+        }
+    }
+
+/// The SHA-1 sake had (everything kept, hashed at the end): the model the streaming one must match.
+#[derive(Clone, Default)]
+struct ModelSha1 {
+    buf: Vec<u8>,
+}
+impl ModelSha1 {
+    fn update(&mut self, d: &[u8]) {
+        self.buf.extend_from_slice(d);
+    }
+    fn finish(mut self) -> [u8; 20] {
+        let bits = (self.buf.len() as u64) * 8;
+        self.buf.push(0x80);
+        while self.buf.len() % 64 != 56 {
+            self.buf.push(0);
+        }
+        self.buf.extend_from_slice(&bits.to_be_bytes());
+        let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+        for chunk in self.buf.chunks(64) {
+            let mut w = [0u32; 80];
+            for i in 0..16 {
+                w[i] = u32::from_be_bytes(chunk[4 * i..4 * i + 4].try_into().unwrap());
+            }
+            for i in 16..80 {
+                w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+            }
+            let [mut a, mut b, mut c, mut d, mut e] = h;
+            for (i, &wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | (!b & d), 0x5A827999),
+                    20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                    _ => (b ^ c ^ d, 0xCA62C1D6),
+                };
+                let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
+            for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
+                *x = x.wrapping_add(y);
+            }
+        }
+        let mut out = [0u8; 20];
+        for (i, v) in h.iter().enumerate() {
+            out[4 * i..4 * i + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        out
+    }
+}
+
+
+    #[test]
+    fn sha1_known_answers() {
+        let one = |d: &[u8]| {
+            let mut h = Sha1::default();
+            h.update(d);
+            h.finish().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        assert_eq!(one(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(one(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(one(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"), "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+    }
+
+    proptest::proptest! {
+        /// Any data in any pieces, with digests taken between (CryptGetHashParam on a clone):
+        /// the streaming SHA-1 answers what the kept-everything one did.
+        #[test]
+        fn sha1_streaming_is_the_model(pieces in proptest::collection::vec(proptest::collection::vec(proptest::prelude::any::<u8>(), 0..200), 0..12)) {
+            let (mut h, mut m) = (Sha1::default(), ModelSha1::default());
+            for p in &pieces {
+                h.update(p);
+                m.update(p);
+                proptest::prop_assert_eq!(h.clone().finish(), m.clone().finish());
+            }
+            proptest::prop_assert_eq!(h.finish(), m.finish());
         }
     }
 }
