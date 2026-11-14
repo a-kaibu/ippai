@@ -2,6 +2,7 @@
  * has; the "-ja" build asks for code page 932 through its manifest), OS version. Informational:
  * known.txt accepts its differences. */
 #include "../probe.h"
+#include <time.h>
 
 int main(void) {
     printf("GetACP %u GetOEMCP %u\n", GetACP(), GetOEMCP());

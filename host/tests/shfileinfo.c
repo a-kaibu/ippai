@@ -10,7 +10,7 @@
 #include <shlobj.h>
 #include <stdio.h>
 
-static const char *self_name;
+static char self_name[MAX_PATH];
 
 static void info(const char *what, const char *path, DWORD attrs, UINT flags) {
     SHFILEINFOA fi;
@@ -26,10 +26,12 @@ static void info(const char *what, const char *path, DWORD attrs, UINT flags) {
 int main(void) {
     char self[MAX_PATH], txt[MAX_PATH], win[MAX_PATH];
     GetModuleFileNameA(NULL, self, sizeof self);
-    self_name = strrchr(self, '\\') + 1;
+    /* (shown without ".exe": Explorer hides the extensions of known types) */
+    strcpy(self_name, strrchr(self, '\\') + 1);
+    if (strrchr(self_name, '.')) *strrchr(self_name, '.') = 0;
     GetWindowsDirectoryA(win, sizeof win);
     GetTempPathA(sizeof txt, txt);
-    strcat(txt, "shfileinfo.txt");
+    strcat(txt, "probe-text.txt");
     HANDLE h = CreateFileA(txt, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     WriteFile(h, "x", 1, &(DWORD){0}, NULL);
     CloseHandle(h);

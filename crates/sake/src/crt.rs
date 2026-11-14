@@ -2944,17 +2944,24 @@ fn _mbsnbcpy_s(c: &mut Ctx) -> u32 {
         let limit = if truncate { capacity - 1 } else { count.min(capacity) };
         let bytes = mem::cstrn(src, limit.saturating_add(1));
         let mut at = 0usize;
+        let mut split = false;
         while at < bytes.len() && at < limit as usize {
             let n = if crate::text::is_lead(bytes[at]) { 2 } else { 1 };
-            if at + n > limit as usize { break; }
+            if at + n > limit as usize {
+                split = n == 2;
+                break;
+            }
             if at + n > bytes.len() { return 42; } // EILSEQ
             at += n;
         }
         let cut = at < bytes.len();
         if !truncate && (at >= capacity as usize || cut && count >= capacity && limit == capacity) { return 34; }
-        // count may stop at a lead byte; the partial character is discarded.
+        // count may stop at a lead byte; the partial character is discarded, and (ucrt's
+        // tcsncpy_s.inl, _RETURN_MBCS_ERROR) the copy answers EILSEQ (Windows,
+        // tests/winref host_mbsecure: not 0)
         mem::write(dst, &bytes[..at]);
         mem::w8(dst + at as u32, 0);
+        if !truncate && split && count < capacity { return 42; }
         if truncate && cut { 80 } else { 0 }
     })();
     errno_of(result);

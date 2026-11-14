@@ -1,6 +1,6 @@
 secure multibyte ASCII: ok
 complete multibyte character: ok
-discard split multibyte character: ok
+split multibyte character: 42, out 00
 secure multibyte overflow: ok
 secure multibyte truncation: ok
 zero count accepts null source: ok

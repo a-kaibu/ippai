@@ -901,12 +901,13 @@ fn V_SetLight(c: &mut Ctx) -> u32 {
     set(c, Ch::Light(c.a(1), l))
 }
 /// What SetLight takes (Wine's d3d tests, as Windows): a point, spot or directional light
-/// (D3DLIGHTTYPE 1..=3), and a point or spot light's constant attenuation not below 0 (a NaN
-/// passes; a directional light's attenuation is not looked at)
+/// (D3DLIGHTTYPE 1..=3), and a spot light's constant attenuation not below 0 (a NaN passes;
+/// Windows takes a point light of attenuation -1, tests/winref d3d7state, and doesn't look at
+/// a directional light's)
 fn light_ok(l: &[u32; 26]) -> bool {
     match l[0] {
-        3 => true,
-        1 | 2 => !(f32::from_bits(l[21]) < 0.),
+        1 | 3 => true,
+        2 => !(f32::from_bits(l[21]) < 0.),
         _ => false,
     }
 }
@@ -3495,10 +3496,11 @@ mod tests {
             l
         };
         assert!(!light_ok(&l(0, 0.)) && !light_ok(&l(4, 0.)) && !light_ok(&l(12345, 0.)));
+        assert!(!light_ok(&l(2, -1.)) && !light_ok(&l(2, f32::NEG_INFINITY)));
         for t in [1, 2] {
-            assert!(!light_ok(&l(t, -1.)) && !light_ok(&l(t, f32::NEG_INFINITY)));
             assert!(light_ok(&l(t, 0.)) && light_ok(&l(t, 1.)) && light_ok(&l(t, f32::INFINITY)) && light_ok(&l(t, f32::NAN)));
         }
+        assert!(light_ok(&l(1, -1.)), "Windows takes a point light of attenuation -1");
         assert!(light_ok(&l(3, -1.)), "a directional light's attenuation is not looked at");
         // enabling a light never set makes the default one: white, along +z
         let mut d = Dev::new(0, 0);

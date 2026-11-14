@@ -653,6 +653,12 @@ const HEADER_NAMES: [&str; 70] = [
     "if-range", "if-unmodified-since", "max-forwards", "proxy-authorization", "range",
     "transfer-encoding", "upgrade", "vary", "via", "warning", "expect", "proxy-connection",
 ];
+/// Whether HttpQueryInfo's lpdwIndex counts on after a value of this HTTP_QUERY_*: a header
+/// (a name of HEADER_NAMES or HTTP_QUERY_CUSTOM) does; the version (18), status code and text
+/// (19, 20), raw headers (21, 22) and request method (45) don't
+fn advances_index(kind: u32) -> bool {
+    !matches!(kind, 18..=22 | 45)
+}
 fn query(c: &mut Ctx, wide: bool) -> u32 {
     let (id, info, out, len, index) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     if len == 0 {
@@ -665,9 +671,11 @@ fn query(c: &mut Ctx, wide: bool) -> u32 {
     // HTTP_QUERY_FLAG_REQUEST_HEADERS: the request's own headers, as this side sends them
     // (before it is sent too); the response's only once there is one
     let request_side = info & 0x8000_0000 != 0;
+    // (before a response: the status code is "0", as on Windows (tests/winref
+    // host_wininetquery) and in Wine, whose request starts with status_code 0)
     let response = match r.response.clone() {
         Some(v) => v,
-        None if request_side => Response::default(),
+        None if request_side || kind == 19 => Response::default(),
         None => return fail(12019),
     };
     let fields: Vec<(String, String)> = if request_side {
@@ -728,7 +736,9 @@ fn query(c: &mut Ctx, wide: bool) -> u32 {
     } else {
         output(value, out, len, wide)
     };
-    if result != 0 && index != 0 {
+    // (only a header lookup moves the index on: Windows leaves it at 0 after
+    // HTTP_QUERY_REQUEST_METHOD, and the status, version and raw header queries have one value)
+    if result != 0 && index != 0 && advances_index(kind) {
         w32(index, (at + 1) as u32)
     }
     result
@@ -838,4 +848,28 @@ pub fn init() {
         InternetSetStatusCallbackA,
         InternetSetStatusCallbackW
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Windows (tests/winref/golden/host_wininetquery-32): REQUEST_METHOD answered "next 0",
+    // the headers "next 1"
+    #[test]
+    fn only_header_lookups_move_the_index() {
+        assert!(!advances_index(45));
+        for k in [18, 19, 20, 21, 22] {
+            assert!(!advances_index(k), "{k}");
+        }
+        for k in [1, 23, 24, 28, 33, 35, 39, 43, 65535] {
+            assert!(advances_index(k), "{k}");
+        }
+        // every named header counts on
+        for (k, n) in HEADER_NAMES.iter().enumerate() {
+            if !n.is_empty() {
+                assert!(advances_index(k as u32), "{n}");
+            }
+        }
+    }
 }

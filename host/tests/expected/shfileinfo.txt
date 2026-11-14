@@ -1,9 +1,9 @@
 windows folder: ok "windows" folder 1 filesystem 1
-text file: ok "shfileinfo.txt" folder 0 filesystem 1
+text file: ok "probe-text" folder 0 filesystem 1
 program: ok "<self>" folder 0 filesystem 1
 missing: 0
-missing, file attributes: ok "none.bmp" folder 0 filesystem 1
-missing folder, file attributes: ok "Folder" folder 1 filesystem 1
+missing, file attributes: ok "none" folder 0 filesystem 0
+missing folder, file attributes: ok "Folder" folder 0 filesystem 0
 system image list: 1, same for both 1
 exe type, GUI: 1
 exe type, text: 0

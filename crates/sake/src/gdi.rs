@@ -2299,15 +2299,23 @@ fn bitmap_from_file(data: &[u8], section: bool) -> Option<u32> {
         if !section {
             return Some(ddb_of(&info, bits));
         }
+        // (a top-down file comes back a bottom-up section: Windows reports its height
+        // positive, tests/winref loadimage "32 top-down section")
         let own = mem::alloc(size.max(4))?;
-        mem::copy(own, bits, size);
+        if info.top_down {
+            for y in 0..info.h as u32 {
+                mem::copy(own + (info.h as u32 - 1 - y) * info.stride, bits + y * info.stride, info.stride);
+            }
+        } else {
+            mem::copy(own, bits, size);
+        }
         Some(add(G::Bitmap(Bitmap {
             w: info.w,
             h: info.h,
             bpp: info.bpp,
             bits: own,
             stride: info.stride,
-            bottom_up: !info.top_down,
+            bottom_up: true,
             pal: info.pal,
             r565: info.r565,
             dib: true,
@@ -2318,10 +2326,17 @@ fn bitmap_from_file(data: &[u8], section: bool) -> Option<u32> {
     made
 }
 
-/// A screen-compatible bitmap (32 bits, or 1 for a monochrome DIB) holding a DIB's pixels.
+/// Whether a DIB loads as a monochrome bitmap: 1 bit with black then white as its colours
+/// (Windows, tests/winref loadimage: a 1-bit file of other colours comes back a 32-bit
+/// screen-compatible bitmap with those colours; Wine's is_dib_monochrome)
+fn dib_monochrome(info: &DibInfo) -> bool {
+    info.bpp == 1 && info.pal.len() >= 2 && info.pal[0] & 0xffffff == 0 && info.pal[1] & 0xffffff == 0xffffff
+}
+
+/// A screen-compatible bitmap (32 bits, or 1 for a black and white DIB) holding a DIB's pixels.
 fn ddb_of(info: &DibInfo, bits: u32) -> u32 {
     let src = dib_view(info, bits);
-    let bpp = if info.bpp == 1 { 1 } else { 32 };
+    let bpp = if dib_monochrome(info) { 1 } else { 32 };
     let b = new_bitmap_raw(info.w, info.h, bpp, 0);
     let dst = View::of(&b);
     for y in 0..info.h {
@@ -5150,6 +5165,37 @@ mod memdc_caps_tests {
             call(DeleteDC, &[dc]);
             call(DeleteObject, &[mono]);
             call(DeleteObject, &[color]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    fn info(bpp: u16, pal: Vec<u32>) -> DibInfo {
+        DibInfo { w: 9, h: 2, bpp, compression: 0, stride: 4, pal, r565: false, top_down: false }
+    }
+
+    // Windows (tests/winref/golden/loadimage-32 "1 ddb"): mono.bmp, 1 bit of 28e146 / 00ff00,
+    // loads as a 32-bit bitmap with those colours
+    #[test]
+    fn only_a_black_and_white_dib_loads_monochrome() {
+        assert!(dib_monochrome(&info(1, vec![0, 0xffffff])));
+        assert!(!dib_monochrome(&info(1, vec![0x28e146, 0x00ff00])));
+        assert!(!dib_monochrome(&info(1, vec![0xffffff, 0])));
+        assert!(!dib_monochrome(&info(1, vec![0])));
+        assert!(!dib_monochrome(&info(4, vec![0, 0xffffff])));
+        assert!(!dib_monochrome(&info(8, vec![0, 0xffffff])));
+    }
+
+    proptest::proptest! {
+        // any colour table but black, white is not monochrome
+        #[test]
+        fn monochrome_needs_exactly_black_then_white(a in 0u32..0x1000000, b in 0u32..0x1000000, more in proptest::collection::vec(0u32..0x1000000, 0..3)) {
+            let mut pal = vec![a, b];
+            pal.extend(more);
+            proptest::prop_assert_eq!(dib_monochrome(&info(1, pal)), a == 0 && b == 0xffffff);
         }
     }
 }

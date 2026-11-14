@@ -8,16 +8,11 @@
 gdipfont-32	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
 gdipfont-64	https://github.com/a-kaibu/ippai/issues/108	IPA substitute fonts and Japanese locale differ from the Windows runner.
 host_browsefolder-32	https://github.com/a-kaibu/ippai/issues/108	Headless folder selection and callback ordering differ from the Windows dialog.
-host_listbox-32	https://github.com/a-kaibu/ippai/issues/105	Selection, owner-draw deletion and notification semantics differ.
-host_shfileinfo-32	https://github.com/a-kaibu/ippai/issues/105	Shell display names, attributes and IsOS results differ.
-host_wininetquery-32	https://github.com/a-kaibu/ippai/issues/105	Header enumeration and the host test's pre-send status assertion differ.
-loadimage-32	https://github.com/a-kaibu/ippai/issues/105	Monochrome DDB conversion and top-down DIB height reporting differ.
-loadimage-64	https://github.com/a-kaibu/ippai/issues/105	Monochrome DDB conversion and top-down DIB height reporting differ.
 rgnshape-32	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
 rgnshape-64	https://github.com/a-kaibu/ippai/issues/55	Ellipse and round-rectangle region scan conversion differs.
 versions-32	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
 versions-64	https://github.com/a-kaibu/ippai/issues/105	Remaining composite version comparisons and SSPI table entries differ.
-d3d7state-32	https://github.com/a-kaibu/ippai/issues/105	Legacy lighting validation, depth formats and fog rasterization differ.
+d3d7state-32	https://github.com/a-kaibu/ippai/issues/105	The 24-bit depth buffer the runner refuses, and fog and far-plane rasterization differ.
 d3d9rtfmt-32	https://github.com/a-kaibu/ippai/issues/53	Packed and floating-point render-target format conversion differs.
 replay_d3d9rtfmt-32-32	https://github.com/a-kaibu/ippai/issues/53	The same render-target format differences reproduced through apitrace.
 mfreader-32	https://github.com/a-kaibu/ippai/issues/85	The browser audio decoder does not yet produce the reference PCM stream.

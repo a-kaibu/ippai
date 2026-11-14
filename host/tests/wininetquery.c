@@ -32,11 +32,11 @@ int main(void) {
     query(r, HTTP_QUERY_CUSTOM, "X-Absent");
     query(r, HTTP_QUERY_LOCATION, NULL);
     query(r, HTTP_QUERY_AUTHORIZATION, NULL);
-    /* (no response yet) */
-    char out[64]; DWORD n = sizeof out;
+    /* (no response yet: Windows answers a status code all the same) */
+    char out[64] = ""; DWORD n = sizeof out;
     SetLastError(0);
-    CHECK(!HttpQueryInfoA(r, HTTP_QUERY_STATUS_CODE, out, &n, NULL));
-    printf("status before send: error %lu\n", GetLastError());
+    BOOL st = HttpQueryInfoA(r, HTTP_QUERY_STATUS_CODE, out, &n, NULL);
+    printf("status before send: %d [%s] error %lu\n", st, st ? out : "", GetLastError());
     printf("indices: %d %d %d %d %d %d\n", HTTP_QUERY_RAW_HEADERS, HTTP_QUERY_CONNECTION, HTTP_QUERY_AUTHORIZATION,
         HTTP_QUERY_LOCATION, HTTP_QUERY_USER_AGENT, HTTP_QUERY_SET_COOKIE);
     InternetCloseHandle(r); InternetCloseHandle(c); InternetCloseHandle(s);

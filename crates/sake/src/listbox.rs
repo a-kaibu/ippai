@@ -41,7 +41,7 @@ struct List {
     redraw: bool,
     locale: u32,
     measured: bool,
-    /// a button went down on an item (LBN_SELCHANGE again when it comes up or focus goes)
+    /// a button went down on an item (LBN_SELCHANGE when it comes up or focus goes)
     captured: bool,
 }
 
@@ -244,10 +244,30 @@ fn changed(h: u32) {
     }
 }
 
-/// WM_DELETEITEM for an owner-drawn item or one with data: DELETEITEMSTRUCT { CtlType,
-/// CtlID, itemID, hwndItem, itemData }
-fn delete_item(c: &mut Ctx, h: u32, index: usize, data: u32) {
-    if !owner_drawn(style(h)) && data == 0 {
+/// Why an item goes, for WM_DELETEITEM: Windows (tests/winref host_listbox) tells the parent
+/// of every LB_DELETESTRING, even of a plain item without data; LB_RESETCONTENT of a list that
+/// isn't owner-drawn tells nothing, even of an item with data; destroying the list tells of
+/// owner-drawn items and items with data
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Gone {
+    Deleted,
+    Reset,
+    Destroyed,
+}
+
+/// Whether the parent hears WM_DELETEITEM for an item that goes this way
+fn tells_delete(gone: Gone, owner_drawn: bool, data: u32) -> bool {
+    match gone {
+        Gone::Deleted => true,
+        Gone::Reset => owner_drawn,
+        Gone::Destroyed => owner_drawn || data != 0,
+    }
+}
+
+/// WM_DELETEITEM (see tells_delete): DELETEITEMSTRUCT { CtlType, CtlID, itemID, hwndItem,
+/// itemData }
+fn delete_item(c: &mut Ctx, h: u32, index: usize, data: u32, gone: Gone) {
+    if !tells_delete(gone, owner_drawn(style(h)), data) {
         return;
     }
     let (id, parent) = id_parent(h);
@@ -309,8 +329,9 @@ fn insert_at(l: &List, st: u32, at: Option<usize>, t: &[u16]) -> usize {
 }
 
 /// Selects by the user (a click or a key): the item becomes the caret (and, alone, the
-/// selection); LBN_SELCHANGE when the selection changed
-fn user_select(c: &mut Ctx, h: u32, i: i32, shift: bool, ctrl: bool, toggle: bool) {
+/// selection); for a key LBN_SELCHANGE when the selection changed (a click tells once, when
+/// the button comes up: Windows sends one LBN_SELCHANGE per click, changed or not)
+fn user_select(c: &mut Ctx, h: u32, i: i32, shift: bool, ctrl: bool, toggle: bool, click: bool) {
     let st = style(h);
     if st & LBS_NOSEL != 0 {
         return;
@@ -356,7 +377,7 @@ fn user_select(c: &mut Ctx, h: u32, i: i32, shift: bool, ctrl: bool, toggle: boo
         old_sel != l.sel || before.iter().zip(&l.items).any(|(b, it)| *b != it.sel)
     });
     invalidate(h, None, true);
-    if moved {
+    if moved && !click {
         notify(c, h, 1);
     }
 }
@@ -499,7 +520,7 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             }) else {
                 return LB_ERR;
             };
-            delete_item(c, h, wp as usize, item.data);
+            delete_item(c, h, wp as usize, item.data, Gone::Deleted);
             changed(h);
             list(h, |l| l.items.len() as u32)
         }
@@ -515,7 +536,7 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             });
             // (the last first)
             for (i, it) in items.iter().enumerate().rev() {
-                delete_item(c, h, i, it.data);
+                delete_item(c, h, i, it.data, Gone::Reset);
             }
             changed(h);
             0
@@ -550,8 +571,12 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             }
             let ch = client(h).1;
             let r = list(h, |l| {
-                if wp as i32 == -1 || wp as usize >= l.items.len() {
+                // (-1 clears; past the end answers LB_ERR and keeps the selection, as Windows)
+                if wp as i32 == -1 {
                     l.sel = -1;
+                    return LB_ERR;
+                }
+                if wp as usize >= l.items.len() {
                     return LB_ERR;
                 }
                 l.sel = wp as i32;
@@ -834,7 +859,7 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
                 }
                 list(h, |l| l.captured = true);
                 gcall(c, "user32", "SetCapture", &[h]);
-                user_select(c, h, i, wp & 4 != 0, wp & 8 != 0, true);
+                user_select(c, h, i, wp & 4 != 0, wp & 8 != 0, true, true);
             }
             0
         }
@@ -868,7 +893,7 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
                 0x24 => 0,
                 0x23 => n - 1,
                 0x20 if st & LBS_MULTIPLESEL != 0 => {
-                    user_select(c, h, cur.max(0), false, false, true);
+                    user_select(c, h, cur.max(0), false, false, true, false);
                     return 0;
                 }
                 _ => return 0,
@@ -880,7 +905,7 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
                 });
                 invalidate(h, None, true);
             } else {
-                user_select(c, h, to, shift, ctrl, false);
+                user_select(c, h, to, shift, ctrl, false, false);
             }
             0
         }
@@ -922,7 +947,7 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             let items = list(h, |l| std::mem::take(&mut l.items));
             // (the last first)
             for (i, it) in items.iter().enumerate().rev() {
-                delete_item(c, h, i, it.data);
+                delete_item(c, h, i, it.data, Gone::Destroyed);
             }
             LISTS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
             def_proc(c, wide)
@@ -941,6 +966,20 @@ mod tests {
         assert_eq!(text_height(false, 0), 13);
         assert_eq!(text_height(true, 0), 13);
         assert_eq!(text_height(false, 16), 13);
+    }
+
+    // Windows' answers (tests/winref/golden/host_listbox-32): LB_DELETESTRING of a plain item
+    // without data sent WM_DELETEITEM; LB_RESETCONTENT of a plain list with an item of data 42
+    // sent none; destroying an owner-drawn list sent one per item
+    #[test]
+    fn delete_item_is_told_as_windows_tells_it() {
+        for od in [false, true] {
+            for data in [0, 1, 42, u32::MAX] {
+                assert!(tells_delete(Gone::Deleted, od, data));
+                assert_eq!(tells_delete(Gone::Reset, od, data), od, "reset od {od} data {data}");
+                assert_eq!(tells_delete(Gone::Destroyed, od, data), od || data != 0);
+            }
+        }
     }
 
     proptest::proptest! {

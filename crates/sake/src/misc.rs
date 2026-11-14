@@ -2712,6 +2712,23 @@ static SYS_IMAGELIST: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 /// SHGetFileInfoA/W(path, attrs, &info, size, flags): a file's or folder's display name,
 /// type name, attributes, icon and system image list index (SHGFI_USEFILEATTRIBUTES: from
 /// `attrs`, the file need not exist); SHGFI_EXETYPE: a PE's kind; SHGFI_PIDL is not taken.
+/// Extensions of the file types a fresh Windows registers (HKCR\.ext): Explorer's default
+/// "hide extensions for known file types" leaves them out of display names
+const KNOWN_TYPES: &[&str] = &[
+    "exe", "dll", "com", "bat", "cmd", "sys", "drv", "cpl", "scr", "ocx", "msi", "inf", "ini", "txt", "log", "xml", "htm", "html", "rtf", "hlp", "chm", "bmp", "dib", "jpg", "jpeg",
+    "png", "gif", "ico", "cur", "tif", "tiff", "wav", "mp3", "mid", "midi", "wma", "avi", "mpg", "mpeg", "wmv", "mp4", "zip", "cab", "ttf", "otf", "fon", "lnk", "url",
+];
+
+/// SHGetFileInfo's display name of a file or folder: the name, less the extension of a known
+/// type (Windows: "shfileinfo.txt" -> "shfileinfo", "none.bmp" -> "none"; a folder keeps its
+/// dots)
+fn display_name(base: &str, dir: bool) -> String {
+    match base.rsplit_once('.') {
+        Some((stem, ext)) if !dir && !stem.is_empty() && KNOWN_TYPES.contains(&ext.to_ascii_lowercase().as_str()) => stem.to_string(),
+        _ => base.to_string(),
+    }
+}
+
 fn sh_get_file_info(c: &mut Ctx, wide: bool) -> u32 {
     let (path, attrs, info, size, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     const ICON: u32 = 0x100;
@@ -2776,13 +2793,20 @@ fn sh_get_file_info(c: &mut Ctx, wide: bool) -> u32 {
         }
         if flags & ATTRIBUTES != 0 {
             // SFGAO_FILESYSTEM | CANCOPY | CANMOVE | CANRENAME | CANDELETE | HASPROPSHEET, and
-            // a folder's FOLDER | FILESYSANCESTOR | HASSUBFOLDER | STORAGE...
-            let a = if dir { 0xf080_0177u32 } else { 0x4040_0177 };
+            // a folder's FOLDER | FILESYSANCESTOR | HASSUBFOLDER | STORAGE... (nothing for a
+            // name taken with SHGFI_USEFILEATTRIBUTES: Windows answers no attributes then)
+            let a = if flags & USEFILEATTRIBUTES != 0 {
+                0
+            } else if dir {
+                0xf080_0177u32
+            } else {
+                0x4040_0177
+            };
             w32(info + ps + 4, a);
         }
         let name_at = info + ps + 8;
         if flags & DISPLAYNAME != 0 {
-            let shown = if drive { format!("Local Disk ({})", trimmed.to_ascii_uppercase()) } else { base.clone() };
+            let shown = if drive { format!("Local Disk ({})", trimmed.to_ascii_uppercase()) } else { display_name(&base, dir) };
             ret_str(name_at, 260, &shown, wide);
         }
         if flags & TYPENAME != 0 {
@@ -4892,7 +4916,29 @@ mod file_title_tests {
 
 #[cfg(test)]
 mod tests {
+    // Windows' display names (tests/winref/golden/host_shfileinfo-32)
+    #[test]
+    fn display_names_hide_known_extensions() {
+        assert_eq!(super::display_name("shfileinfo.txt", false), "shfileinfo");
+        assert_eq!(super::display_name("host_shfileinfo-32.exe", false), "host_shfileinfo-32");
+        assert_eq!(super::display_name("none.bmp", false), "none");
+        assert_eq!(super::display_name("Folder", true), "Folder");
+        assert_eq!(super::display_name("a.txt", true), "a.txt");
+        assert_eq!(super::display_name("data.xp3", false), "data.xp3");
+        assert_eq!(super::display_name(".txt", false), ".txt");
+        assert_eq!(super::display_name("Setup.EXE", false), "Setup");
+    }
+
     proptest::proptest! {
+        /// a display name is the name or the name less one known extension, never anything else
+        #[test]
+        fn a_display_name_is_a_prefix_of_the_name(stem in "[a-zA-Z0-9 _.-]{0,12}", ext in "(txt|exe|xp3|Bmp|dat|)", dir: bool) {
+            let base = if ext.is_empty() { stem.clone() } else { format!("{stem}.{ext}") };
+            let d = super::display_name(&base, dir);
+            proptest::prop_assert!(base.starts_with(&d));
+            proptest::prop_assert!(d == base || (!dir && base.len() == d.len() + 1 + base.rsplit_once('.').unwrap().1.len()));
+        }
+
         /// DllGetVersion: only cbSize 20 and 32 are answered, every dword written lies inside
         /// cbSize past cbSize itself, and DLLVERSIONINFO2's ullVersion carries the same
         /// major.minor.build (16-bit fields, QFE 0).
