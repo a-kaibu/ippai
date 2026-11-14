@@ -127,6 +127,28 @@ pub struct Buffer {
     pub cgen: u64,
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct IndexRange {
+    pub key: (u32, u64, u32, u32),
+    pub lo: u32,
+    pub n: u32,
+    pub ffff: bool,
+}
+
+/// The lowest index of `n` at `iptr` (`isize` bytes each), how many vertices from it to the
+/// highest, and whether one is 0xffff (16-bit).
+pub(crate) unsafe fn scan_indices(iptr: u32, isize: u32, n: u32) -> (u32, u32, bool) {
+    let (mut lo, mut hi, mut ffff) = (u32::MAX, 0, false);
+    for k in 0..n {
+        let v = if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 };
+        lo = lo.min(v);
+        hi = hi.max(v);
+        ffff |= isize == 2 && v == 0xffff;
+    }
+    // (0 to 0xffffffff is 2^32 vertices: u32::MAX, cut to the buffers below)
+    (lo.min(hi), hi.saturating_sub(lo.min(hi)).saturating_add(1), ffff)
+}
+
 /// A buffer whose page copy a draw may read (`Buffer::gpu`): not dynamic (the game writes those
 /// every frame, often past what it locks); MASU_NORESIDENT=1: none.
 fn resident(b: &Buffer) -> bool {
@@ -330,6 +352,10 @@ pub struct Device {
     /// the `pal_gen` and bound textures refresh_p8 last looked at: the same again, nothing to
     /// look for (it walked every sampler slot with lookups on every draw)
     pub p8_seen: Option<(u64, [u32; SAMPLERS])>,
+    /// indexed draws from resident index buffers: the range of vertices their indices name and
+    /// whether a 16-bit one is 0xffff, by (buffer, its `gen`, start, count), so that a static
+    /// mesh's indices are not scanned on every draw (direct-mapped)
+    pub ranges: Box<[std::cell::Cell<IndexRange>; 64]>,
     /// Counts the calls that may change what a draw prepares from the device's state (its
     /// layout, shaders, pipeline: `Prep`) and the calls that may change its uniform blocks;
     /// `stale` says which (#118).
@@ -1192,6 +1218,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         cur_palette: 0,
         pal_gen: 0,
         p8_seen: None,
+        ranges: Box::new(std::array::from_fn(|_| Default::default())),
         prep_gen: 0,
         uni_gen: 0,
         prep: None,
@@ -4046,16 +4073,7 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     // where the vertices come from: (stream, data pointer of the first used vertex, stride, count)
     // (the vertices the indices name: Direct3D's hardware path reads BaseVertexIndex + index
     // whatever MinVertexIndex and NumVertices say, and games pass those wrong)
-    let range = |iptr: u32, isize: u32| -> (u32, u32) {
-        let (mut lo, mut hi) = (u32::MAX, 0);
-        for k in 0..nverts {
-            let v = if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 };
-            lo = lo.min(v);
-            hi = hi.max(v);
-        }
-        // (0 to 0xffffffff is 2^32 vertices: u32::MAX, cut to the buffers below)
-        (lo.min(hi), hi.saturating_sub(lo.min(hi)).saturating_add(1))
-    };
+    let mut ffff = false;
     let (first, count, index): (u32, u32, Option<(u32, u32, u32)>) = match &src {
         Src::Streams(start) => (*start, nverts, None),
         Src::Indexed { base, start, .. } => {
@@ -4065,7 +4083,19 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
             if (*start as u64 + nverts as u64) * isize as u64 > ib.len as u64 {
                 return D3DERR_INVALIDCALL;
             }
-            let (lo, n) = range(iptr, isize);
+            // (a resident buffer changes only through its locks, `gen`: see page_buffer)
+            let key = (st.indices, ib.gen, *start, nverts);
+            let cache = resident(ib) && !ib.locked;
+            let slot = (st.indices ^ start.wrapping_mul(31) ^ nverts.wrapping_mul(131)) as usize & 63;
+            let (lo, n, f) = match dev.ranges[slot].get() {
+                r if cache && r.key == key => (r.lo, r.n, r.ffff),
+                _ => scan_indices(iptr, isize, nverts),
+            };
+            if cache {
+                let (lo, n, ffff) = (lo, n, f);
+                dev.ranges[slot].set(IndexRange { key, lo, n, ffff });
+            }
+            ffff = f;
             let first = *base as i64 + lo as i64;
             if !(0..=u32::MAX as i64).contains(&first) {
                 return D3DERR_INVALIDCALL;
@@ -4074,7 +4104,8 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
         }
         Src::Up { .. } => (0, nverts, None),
         Src::UpIndexed { idx, isize, .. } => {
-            let (lo, n) = range(*idx, *isize);
+            let (lo, n, f) = scan_indices(*idx, *isize, nverts);
+            ffff = f;
             (lo, n, Some((*idx, *isize, lo)))
         }
     };
@@ -4095,7 +4126,7 @@ unsafe fn draw_one(d: &mut D3d, prim: u32, src: Src, prims: u32) -> u32 {
     let topo = PRIM_TOPOLOGY[prim as usize];
     // (WebGPU restarts an indexed strip at an index of all ones, Direct3D 9 never does: 16-bit
     // strips with a 0xffff go out as 32-bit indices)
-    let widen = matches!(index, Some((iptr, 2, _)) if (topo == 2 || topo == 4) && (0..nverts).any(|k| *((iptr + 2 * k) as *const u16) == 0xffff));
+    let widen = matches!(index, Some((_, 2, _)) if (topo == 2 || topo == 4) && ffff);
     // What the draw prepares from the state (#118): the last draw's, when no call since may have
     // changed it (`stale`) and this draw is of the same kind
     let mut more_fmts = [u32::MAX; 3];
