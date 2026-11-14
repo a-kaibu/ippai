@@ -101,7 +101,7 @@ sw.addEventListener("fetch", (e) => {
   if (PASS.test(path.replace(/^apps\/[0-9a-f]{16}\//, "")) || path === "sw.js") return;
   const done = (p: Promise<unknown>) => e.waitUntil(p.catch(() => undefined));
   if (req.method === "HEAD") e.respondWith(head(req, done));
-  else if (url.searchParams.has("v") || path.startsWith("assets/")) e.respondWith(kept(req, path));
+  else if (url.searchParams.has("v") || path.startsWith("assets/")) e.respondWith(kept(req, path, done));
   else if (path.startsWith("store/games/")) e.respondWith(stale(req, done));
   else e.respondWith(fresh(req, req.mode === "navigate", done));
 });
@@ -146,19 +146,22 @@ async function keep(k: string, r: Response): Promise<void> {
   await c.put(k, r);
   const u = new URL(k);
   if (!u.searchParams.has("v")) return;
-  for (const old of await c.keys()) {
+  // (the same path's entries only: the whole cache was listed for every versioned put)
+  for (const old of await c.keys(k, { ignoreSearch: true })) {
     const o = new URL(old.url);
     if (o.pathname === u.pathname && o.href !== u.href && o.searchParams.has("v")) await c.delete(old);
   }
 }
 
-/** Never changes: the copy, else the network (then kept). */
-async function kept(req: Request, path: string): Promise<Response> {
+/** Never changes: the copy, else the network (then kept). The page gets the response as it
+ * comes and the copy is written behind (done: the worker kept alive for it): sake.wasm (23 MB)
+ * and the JIT parts came only once wholly downloaded and written, and streaming compile was lost. */
+async function kept(req: Request, path: string, done: (p: Promise<unknown>) => void): Promise<Response> {
   const hit = await caches.match(req.url, { cacheName: CACHE });
   if (hit) return hit;
   try {
     const r = await network(req);
-    await keep(req.url, r.clone()).catch(() => undefined);
+    done(keep(req.url, r.clone()));
     return r;
   } catch (e) {
     // sake.js?v=...: pthread workers of a page that started before an update ask the old one
@@ -176,8 +179,8 @@ async function fresh(req: Request, page: boolean, done: (p: Promise<unknown>) =>
   const copy = async () =>
     (await caches.match(k, { cacheName: CACHE })) ??
     (page ? await caches.match(at("index.html"), { cacheName: CACHE }) : undefined);
-  const got = network(req).then(async (r) => {
-    await keep(k, r.clone()).catch(() => undefined);
+  const got = network(req).then((r) => {
+    done(keep(k, r.clone()));
     return r;
   });
   done(got);
@@ -196,8 +199,8 @@ async function fresh(req: Request, page: boolean, done: (p: Promise<unknown>) =>
 
 /** The copy at once, refreshed from the network behind (covers). */
 async function stale(req: Request, done: (p: Promise<unknown>) => void): Promise<Response> {
-  const got = network(req).then(async (r) => {
-    await keep(req.url, r.clone()).catch(() => undefined);
+  const got = network(req).then((r) => {
+    done(keep(req.url, r.clone()));
     return r;
   });
   done(got);

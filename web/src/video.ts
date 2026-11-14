@@ -176,25 +176,45 @@ export class Video {
         this.gate.run(() => this.fail(s));
         return;
       }
-      t.dec = new VideoDecoder({
-        output: (f) => {
-          const n = Math.round(f.timestamp / 1000);
-          if (n < s.want || t.out.has(n)) f.close();
-          else t.out.set(n, f);
-          // (held while a state is taken: copied after)
-          this.gate.run(() => this.copyReady(s), s.held.copy);
-        },
-        error: (e) => {
-          this.note(`video ${s.id}: ${String(e)}`);
-          this.gate.run(() => this.fail(s));
-        },
-      });
       t.config = config;
+      t.dec = this.decoder(s, t);
       t.dec.configure(config);
       this.note(`video ${s.id}: ${t.codec} ${s.w}x${s.h}`);
     }
     void ptr;
     this.gate.run(() => s.want >= 0 && this.serve(s, s.want), s.held.serve);
+  }
+
+  private decoder(s: Stream, t: Track): VideoDecoder {
+    const dec: VideoDecoder = new VideoDecoder({
+      output: (f) => {
+        const n = Math.round(f.timestamp / 1000);
+        if (t.dec !== dec || n < s.want || t.out.has(n)) f.close();
+        else t.out.set(n, f);
+        // (held while a state is taken: copied after)
+        this.gate.run(() => this.copyReady(s), s.held.copy);
+      },
+      error: (e) => {
+        if (t.dec !== dec) return;
+        this.note(`video ${s.id}: ${String(e)}`);
+        // (a hardware decoder that could not be made or broke (Android has few): once more in
+        // software, from the key frame the guest wants; before, the movie was skipped)
+        if (t.config && t.config.hardwareAcceleration !== "prefer-software" && this.streams.get(s.id) === s) {
+          this.note(`video ${s.id}: again in software`);
+          t.config = { ...t.config, hardwareAcceleration: "prefer-software" };
+          for (const f of t.out.values()) f.close();
+          t.out.clear();
+          t.dec = this.decoder(s, t);
+          t.dec.configure(t.config);
+          // (fed again from the key frame: serve starts the decoder over)
+          t.from = Number.MAX_SAFE_INTEGER;
+          this.gate.run(() => s.want >= 0 && this.serve(s, s.want), s.held.serve);
+          return;
+        }
+        this.gate.run(() => this.fail(s));
+      },
+    });
+    return dec;
   }
 
   /** Frame n of track t, or null while the guest has not read its bytes yet. */
@@ -305,6 +325,15 @@ export class Video {
       this.note(`video ${s.id}: copy of frame ${n}: ${String(e)}`);
       ok = 0;
     }
+    // (the guest closed the stream while the copy ran: not told of a frame of a stream gone)
+    if (this.streams.get(s.id) !== s || s.broken) {
+      s.copying.delete(n);
+      for (const [t, f] of fs.entries()) {
+        f.close();
+        s.tracks[t]?.out.delete(n);
+      }
+      return;
+    }
     new Uint32Array(this.wasm.wasmMemory.buffer, this.layoutBuf, 14).set(layout);
     this.wasm._vnhost_video_ready(s.id, buf, this.layoutBuf, ok);
     s.copying.delete(n);
@@ -321,6 +350,9 @@ export class Video {
   private fail(s: Stream): void {
     s.broken = true;
     this.wasm._vnhost_video_fail(s.id);
+    // (its decoded frames and decoders let go now, not when the guest closes the stream: the
+    // frame pool and GPU memory were held meanwhile)
+    this.close(s);
   }
 
   private close(s: Stream): void {

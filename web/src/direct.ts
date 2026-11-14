@@ -63,7 +63,29 @@ interface Snapz {
 
 let snapz: Promise<Snapz> | undefined;
 
-/** sake's snapz (sake/snapz.mjs): a chunk is 16 MiB at most (4x FastCDC's 4 MiB average), 64 MiB tried once more. */
+/** A zstd frame's content size from its header (RFC 8878 3.1.1.1), null when it does not say
+ * (or `frame` is not one). */
+export function zstdContentSize(frame: Uint8Array): number | null {
+  if (frame.length < 6 || frame[0] !== 0x28 || frame[1] !== 0xb5 || frame[2] !== 0x2f || frame[3] !== 0xfd)
+    return null;
+  const fhd = frame[4]!;
+  const single = (fhd >> 5) & 1;
+  const fcs = [single, 2, 4, 8][fhd >> 6]!;
+  if (!fcs) return null;
+  let at = 5 + (single ? 0 : 1) + [0, 1, 2, 4][fhd & 3]!;
+  if (at + fcs > frame.length) return null;
+  let v = 0;
+  for (let i = fcs - 1; i >= 0; i--) v = v * 256 + frame[at + i]!;
+  at += fcs;
+  return fcs === 2 ? v + 256 : v;
+}
+
+/** The largest chunk a frame may decode to here (FastCDC's 64 MiB at most). */
+const UNZSTD_MAX = 64 << 20;
+
+/** sake's snapz (sake/snapz.mjs): the destination as large as the frame says (else 16 MiB, then
+ * 64 MiB once more: each try's 16 or 64 MiB grew snapz's memory for good, and with no _free each
+ * decode leaked them). */
 export const snapzUnzstd: Unzstd = async (frame) => {
   snapz ??= import(/* @vite-ignore */ `${sakeBase()}snapz.mjs`).then((m: { default: () => Promise<Snapz> }) =>
     m.default(),
@@ -72,7 +94,10 @@ export const snapzUnzstd: Unzstd = async (frame) => {
     snapz = undefined;
     throw e;
   });
-  for (const cap of [16 << 20, 64 << 20]) {
+  if (!z._free) throw new Error("zstd: this snapz cannot free");
+  const said = zstdContentSize(frame);
+  if (said !== null && said > UNZSTD_MAX) throw new Error(`zstd: a frame of ${said} bytes`);
+  for (const cap of said !== null ? [Math.max(1, said)] : [16 << 20, UNZSTD_MAX]) {
     const src = z._malloc(frame.length) >>> 0;
     const dst = z._malloc(cap) >>> 0;
     try {
@@ -90,19 +115,33 @@ export const snapzUnzstd: Unzstd = async (frame) => {
 
 const hexBytes = (h: string) => Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
 
+// (the keys imported once each: a game's objects share one key, imported again per chunk before)
+const keys = new Map<string, Promise<CryptoKey>>();
+const KEYS_MAX = 64;
+function keyOf(hex: string): Promise<CryptoKey> {
+  let k = keys.get(hex);
+  if (!k) {
+    if (keys.size >= KEYS_MAX) keys.delete(keys.keys().next().value!);
+    k = crypto.subtle.importKey("raw", hexBytes(hex), "AES-GCM", false, ["decrypt"]);
+    keys.set(hex, k);
+    k.catch(() => keys.delete(hex));
+  }
+  return k;
+}
+
 /** Object `cipher` (nonce, ciphertext and tag) opened with `info`'s key. */
 export async function openSealed(info: DirectInfo, cipher: Uint8Array): Promise<Uint8Array> {
   if (cipher.length < 28) throw new Error("short");
-  const key = await crypto.subtle.importKey("raw", hexBytes(info.key), "AES-GCM", false, ["decrypt"]);
+  // (views of the object, not copies of it)
   const plain = await crypto.subtle.decrypt(
     {
       name: "AES-GCM",
-      iv: cipher.slice(0, 12),
+      iv: cipher.subarray(0, 12) as Uint8Array<ArrayBuffer>,
       additionalData: hexBytes(info.object.replace(/-/g, "")),
       tagLength: 128,
     },
-    key,
-    cipher.slice(12),
+    await keyOf(info.key),
+    cipher.subarray(12) as Uint8Array<ArrayBuffer>,
   );
   return new Uint8Array(plain);
 }
@@ -146,6 +185,12 @@ export function directFetcher(
   span(hexes: string[], from: number): number;
   /** `hexes` (of one pack, as span gave them) with one ranged GET: those that came, checked. */
   getRun(hexes: string[], retry?: RetryOptions): Promise<Map<string, Uint8Array<ArrayBuffer>>>;
+  /** (get's work with what is known of `hex`: EXPIRED for a URL the bucket refused) */
+  getWith(
+    hex: string,
+    info: unknown,
+    retry?: RetryOptions,
+  ): Promise<Uint8Array<ArrayBuffer> | null | typeof EXPIRED>;
   off(): boolean;
 } {
   const request = opt.request ?? ((i, n) => fetch(i, n));
@@ -215,6 +260,9 @@ export function directFetcher(
       const infos = all.filter(([, i]) => i.pack.id === pack.id);
       const from = Math.min(...infos.map(([, i]) => i.pack.offset));
       const to = Math.max(...infos.map(([, i]) => i.pack.offset + i.pack.len));
+      // (what the server said is used once: kept for a whole save it held tens of MB of URLs,
+      // and a presigned URL kept past its life answered 403 for a whole window)
+      for (const [h] of infos) known.delete(h);
       let bytes: Uint8Array;
       try {
         bytes = await fetchRetry(
@@ -242,7 +290,21 @@ export function directFetcher(
       retry.signal?.throwIfAborted();
       if (off) return null;
       let info: unknown = known.get(hex);
+      // (used once: see getRun)
+      known.delete(hex);
       if (info === null) return null;
+      for (let asked = 0; ; asked++) {
+        const got = await this.getWith(hex, info, retry);
+        // (a URL primed earlier that expired since: asked for again once)
+        if (got !== EXPIRED || asked || info === undefined) return got === EXPIRED ? null : got;
+        info = undefined;
+      }
+    },
+    async getWith(
+      hex: string,
+      info: unknown,
+      retry: RetryOptions = {},
+    ): Promise<Uint8Array<ArrayBuffer> | null | typeof EXPIRED> {
       if (info === undefined)
         try {
           const signal = retry.signal
@@ -276,7 +338,8 @@ export function directFetcher(
           );
         } catch (e) {
           if (retry.signal?.aborted) throw e;
-          // (an expired URL and the like: the server)
+          // (an expired URL: asked for again; others: the server)
+          if (e instanceof HttpError && (e.status === 401 || e.status === 403)) return EXPIRED;
           if (e instanceof HttpError || bad + 1 >= BAD) return null;
           continue;
         }
@@ -288,6 +351,9 @@ export function directFetcher(
     },
   };
 }
+
+/** What getWith answers for a URL the bucket refused as expired. */
+const EXPIRED = Symbol("expired");
 
 /** Runs at most `n` of the functions given at once. */
 export function limit(n: number): <T>(f: () => Promise<T>) => Promise<T> {

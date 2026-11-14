@@ -1,4 +1,4 @@
-import { expect, test } from "vite-plus/test";
+import { expect, test, vi } from "vite-plus/test";
 import {
   nextPairs,
   readsLine,
@@ -6,8 +6,12 @@ import {
   warmAllowed,
   warmBusyWidth,
   warmList,
+  warmMax,
   WARM_BUSY_WIDTH,
+  WARM_MAX,
+  WARM_SILENT_MS,
   WARM_WIDTH,
+  type Warm,
   type WarmReport,
 } from "./warm";
 import { gameChunksName, traceName } from "./runtime";
@@ -206,4 +210,65 @@ test("a run's trace goes by the game and the run's start, as ippai serve takes i
   expect(traceName("saga_planets-2", 36 ** 3)).toBe("trace.game.saga_planets-2.1000");
   for (const id of ["x", "日本語", "../x"])
     expect(traceName(id, Date.now())).toMatch(/^trace\.game\.[A-Za-z0-9_.-]+$/);
+});
+
+test("warmMax: under what trim keeps on the device, WARM_MAX at most (property)", () => {
+  let x = 41;
+  const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+  for (let run = 0; run < 2000; run++) {
+    const quota = rnd(4) ? rnd(64) * 2 ** 28 + rnd(2 ** 20) : [0, undefined, -1][rnd(3)];
+    const m = warmMax(quota as number | undefined);
+    expect(m).toBeLessThanOrEqual(WARM_MAX);
+    if (quota && quota > 0) expect(m).toBeLessThanOrEqual(Math.min(2 * 1024 ** 3, quota * 0.5));
+    else expect(m).toBe(WARM_MAX);
+  }
+});
+
+test("startWarm stops looking at the game once the warm has been silent long, or the module throws", () => {
+  vi.useFakeTimers();
+  try {
+    let t = 0;
+    let looks = 0;
+    let report: ((r: WarmReport) => void) | undefined;
+    const warm: Warm = (_u, _f, _w, r) => void (report = r);
+    startWarm(
+      warm,
+      "https://s/store/",
+      new Map([["00".repeat(16), 10]]),
+      () => (looks++, false),
+      () => {},
+      [],
+      2,
+      undefined,
+      WARM_MAX,
+      () => t,
+    );
+    vi.advanceTimersByTime(500);
+    expect(looks).toBe(10);
+    // (reports keep it going)
+    t += WARM_SILENT_MS - 1;
+    report!({ done: 1, fetched: 1, bytes: 10, failed: 0 });
+    t += WARM_SILENT_MS - 1;
+    vi.advanceTimersByTime(500);
+    expect(looks).toBe(20);
+    t += 2;
+    vi.advanceTimersByTime(5000);
+    expect(looks).toBe(20);
+    // (a module that throws: stopped too)
+    let n = 0;
+    startWarm(
+      warm,
+      "https://s/store/",
+      new Map(),
+      () => {
+        n++;
+        throw new Error("gone");
+      },
+      () => {},
+    );
+    vi.advanceTimersByTime(1000);
+    expect(n).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });

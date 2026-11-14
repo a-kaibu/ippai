@@ -94,8 +94,10 @@ export async function sakeWasmBytes(
     `${name}: ${(bytes.length / 2 ** 20).toFixed(1)} MiB from the bucket in ${((Date.now() - t0) / 1000).toFixed(1)} s`,
   );
   // (as every checked chunk is kept: marked so, it goes to OPFS, not the old Cache Storage)
-  if (device) void keepChunk(device, key, new Uint8Array(bytes));
-  return { bytes: new Uint8Array(bytes), from: "bucket" };
+  // (one copy only: the fetcher's array is this one's, the store reads it before it returns)
+  const own = new Uint8Array(bytes);
+  if (device) void keepChunk(device, key, own);
+  return { bytes: own, from: "bucket" };
 }
 
 /** The chunk `hex` that /sake-direct's `info` says how to fetch, opened and checked (direct.ts). */
@@ -128,6 +130,9 @@ async function bucketChunk(
 export async function wasmModuleArg(
   got: Promise<{ bytes: Uint8Array<ArrayBuffer> | null; from: WasmFrom }>,
   note: (line: string) => void = () => {},
+  // (an instance that cannot be made: out of memory on a phone, imports that do not match;
+  // emscripten's factory then never settles, so the page is told here)
+  failed: (e: unknown) => void = () => {},
 ): Promise<{
   instantiateWasm?: (
     imports: WebAssembly.Imports,
@@ -146,7 +151,13 @@ export async function wasmModuleArg(
   }
   return {
     instantiateWasm(imports, done) {
-      void WebAssembly.instantiate(module, imports).then((instance) => done(instance, module));
+      WebAssembly.instantiate(module, imports).then(
+        (instance) => done(instance, module),
+        (e: unknown) => {
+          note(`sake wasm did not start: ${String(e)}`);
+          failed(e);
+        },
+      );
       // (emscripten: an empty object while it instantiates asynchronously)
       return {};
     },

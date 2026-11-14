@@ -8,6 +8,7 @@ import {
   openSealed,
   PACK_RUN_BYTES,
   PACK_RUN_MAX,
+  zstdContentSize,
 } from "./direct";
 import { byOrder, roomFor } from "./offline";
 
@@ -281,9 +282,11 @@ describe("directFetcher.prime", () => {
     const n = w.asked.length;
     for (const h of hexes.slice(0, 20)) expect(await d.get(h)).toEqual(w.objs.get(h)!.data);
     expect(w.asked.slice(n).every((u) => u.startsWith("https://bucket.test/"))).toBe(true);
-    // (asked again: nothing new)
+    // (asked again: only the 20 used, each answer used once; the 580 others are still known)
     await d.prime(hexes);
-    expect(w.asked.filter((u) => u.endsWith("/store-direct")).length).toBe(2);
+    expect(w.asked.filter((u) => u.endsWith("/store-direct")).length).toBe(3);
+    await d.prime(hexes.slice(100));
+    expect(w.asked.filter((u) => u.endsWith("/store-direct")).length).toBe(3);
   });
 
   it("a chunk the answer leaves out is only on the server: null, without asking alone", async () => {
@@ -387,8 +390,10 @@ describe("delivery packs", () => {
     const got = await d.getRun(names);
     expect(w.ranges).toEqual([`bytes=0-${w.at.get(names[9]!)!.offset + w.at.get(names[9]!)!.len - 1}`]);
     for (const n of names) expect(got.get(n)).toEqual(w.objs.get(n)!.data);
-    // (one from the middle on, and with those already here left out: from the first to the last asked)
+    // (one from the middle on, and with those already here left out: from the first to the last
+    // asked; each answer is used once, so asked for again first)
     w.ranges.length = 0;
+    await d.prime(names);
     expect(d.span(names, 4)).toBe(6);
     const some = [names[5]!, names[8]!];
     const part = await d.getRun(some);
@@ -478,6 +483,7 @@ describe("delivery packs", () => {
     expect([...got.keys()]).toEqual([names[2], names[4]]);
     // (one pack a GET: the first one's)
     w.ranges.length = 0;
+    await d.prime(names);
     expect([...(await d.getRun(names.slice(4, 8))).keys()]).toEqual([names[4], names[5]]);
     expect(w.ranges).toEqual([`bytes=${w.at.get(names[4]!)!.offset}-${end - 1}`]);
   });
@@ -581,5 +587,57 @@ describe("the page's share of the fixes of the 2026-11-14 review", () => {
       expect(now).toBe(0);
       expect(peak).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("zstdContentSize", () => {
+  // (frames made by a real zstd: node's zlib, at every size class of the header's field and with
+  // a pledged size or none; then the parse against the bytes it says)
+  it("reads what a real zstd writes (differential, seeded)", async () => {
+    // (a name the type checker does not resolve: node's own module, no @types/node here)
+    const zlib = (await import(/* @vite-ignore */ ["node", "zlib"].join(":"))) as {
+      zstdCompressSync(b: Uint8Array): Uint8Array;
+      zstdDecompressSync(b: Uint8Array): Uint8Array;
+    };
+    let x = 37;
+    const rnd = (n: number) => ((x = (Math.imul(x, 1103515245) + 12345) >>> 0) >>> 8) % n;
+    for (const n of [0, 1, 255, 256, 257, 65535, 65791, 65792, 1 << 20, 3 << 20]) {
+      const data = new Uint8Array(n);
+      for (let i = 0; i < n; i += 1 + rnd(64)) data[i] = rnd(256);
+      const f = new Uint8Array(zlib.zstdCompressSync(data));
+      expect(zstdContentSize(f), `${n} bytes`).toBe(n);
+      expect(zlib.zstdDecompressSync(f).length).toBe(n);
+    }
+    // (not a frame, a header cut short: none said)
+    expect(zstdContentSize(new Uint8Array([1, 2, 3, 4, 5, 6]))).toBeNull();
+    expect(zstdContentSize(new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0xc0]))).toBeNull();
+    // (random headers: never a throw, never a negative or fractional size)
+    for (let run = 0; run < 3000; run++) {
+      const h = Uint8Array.from({ length: 4 + rnd(14) }, () => rnd(256));
+      h.set([0x28, 0xb5, 0x2f, 0xfd]);
+      const v = zstdContentSize(h);
+      if (v !== null) expect(Number.isInteger(v) && v >= 0).toBe(true);
+    }
+  });
+});
+
+describe("expired URLs", () => {
+  it("a primed URL the bucket refuses as expired (403) is asked for again once, and the chunk comes", async () => {
+    let refused = 0;
+    const w = world({
+      bucket: () => (refused++ === 0 ? new Response("", { status: 403 }) : undefined),
+    });
+    const hex = await w.add(bytes(700, 11));
+    const d = directFetcher(STORE, { request: w.request, unzstd });
+    await d.prime([hex]);
+    expect(await d.get(hex)).toEqual(w.objs.get(hex)!.data);
+    expect(w.asked.filter((u) => u.includes("/store-direct/chunks/")).length).toBe(1);
+    // (refused for good: null after the one more ask, not a loop)
+    const w2 = world({ bucket: () => new Response("", { status: 403 }) });
+    const h2 = await w2.add(bytes(700, 12));
+    const d2 = directFetcher(STORE, { request: w2.request, unzstd });
+    await d2.prime([h2]);
+    expect(await d2.get(h2)).toBeNull();
+    expect(w2.asked.filter((u) => u.includes("/store-direct/chunks/")).length).toBe(1);
   });
 });

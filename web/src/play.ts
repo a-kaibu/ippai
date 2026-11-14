@@ -64,7 +64,7 @@ import {
 } from "./runtime";
 import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
-import { startWarm, warmAllowed, warmBusyWidth, type Warm } from "./warm";
+import { startWarm, warmAllowed, warmBusyWidth, warmMax, type Warm } from "./warm";
 import { savedChunks } from "./offline";
 import { sakeWasmBytes, wasmModuleArg } from "./wasmsource";
 import { deviceChunks } from "./chunkstore";
@@ -449,7 +449,14 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     ...(build.memory || stateMem ? { wasmMemory: stateMem ?? build.memory } : {}),
     locateFile: (path: string) => (path === WASM ? versioned(`${BASE}${path}`, version) : `${BASE}${path}`),
     // (the bytes from the device or the bucket, compiled once for this process and its children)
-    ...(await wasmModuleArg(wasmBytes, (l) => recorder?.note(l))),
+    ...(await wasmModuleArg(
+      wasmBytes,
+      (l) => recorder?.note(l),
+      (e) => {
+        log(`エラー: ゲームを起動できませんでした（${e instanceof Error ? e.message : String(e)}）`);
+        setUi({ back: leave });
+      },
+    )),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
       IPPAI_MOUNTS: ["/=", "/ippai/prefix=prefix32", ...params.getAll("mount")].join(":"),
@@ -707,7 +714,12 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // the rest of the game's files onto the device while it plays: what earlier runs read first,
   // in that order, then the trees' others; fewer at once while it waits for a read (warm.ts)
   if (sake.ippaiWarm && warmAllowed(conn) && params.get("warm") !== "0")
-    void Promise.all([chunkSizes, listed, edges]).then(([sizes, first, next]) => {
+    void Promise.all([
+      chunkSizes,
+      listed,
+      edges,
+      navigator.storage?.estimate?.().catch(() => undefined) ?? Promise.resolve(undefined),
+    ]).then(([sizes, first, next, est]) => {
       const warm = sake.ippaiWarm!;
       const note = (l: string) => (console.log(l), recorder?.note(l));
       note(
@@ -723,6 +735,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         first,
         busyWidth,
         next,
+        warmMax(est?.quota),
       );
     });
   attachInput(() => activeModule ?? sake);

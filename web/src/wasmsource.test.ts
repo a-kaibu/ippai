@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, test } from "vite-plus/test";
 import { blake3Hex } from "./blake3";
 import { chunkFileName, opfsStore, type ChunkStore } from "./chunkstore";
 import { sakeWasmBytes, wasmModuleArg, type WasmFrom } from "./wasmsource";
@@ -285,4 +285,29 @@ describe("wasmModuleArg", () => {
     ).toEqual({});
     expect(lines[1]).toMatch(/did not compile/);
   });
+});
+
+test("an instance that cannot be made is told (the factory would wait for good otherwise)", async () => {
+  // (a module importing a function "m"."f": given none, instantiate rejects)
+  const bytes = new Uint8Array([
+    0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 2, 7, 1, 1, 0x6d, 1, 0x66, 0, 0,
+  ]);
+  const notes: string[] = [];
+  let failed: unknown = null;
+  const arg = await wasmModuleArg(
+    Promise.resolve({ bytes, from: "device" as const }),
+    (l) => notes.push(l),
+    (e) => (failed = e),
+  );
+  let done = false;
+  arg.instantiateWasm!({}, () => (done = true));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(done).toBe(false);
+  expect(failed).toBeInstanceOf(Error);
+  expect(notes.some((n) => n.includes("did not start"))).toBe(true);
+  // (the imports given: it starts)
+  let started = false;
+  arg.instantiateWasm!({ m: { f: () => {} } }, () => (started = true));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(started).toBe(true);
 });

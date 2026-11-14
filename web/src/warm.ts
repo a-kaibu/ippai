@@ -10,6 +10,17 @@ import { chunkPath } from "./net";
 /** Bytes fetched ahead at most for one run: under the chunk cache's 2 GB (net.ts trimChunks), so
  * what is fetched first does not go again before the game reads it. */
 export const WARM_MAX = 1536 * 2 ** 20;
+/** What to fetch ahead at most on a device whose quota is `quota`: WARM_MAX, and under what
+ * the chunk cache keeps there (net.ts trimChunks: half the quota), a quarter left for what the
+ * game reads itself; a small phone fetched more than trim kept, and evicted its own reads. */
+export function warmMax(quota: number | undefined): number {
+  return quota && quota > 0 ? Math.min(WARM_MAX, Math.floor(quota * 0.5 * 0.75)) : WARM_MAX;
+}
+
+/** How long the warm may go without a report before its busy flag stops being kept (a worker
+ * that died and never said end left a 50 ms timer calling into wasm for the whole session). */
+export const WARM_SILENT_MS = 10 * 60_000;
+
 /** Chunks fetched side by side (the bucket answers each after a while, whatever its size). */
 export const WARM_WIDTH = 6;
 /** Of those, how many go on while the game waits for a read of its own. The bucket takes 1-3 s
@@ -117,20 +128,32 @@ export function startWarm(
   first: string[] = [],
   busyWidth = WARM_BUSY_WIDTH,
   edges: Uint8Array = new Uint8Array(0),
+  max = WARM_MAX,
+  now: () => number = () => performance.now(),
 ): () => void {
-  const list = warmList(sizes, WARM_MAX, first);
+  const list = warmList(sizes, max, first);
   const flag = new SharedArrayBuffer(8);
   const f = new Int32Array(flag);
-  const t = performance.now();
-  const timer = setInterval(() => Atomics.store(f, 0, busy() ? 1 : 0), 50);
+  const t = now();
+  let heard = t;
+  const timer = setInterval(() => {
+    try {
+      if (now() - heard > WARM_SILENT_MS) throw new Error("silent");
+      Atomics.store(f, 0, busy() ? 1 : 0);
+    } catch {
+      // (the module gone, or the warm silent for long: no more looks)
+      clearInterval(timer);
+    }
+  }, 50);
   const mb = (n: number) => (n / 2 ** 20).toFixed(0);
   warm(
     list.map((h) => new URL(chunkPath(h), store).href),
     flag,
     WARM_WIDTH,
     (r) => {
+      heard = now();
       if (r.reads) return log(readsLine(r.reads));
-      const s = ((performance.now() - t) / 1000).toFixed(0);
+      const s = ((now() - t) / 1000).toFixed(0);
       if (r.end || r.done % 128 === 0)
         log(
           `fetched ahead: ${r.done} of ${list.length} chunks looked at, ${r.fetched} fetched (${mb(r.bytes)} MB), ${r.failed} failed, in ${s} s${r.end ? ", done" : ""}`,

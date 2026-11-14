@@ -418,3 +418,168 @@ test("gate: closeWhile opens again whatever f does; a close that timed out leave
   expect((g as unknown as { idle: unknown[] }).idle.length).toBe(0);
   g.leave();
 });
+
+// ---- video.ts: a decoder that breaks, a stream that goes while a copy runs ----
+
+function fakeVideo(onMake: (d: FakeDec) => void) {
+  const g2 = globalThis as unknown as {
+    VideoDecoder?: unknown;
+    EncodedVideoChunk?: unknown;
+    VideoFrame?: unknown;
+  };
+  const old = [g2.VideoDecoder, g2.EncodedVideoChunk];
+  g2.EncodedVideoChunk = class {
+    timestamp: number;
+    constructor(i: { timestamp: number }) {
+      this.timestamp = i.timestamp;
+    }
+  };
+  g2.VideoDecoder = class implements FakeDec {
+    static isConfigSupported = async () => ({ supported: true });
+    state = "unconfigured";
+    decodeQueueSize = 0;
+    configs: { hardwareAcceleration?: string }[] = [];
+    fed: number[] = [];
+    closed = false;
+    init: FakeDec["init"];
+    constructor(init: FakeDec["init"]) {
+      this.init = init;
+      onMake(this);
+    }
+    configure(c: { hardwareAcceleration?: string }) {
+      this.configs.push(c);
+      this.state = "configured";
+    }
+    reset() {
+      this.state = "unconfigured";
+    }
+    decode(c: { timestamp: number }) {
+      this.fed.push(c.timestamp / 1000);
+    }
+    async flush() {}
+    close() {
+      this.closed = true;
+      this.state = "closed";
+    }
+  };
+  return () => {
+    g2.VideoDecoder = old[0];
+    g2.EncodedVideoChunk = old[1];
+  };
+}
+interface FakeDec {
+  configs: { hardwareAcceleration?: string }[];
+  fed: number[];
+  closed: boolean;
+  init: { output: (f: unknown) => void; error: (e: unknown) => void };
+}
+function fakeFrame(n: number, onClose: () => void, copy?: () => Promise<unknown>) {
+  return {
+    timestamp: n * 1000,
+    codedWidth: 16,
+    codedHeight: 16,
+    visibleRect: { x: 0, y: 0, width: 16, height: 16 },
+    format: "I420",
+    allocationSize: () => 16 * 16 * 2,
+    copyTo: copy ?? (async () => [{ offset: 0, stride: 16 }]),
+    close: onClose,
+  };
+}
+
+test("video: a decoder that breaks is made again once in software, fed from the key frame; a second break fails the stream and lets its frames go", async () => {
+  const m = videoModule(6);
+  const decs: FakeDec[] = [];
+  const restore = fakeVideo((d) => decs.push(d));
+  try {
+    const v = new Video(m.wasm, () => {}, new Gate(), false);
+    v.tick();
+    await tick(5);
+    for (let n = 0; n < 3; n++) {
+      m.setWant(n);
+      v.tick();
+      await tick(1);
+    }
+    expect(decs).toHaveLength(1);
+    expect(decs[0]!.fed.slice(0, 3)).toEqual([0, 1, 2]);
+    // a frame waiting in the first decoder's outputs: let go when it breaks
+    let closed = 0;
+    decs[0]!.init.output(
+      fakeFrame(
+        5,
+        () => closed++,
+        () => new Promise(() => {}),
+      ),
+    );
+    decs[0]!.init.error(new Error("hw gone"));
+    await tick(5);
+    expect(decs).toHaveLength(2);
+    expect(decs[1]!.configs.at(-1)?.hardwareAcceleration).toBe("prefer-software");
+    expect(decs[1]!.fed[0]).toBe(2);
+    expect(closed).toBe(1);
+    expect(m.calls).not.toContain("fail");
+    // (the old one's late outputs: dropped, not shown)
+    let late = 0;
+    decs[0]!.init.output(fakeFrame(4, () => late++));
+    expect(late).toBe(1);
+    // a frame held, then the software decoder breaks too: failed, frames and decoder let go
+    let held = 0;
+    decs[1]!.init.output(
+      fakeFrame(
+        5,
+        () => held++,
+        () => new Promise(() => {}),
+      ),
+    );
+    decs[1]!.init.error(new Error("sw gone"));
+    await tick(5);
+    expect(decs).toHaveLength(2);
+    expect(m.calls.filter((c) => c === "fail")).toHaveLength(1);
+    expect(held).toBe(1);
+    expect(decs[1]!.closed).toBe(true);
+    // (a broken stream is not fed again)
+    const fed = decs[1]!.fed.length;
+    m.setWant(4);
+    v.tick();
+    await tick(2);
+    expect(decs[1]!.fed.length).toBe(fed);
+  } finally {
+    restore();
+  }
+});
+
+test("video: a copy that ends after the guest closed the stream tells the guest nothing and lets the frame go", async () => {
+  const m = videoModule(4);
+  const decs: FakeDec[] = [];
+  const restore = fakeVideo((d) => decs.push(d));
+  try {
+    const v = new Video(m.wasm, () => {}, new Gate(), false);
+    v.tick();
+    await tick(5);
+    m.setWant(0);
+    v.tick();
+    await tick(1);
+    let done!: () => void;
+    let closed = 0;
+    decs[0]!.init.output(
+      fakeFrame(
+        0,
+        () => closed++,
+        () => new Promise((r) => (done = () => r([{ offset: 0, stride: 16 }]))),
+      ),
+    );
+    await tick(3);
+    expect(done).toBeDefined();
+    // the guest drops the stream: the list comes back empty
+    const w = m.wasm as { _vnhost_video_list: (out: number, max: number) => number };
+    const list = w._vnhost_video_list.bind(m.wasm);
+    w._vnhost_video_list = () => 0;
+    v.tick();
+    w._vnhost_video_list = list;
+    done();
+    await tick(5);
+    expect(m.calls.some((c) => c.startsWith("ready"))).toBe(false);
+    expect(closed).toBeGreaterThanOrEqual(1);
+  } finally {
+    restore();
+  }
+});
