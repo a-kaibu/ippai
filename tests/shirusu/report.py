@@ -4,9 +4,11 @@ capture (windows/windows-<id>/windows.trace, its meta.txt and winplay's result.j
 lines (sake/<id>/console.log, converted by tools/shirusu), both through shirusu-conformance and
 shirusu-compare; then the differences that recur across titles, by API and kind.
 
-  report.py --tools DIR --convert SAKE_SHIRUSU --windows DIR --sake DIR --out DIR ID...
+  report.py --tools DIR --convert SAKE_SHIRUSU --windows DIR --sake DIR --out DIR [--gate BASELINE] ID...
+  report.py --baseline SUMMARY_JSON > tests/shirusu/probe-baseline.json
 
 Writes OUT/report.md, OUT/summary.json and OUT/<id>/ (sake.trace, compare.json, conformance-*.json).
+--gate: exits 1 when a title went backwards against the baseline (gate()): the probes of a push.
 Standard library only."""
 import argparse, collections, json, os, subprocess, sys
 
@@ -160,19 +162,63 @@ def one(tid, a):
     return r
 
 
+REACH = {'-': -1, 'none': 0, 'title': 1, 'story': 2}
+
+
+def baseline(rows):
+    """what a good run gave per title (the probes' baseline): how far sake got, and its high
+    candidates as kind|api"""
+    return {r['id']: {'sake_reached': r.get('sake_reached', '-'),
+                      'high': sorted({f"{c.get('kind')}|{c.get('api') or '-'}" for c in r.get('candidates', []) if c.get('severity') == 'high'})}
+            for r in rows}
+
+
+def gate(rows, base):
+    """the ways titles went backwards against `base`: sake got less far, or a high candidate
+    (kind, API) it did not have. A title the baseline lacks: only that its play ran at all.
+    A play whose Windows side did not get as far as before says nothing of sake: not held against it."""
+    bad = []
+    now = baseline(rows)
+    for r in rows:
+        tid, b, n = r['id'], base.get(r['id']), now[r['id']]
+        if REACH[n['sake_reached']] < 0:
+            bad.append(f'{tid}: sake has no result')
+            continue
+        if not b:
+            continue
+        if REACH[n['sake_reached']] < REACH.get(b['sake_reached'], -1):
+            bad.append(f"{tid}: sake reached {n['sake_reached']}, before {b['sake_reached']}")
+        if r.get('win_reached', '-') == '-' or r.get('win_conformant') is False:
+            continue
+        new = sorted(set(n['high']) - set(b['high']))
+        if new:
+            bad.append(f"{tid}: new high candidates {' '.join(new)}")
+    return bad
+
+
 def main():
+    if sys.argv[1:2] == ['--baseline']:
+        rows = load(sys.argv[2])['titles']
+        print(json.dumps(baseline(rows), ensure_ascii=False, indent=1, sort_keys=True))
+        return 0
     ap = argparse.ArgumentParser()
     for k in ('tools', 'convert', 'windows', 'sake', 'out'):
         ap.add_argument('--' + k, required=True)
+    ap.add_argument('--gate')
     ap.add_argument('ids', nargs='+')
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rows = [one(t, a) for t in a.ids]
     recurring, sev = summarize(rows)
     json.dump({'titles': rows, 'recurring': recurring, 'severity': sev}, open(os.path.join(a.out, 'summary.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
-    open(os.path.join(a.out, 'report.md'), 'w', encoding='utf-8').write(markdown(rows, recurring, sev))
-    print(markdown(rows, recurring, sev))
+    md = markdown(rows, recurring, sev)
+    bad = gate(rows, load(a.gate) or {}) if a.gate else []
+    if a.gate:
+        md += '\n## Against the probes\' baseline\n\n' + ('\n'.join(f'- {b}' for b in bad) if bad else 'Nothing went backwards.') + '\n'
+    open(os.path.join(a.out, 'report.md'), 'w', encoding='utf-8').write(md)
+    print(md)
+    return 1 if bad else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

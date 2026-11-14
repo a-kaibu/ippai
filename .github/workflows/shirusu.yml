@@ -5,25 +5,45 @@
 # (tools/shirusu/apis.txt); then both Traces through shirusu-conformance and shirusu-compare.
 # The report (artifact shirusu-report) lists per game what each side called and the differences
 # compare found: candidates, not verdicts. Nothing is committed.
-#   plan     the titles; the newest successful CI build of main (sake)
+#   plan     the titles (a push: tests/shirusu/probes.txt; nightly and by hand: games.txt) and
+#            the commit under test (the push's; nightly: main's newest with a good CI build)
 #   prep     downloads and unpacks each trial (tests/corpus-prep.sh), its width (gameapi.py)
 #   windows  on windows-2025: shirusu built at SHIRUSU_REV (cached), Japanese fonts, a sound
 #            card; winplay.py play alone (out/plain), then with LAUNCH = shirusu capture
-#   sake     (after windows: a CI build of this push has had time) the titles on sake in headless Chromium (tests/corpus/ci.sh, SAKE_ENV=SAKE_SHIRUSU=1)
+#   sake     that commit's CI build (tests/shirusu/pick_build.py: its own, or when main's next
+#            push cancelled it the nearest later good build, which has it in), never just the
+#            newest; the titles on sake in headless Chromium (tests/corpus/ci.sh, SAKE_ENV=SAKE_SHIRUSU=1)
 #   compare  tools/shirusu (sake's lines -> Trace), shirusu-conformance, shirusu-compare,
-#            tests/shirusu/report.py
+#            tests/shirusu/report.py; a push's probes fail the run when one went backwards
+#            against tests/shirusu/probe-baseline.json (report.py --gate)
 name: shirusu
 
 on:
+  # (a change to what sake does for the guest: the probes; tests/shirusu/probes.txt)
   push:
     branches: [main]
     paths:
-      - 'tests/shirusu/games.txt'
+      - 'crates/sake/**'
+      - 'crates/koji/**'
+      - 'crates/kura/**'
+      - 'crates/crt/**'
+      - 'tools/shirusu/**'
+      - 'tests/shirusu/**'
       - '.github/workflows/shirusu.yml'
+  # (every title of games.txt, nightly)
+  schedule:
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       only:
-        description: "only these title ids (space-separated; default tests/shirusu/games.txt)"
+        description: "only these title ids (space-separated; default tests/shirusu/games.txt, or probes.txt)"
+        default: ""
+      probes:
+        description: "the probes only (tests/shirusu/probes.txt), gated by probe-baseline.json"
+        type: boolean
+        default: false
+      sha:
+        description: "the commit whose sake is tested (default main's newest with a good CI build)"
         default: ""
       ci_run:
         description: "the CI run whose sake is tested (default the newest successful one of main)"
@@ -33,8 +53,10 @@ permissions:
   contents: read
   actions: read
 
+# (a push's run waits for the one before it: GitHub keeps the newest waiting one, whose commit
+# has the ones in between in it; nightly runs in a group of its own)
 concurrency:
-  group: shirusu
+  group: shirusu-${{ github.event_name == 'push' && 'push' || 'full' }}
   cancel-in-progress: false
 
 env:
@@ -47,17 +69,32 @@ jobs:
     timeout-minutes: 10
     outputs:
       ids: ${{ steps.p.outputs.ids }}
+      probes: ${{ steps.p.outputs.probes }}
+      sha: ${{ steps.p.outputs.sha }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/mirror-trials
       - id: p
         env:
           ONLY: ${{ inputs.only }}
+          PROBES: ${{ github.event_name == 'push' || inputs.probes == true }}
+          SHA_IN: ${{ inputs.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 tests/shirusu/report_test.py
-          ids=${ONLY:-$(sed -e 's/#.*//' tests/shirusu/games.txt | awk 'NF { print $1 }')}
+          python3 tests/shirusu/pick_build_test.py
+          list=tests/shirusu/games.txt; [ "$PROBES" = true ] && list=tests/shirusu/probes.txt
+          ids=${ONLY:-$(sed -e 's/#.*//' "$list" | awk 'NF { print $1 }')}
           echo "ids=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' $ids)" >> "$GITHUB_OUTPUT"
-          echo "titles: $ids"
+          echo "probes=$PROBES" >> "$GITHUB_OUTPUT"
+          # (the commit under test, fixed here for the whole run)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then sha=$GITHUB_SHA
+          elif [ -n "$SHA_IN" ]; then sha=$(git rev-parse "$SHA_IN")
+          else read -r _ sha _ < <(python3 tests/shirusu/pick_build.py --newest); fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "titles: $ids; sake of $sha"
 
   prep:
     needs: plan
@@ -288,21 +325,26 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - run: tools/ci/cache-keys.sh
+      # (the build of the commit plan fixed: waited for while main's CI of it runs)
       - id: build
         env:
           GH_TOKEN: ${{ github.token }}
           CI_RUN: ${{ inputs.ci_run }}
+          WANT: ${{ needs.plan.outputs.sha }}
         run: |
           if [ -n "$CI_RUN" ]; then
-            RUN_ID=$CI_RUN SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" --jq .head_sha)
+            RUN_ID=$CI_RUN SHA=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" --jq .head_sha) HOW=asked
           else
-            read -r RUN_ID SHA < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
-              --limit 1 --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"')
+            read -r RUN_ID SHA HOW < <(python3 tests/shirusu/pick_build.py "$WANT" --wait 240)
           fi
-          echo "sake: CI run $RUN_ID ($SHA)"
+          [ -n "$RUN_ID" ] || exit 1
+          echo "sake: CI run $RUN_ID ($SHA, $HOW for $WANT)" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          mkdir -p results && printf '%s %s %s %s\n' "$WANT" "$SHA" "$HOW" "$RUN_ID" > results/sake-build.txt
       - uses: actions/download-artifact@v8.0.2
         with:
           name: masu
@@ -385,6 +427,7 @@ jobs:
         with:
           name: sake-results
           path: |
+            results/sake-build.txt
             results/**/*.json
             results/**/console.log
             results/**/title.png
@@ -429,10 +472,15 @@ jobs:
       - name: Compare
         env:
           IDS: ${{ join(fromJSON(needs.plan.outputs.ids), ' ') }}
+          PROBES: ${{ needs.plan.outputs.probes }}
         run: |
+          gate=(); [ "$PROBES" = true ] && gate=(--gate tests/shirusu/probe-baseline.json)
+          cat sake/sake-build.txt 2>/dev/null | awk '{ print "sake: the build of " $2 " (" $3 ") for " $1 }' >> "$GITHUB_STEP_SUMMARY"
+          rc=0
           python3 tests/shirusu/report.py --tools ~/shirusu-cli --convert tools/shirusu/target/release/sake-shirusu \
-            --windows windows --sake sake --out report $IDS
+            --windows windows --sake sake --out report "${gate[@]}" $IDS || rc=$?
           cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:

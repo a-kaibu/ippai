@@ -1,0 +1,8 @@
+# The few titles of games.txt that .github/workflows/shirusu.yml plays for a push to main that
+# changes sake (the whole list nightly): engines of different kinds (scripted
+# archives, a compiled VM, Delphi on DirectDraw, RPG Maker on its RTP). Each must be in games.txt. Their last good results are probe-baseline.json.
+b2019_sukerasparo	# BGI/Ethornell
+dl_RJ140334	# KiriKiri2
+b2014_hadashi_3pl	# RealLive
+soushing_t	# Delphi (DirectDraw 7)
+dl_RJ260990	# RGSS3 (VX Ace RTP)

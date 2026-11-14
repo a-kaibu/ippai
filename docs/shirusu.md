@@ -21,6 +21,23 @@ compares a trial game on real Windows with the same game on sake.
   shirusu-conformance on both Traces and shirusu-compare between them
   (`tests/shirusu/report.py`: artifact `shirusu-report`, the run's summary).
 
+## When it runs, and which sake
+
+- **A push to main that changes sake** (crates/sake, koji, kura, crt, tools/shirusu,
+  tests/shirusu): the probes, a few titles of different engines (`tests/shirusu/probes.txt`).
+  The run fails when a probe went backwards against `tests/shirusu/probe-baseline.json`: sake
+  got less far (story, title, none), or compare found a high candidate (kind and API) the
+  baseline does not have. A title the baseline lacks only needs a result. The baseline is
+  updated by hand from a good run: `report.py --baseline summary.json`.
+- **Nightly** (and by hand): every title of `games.txt`, a report without a gate.
+- **The sake tested** is the build of one commit, fixed when the run starts: the push's, or
+  nightly the newest commit of main with a good CI build. `tests/shirusu/pick_build.py` waits
+  for that commit's CI build; when main's next push cancelled it (ci.yml cancels in progress),
+  the nearest later good build stands for it (it has the commit in it), never an older one.
+  The summary says which (`sake-build.txt`: wanted, tested, exact or later, CI run). Before
+  2026-11-14 the sake job took whatever build of main was newest when it ran, and the
+  workflow ran only when games.txt or itself changed.
+
 ## Reading the report
 
 compare's output is candidates, not verdicts: a different number of ReadFile calls can be two
