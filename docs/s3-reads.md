@@ -172,6 +172,10 @@ On worker2 (2026-11-14, 9 games with a list, 392 first reads), reads that waited
 | whole archive up to 64 MiB | 49.0% | 631 MiB |
 | 4x the files (now) | 36.5% | 622 MiB |
 
+These are first reads the hints did not foresee, counted as if a hinted chunk arrived at once:
+a floor for the waits, not the waits themselves (the budget and the bucket's latency are not in
+the replay). They compare policies; how long a game really waited is in the play logs.
+
 So the file counts went up 4x (SIBLING_BYTES keeps the bytes about the same); the chunk counts
 and the whole-archive size stay, since more of them costs far more than it saves. The misses
 left are mostly archives' first chunks, pictures, and start-up .dll/.exe/.sig files, which the
