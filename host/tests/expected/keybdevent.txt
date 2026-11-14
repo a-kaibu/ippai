@@ -1,0 +1,7 @@
+F13 at first: 0
+F13 after keybd_event down: 1
+F13 after keybd_event up: 0
+SendInput F14 down: 1, down 1
+SendInput F14 up: 1, down 0
+absolute move to the middle: 1 1
+relative move right and down: 1 1

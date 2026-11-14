@@ -4345,41 +4345,60 @@ fn SendInput(c: &mut Ctx) -> u32 {
         let e = p + i * size;
         let u = e + k; // the union, pointer-aligned
         match r32(e) {
-            0 => {
-                let (dx, dy, data, flags) = (r32(u) as i32, r32(u + 4) as i32, r32(u + 8), r32(u + 12));
-                if flags & 1 != 0 {
-                    let (cx, cy) = with(|s| s.cursor);
-                    let (x, y) = if flags & 0x8000 != 0 {
-                        // MOUSEEVENTF_ABSOLUTE: 0..65535 over the screen
-                        let (w, h) = screen();
-                        ((dx as i64 * w as i64 / 65536) as i32, (dy as i64 * h as i64 / 65536) as i32)
-                    } else {
-                        (cx + dx, cy + dy)
-                    };
-                    input(1, x, y, 0);
-                }
-                let (x, y) = with(|s| s.cursor);
-                for (bit, kind, b) in [(2, 2, 0), (4, 3, 0), (8, 2, 1), (0x10, 3, 1), (0x20, 2, 2), (0x40, 3, 2)] {
-                    if flags & bit != 0 {
-                        input(kind, x, y, b);
-                    }
-                }
-                if flags & 0x800 != 0 {
-                    input(4, x, y, data & 0xffff);
-                }
-            }
+            0 => mouse_inject(r32(u) as i32, r32(u + 4) as i32, r32(u + 8), r32(u + 12)),
             1 => {
                 let (vk, scan, flags) = (r16(u) as u32, r16(u + 2) as u32, r32(u + 4));
                 if flags & 4 != 0 {
                     continue; // KEYEVENTF_UNICODE: no key
                 }
-                input(if flags & 2 != 0 { 6 } else { 5 }, 0, 0, vk & 0xff | (scan & 0xff) << 16);
+                key_inject(vk, scan, flags);
             }
             _ => {}
         }
     }
     crate::obj::signal();
     n
+}
+/// A mouse event as SendInput's MOUSEINPUT and mouse_event give it: MOUSEEVENTF_MOVE (dx, dy
+/// relative, or with MOUSEEVENTF_ABSOLUTE 0..65535 over the screen), the buttons' down/up
+/// bits, MOUSEEVENTF_WHEEL (data)
+fn mouse_inject(dx: i32, dy: i32, data: u32, flags: u32) {
+    if flags & 1 != 0 {
+        let (cx, cy) = with(|s| s.cursor);
+        let (x, y) = if flags & 0x8000 != 0 {
+            let (w, h) = screen();
+            ((dx as i64 * w as i64 / 65536) as i32, (dy as i64 * h as i64 / 65536) as i32)
+        } else {
+            (cx + dx, cy + dy)
+        };
+        input(1, x, y, 0);
+    }
+    let (x, y) = with(|s| s.cursor);
+    for (bit, kind, b) in [(2, 2, 0), (4, 3, 0), (8, 2, 1), (0x10, 3, 1), (0x20, 2, 2), (0x40, 3, 2)] {
+        if flags & bit != 0 {
+            input(kind, x, y, b);
+        }
+    }
+    if flags & 0x800 != 0 {
+        input(4, x, y, data & 0xffff);
+    }
+}
+/// A key as SendInput's KEYBDINPUT and keybd_event give it (KEYEVENTF_KEYUP 2)
+fn key_inject(vk: u32, scan: u32, flags: u32) {
+    input(if flags & 2 != 0 { 6 } else { 5 }, 0, 0, vk & 0xff | (scan & 0xff) << 16);
+}
+/// keybd_event(vk, scan, flags, extra): SendInput's keyboard event. 催●学級 (ggs) lets go of
+/// every key GetKeyboardState shows down with it after its launcher dialog.
+fn keybd_event(c: &mut Ctx) -> u32 {
+    key_inject(c.a(0) & 0xff, c.a(1) & 0xff, c.a(2));
+    crate::obj::signal();
+    0
+}
+/// mouse_event(flags, dx, dy, data, extra): SendInput's mouse event
+fn mouse_event(c: &mut Ctx) -> u32 {
+    mouse_inject(c.a(1) as i32, c.a(2) as i32, c.a(3), c.a(0));
+    crate::obj::signal();
+    0
 }
 /// Milliseconds for TrackMouseEvent's hover timing.
 fn track_ms() -> u64 {
@@ -7485,7 +7504,7 @@ pub fn init() {
         GetUpdateRect, GetUpdateRgn, BeginPaint, EndPaint, GetDC, GetDCEx, GetWindowDC, ReleaseDC, WindowFromDC,
         ScrollWindow, ScrollWindowEx, LockWindowUpdate, SetFocus, GetFocus, SetActiveWindow, GetActiveWindow,
         GetForegroundWindow, SetForegroundWindow, BringWindowToTop, SetCapture, ReleaseCapture, GetCapture,
-        SendInput, TrackMouseEvent, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
+        SendInput, keybd_event, mouse_event, TrackMouseEvent, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
         GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList, WaitForInputIdle,
         ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA, GetKeyNameTextW,
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxExW, MessageBoxIndirectA, MessageBoxIndirectW,
@@ -7984,6 +8003,27 @@ mod tests {
         key_state(&mut k, &mut p, 0x14, true);
         key_state(&mut k, &mut p, 0x14, false);
         assert_eq!(k[0x14], 0);
+    }
+
+    proptest! {
+        /// 催●学級's way of letting go of the keyboard (keybd_event KEYUP for every key that
+        /// GetKeyboardState shows down, from 0 to 255): whatever was pressed before, no key is
+        /// down afterwards, Shift/Ctrl/Alt and their sides included, and no toggle bit changed.
+        #[test]
+        fn releasing_every_down_key_clears_the_keyboard(presses in proptest::collection::vec((0u32..256, any::<bool>()), 0..40)) {
+            let (mut k, mut p) = ([0u8; 256], [false; 256]);
+            for (vk, down) in presses {
+                key_state(&mut k, &mut p, vk, down);
+            }
+            let toggles: Vec<u8> = k.iter().map(|x| x & 1).collect();
+            for vk in 0..256u32 {
+                if k[vk as usize] & 0x80 != 0 {
+                    key_state(&mut k, &mut p, vk, false);
+                }
+            }
+            prop_assert!(k.iter().all(|x| x & 0x80 == 0), "{:?}", k.iter().enumerate().filter(|x| x.1 & 0x80 != 0).collect::<Vec<_>>());
+            prop_assert_eq!(k.iter().map(|x| x & 1).collect::<Vec<u8>>(), toggles);
+        }
     }
 
     proptest! {
