@@ -39,13 +39,16 @@ enum Source {
     /// read as its frames are wanted (`fill`): the header and tables (what the page parses),
     /// and per track the bytes of a run of its frames (offset in the file, bytes)
     File { file: Arc<Mutex<crate::fs::File>>, head: Vec<u8>, wins: Vec<(u64, Vec<u8>)> },
+    /// handed in frame by frame by the guest (`put`: a container sake reads itself, MP4), by
+    /// frame number; the header made for the page (`open_chunks`)
+    Chunks { head: Vec<u8>, chunks: HashMap<u32, Vec<u8>> },
 }
 
 impl Source {
     fn head(&self) -> &[u8] {
         match self {
             Source::Mem(d) => d,
-            Source::File { head, .. } => head,
+            Source::File { head, .. } | Source::Chunks { head, .. } => head,
         }
     }
     /// Bytes `off..off + size` of the file, when they are here.
@@ -58,6 +61,8 @@ impl Source {
         match self {
             Source::Mem(d) => d.get(at(0, d)?),
             Source::File { wins, .. } => wins.iter().find_map(|(o, b)| Some(&b[at(*o, b)?])),
+            // (a chunk's "offset" in the index is its frame number)
+            Source::Chunks { chunks, .. } => chunks.get(&u32::try_from(off).ok()?).map(|b| &b[..]),
         }
     }
 }
@@ -82,6 +87,9 @@ struct Stream {
     /// frames of uncompressed I420 ("raw-i420", for tests under node): `frame` reads them
     /// itself, no page involved
     raw: bool,
+    /// per frame (decode order) the frame it is in presentation order, where they differ
+    /// (H.264's B frames); None: the same
+    pts: Option<Vec<u32>>,
 }
 
 static STREAMS: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
@@ -152,8 +160,88 @@ fn add(src: Source, i: Info) -> Option<u32> {
         .collect();
     // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
     let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
-    with(|m| m.insert(id, Stream { src, index, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw }));
+    with(|m| m.insert(id, Stream { src, index, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw, pts: None }));
     Some(id)
+}
+
+/// Opens a stream of one track whose frames the guest hands in itself (`put`), for a container
+/// sake reads (MP4): its codec (a WebCodecs string; H.264 as Annex B), size, and per frame in
+/// decode order whether it is a key frame and its place in presentation order. Frame numbers
+/// (`put`, `frame_exact`) are presentation order's.
+pub fn open_chunks(codec: &str, w: u32, h: u32, frames: &[(bool, u32)]) -> Option<u32> {
+    let mut head = Vec::new();
+    let sizes: Vec<(u32, bool)> = frames.iter().map(|&(k, _)| (0, k)).collect();
+    crate::vnv::write_head(&mut head, w, h, &[(codec, &sizes[..])]).ok()?;
+    let mut i = info(&head)?;
+    // (the index names each frame by its number: Source::Chunks)
+    for (n, f) in i.tracks[0].1.iter_mut().enumerate() {
+        f.0 = n as u32;
+    }
+    if codec == "raw-i420" {
+        return None;
+    }
+    let id = add(Source::Chunks { head, chunks: HashMap::new() }, i)?;
+    let pts: Vec<u32> = frames.iter().map(|f| f.1).collect();
+    let same = pts.iter().enumerate().all(|(n, &p)| p == n as u32);
+    with(|m| m.get_mut(&id).map(|s| s.pts = (!same).then_some(pts)));
+    Some(id)
+}
+
+/// Hands in the bytes of frame `n` (decode order) of a stream `open_chunks` opened.
+pub fn put(id: u32, n: u32, bytes: Vec<u8>) {
+    with(|m| {
+        if let Some(Source::Chunks { chunks, .. }) = m.get_mut(&id).map(|s| &mut s.src) {
+            chunks.insert(n, bytes);
+        }
+    });
+    ring();
+}
+/// Whether frame `n` (decode order) of such a stream was handed in (and not dropped).
+pub fn has_chunk(id: u32, n: u32) -> bool {
+    with(|m| matches!(m.get(&id).map(|s| &s.src), Some(Source::Chunks { chunks, .. }) if chunks.contains_key(&n)))
+}
+/// Drops the frames of such a stream outside `keep` (decode order): the page has them or no
+/// longer needs them.
+pub fn keep_chunks(id: u32, keep: std::ops::Range<u32>) {
+    with(|m| {
+        if let Some(Source::Chunks { chunks, .. }) = m.get_mut(&id).map(|s| &mut s.src) {
+            chunks.retain(|n, _| keep.contains(n));
+        }
+    });
+}
+
+/// Frame `n` exactly, as the page decoded it (no clock: a Source Reader's caller waits for
+/// each frame), waiting up to `timeout`: `f` gets the slot's planes (`layout`: per track the
+/// format, I420 0 / NV12 1 / RGBA 2, then offset and stride of three planes) and buffer. False
+/// when it did not come (the page failed, or no page).
+pub fn frame_exact(id: u32, n: i32, timeout: Duration, f: impl FnOnce(&[[u32; 7]; 2], *const u8)) -> bool {
+    let start = Instant::now();
+    let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed) else { return false };
+        if s.want != n {
+            s.want = n;
+            ring();
+        }
+        if let Some(k) = (0..s.slots.len()).find(|&k| !s.slots[k].writing && s.slots[k].frame == n) {
+            s.shown = n;
+            s.slots[k].reading += 1;
+            let (buf, layout) = (s.slots[k].buf.as_ptr(), s.slots[k].layout);
+            drop(g);
+            f(&layout, buf);
+            let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
+            let m = g.get_or_insert_with(HashMap::new);
+            if let Some(s) = m.get_mut(&id) {
+                s.slots[k].reading -= 1;
+            }
+            release(m, id);
+            return true;
+        }
+        if start.elapsed() > timeout {
+            return false;
+        }
+        g = WAKE.wait_timeout(g, Duration::from_millis(2)).unwrap_or_else(|e| e.into_inner()).0;
+    }
 }
 
 /// Frames past the one asked for that `fill` keeps read, and how many it reads ahead once
@@ -282,6 +370,18 @@ pub enum Out {
     /// RGB by BT.601 from video range (Y 16-235, Cb Cr 16-240: what `ippai pack` makes of other
     /// movies), alpha 255
     Rgb601,
+    /// RGB by BT.709 from video range (HD H.264 as Media Foundation's video processor gives it
+    /// RGB32: crates/sake/src/mf/reader.rs), alpha 255
+    Rgb709,
+}
+
+/// (Kr-derived) coefficients of a matrix: Cr in red, Cb and Cr in green, Cb in blue
+fn coefficients(out: Out) -> (f64, f64, f64, f64) {
+    match out {
+        Out::Rgb709 => (1.5748, 0.187324, 0.468124, 1.8556),
+        Out::Rgb601 => (1.402, 0.344136, 0.714136, 1.772),
+        _ => (1.402, 0.34414, 0.71414, 1.772),
+    }
 }
 
 /// How long the guest waits for the frame it asks for once the movie shows, before it takes the
@@ -390,7 +490,7 @@ fn stat(waited: Duration, n: i32, late: bool) {
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
     let c = &layout[0];
-    if matches!(c[0], I420 | NV12) && matches!(out, Out::Rgb601 | Out::Rgb) {
+    if matches!(c[0], I420 | NV12) && matches!(out, Out::Rgb601 | Out::Rgb709 | Out::Rgb) {
         return to_rgb(buf, c, dst, pitch, w, h, out);
     }
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -405,7 +505,7 @@ pub unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn convert_scalar(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
     let c = &layout[0];
-    if matches!(c[0], I420 | NV12) && matches!(out, Out::Rgb601 | Out::Rgb) {
+    if matches!(c[0], I420 | NV12) && matches!(out, Out::Rgb601 | Out::Rgb709 | Out::Rgb) {
         return to_rgb_scalar(buf, c, dst, pitch, w, h, out);
     }
     convert_any(buf, layout, tracks, sw, sh, dst, pitch, w, h, out)
@@ -423,22 +523,27 @@ struct Terms {
 }
 const FRAC: u32 = 21;
 fn terms(out: Out) -> &'static Terms {
-    static T: OnceLock<[Terms; 2]> = OnceLock::new();
+    static T: OnceLock<[Terms; 3]> = OnceLock::new();
     let t = T.get_or_init(|| {
-        let make = |video: bool| {
+        let make = |out: Out| {
+            let video = out != Out::Rgb;
             let mut t = Terms { y: [0; 256], rv: [0; 256], gu: [0; 256], gv: [0; 256], bu: [0; 256] };
             let f = |x: f64| (x * (1 << FRAC) as f64).round() as i32;
+            let (rv, gu, gv, bu) = coefficients(out);
             for i in 0..256 {
                 let x = i as f64;
                 let (y, u) = if video { ((x - 16.0) * 255.0 / 219.0, (x - 128.0) * 255.0 / 224.0) } else { (x, x - 128.0) };
-                let (gu, gv) = if video { (0.344136, 0.714136) } else { (0.34414, 0.71414) };
-                (t.y[i], t.rv[i], t.gu[i], t.gv[i], t.bu[i]) = (f(y), f(1.402 * u), f(gu * u), f(gv * u), f(1.772 * u));
+                (t.y[i], t.rv[i], t.gu[i], t.gv[i], t.bu[i]) = (f(y), f(rv * u), f(gu * u), f(gv * u), f(bu * u));
             }
             t
         };
-        [make(false), make(true)]
+        [make(Out::Rgb), make(Out::Rgb601), make(Out::Rgb709)]
     });
-    &t[(out == Out::Rgb601) as usize]
+    &t[match out {
+        Out::Rgb601 => 1,
+        Out::Rgb709 => 2,
+        _ => 0,
+    }]
 }
 
 /// [`convert_any`] of an I420 / NV12 color track to BGRX (Rgb601 / Rgb: alpha is 255 there,
@@ -454,7 +559,7 @@ unsafe fn to_rgb(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u3
 /// ycc_to_rgb (truncated f64).
 #[inline]
 fn px_ref(t: &Terms, out: Out, y: u8, u: u8, v: u8) -> [u8; 3] {
-    if out == Out::Rgb601 {
+    if matches!(out, Out::Rgb601 | Out::Rgb709) {
         let q = |x: i32| ((x + (1 << (FRAC - 1))) >> FRAC).clamp(0, 255) as u8;
         let yy = t.y[y as usize];
         let (u, v) = (u as usize, v as usize);
@@ -516,13 +621,13 @@ const NEAR: i32 = 512;
 const STEP: i32 = (1 << FRAC) - 1;
 #[cfg(any(test, all(target_arch = "wasm32", target_feature = "simd128")))]
 fn linear(out: Out) -> Linear {
-    let video = out == Out::Rgb601;
+    let video = out != Out::Rgb;
     let f = |x: f64| (x * (1 << FRAC) as f64).round() as i32;
     let (sy, su) = if video { (255.0 / 219.0, 255.0 / 224.0) } else { (1.0, 1.0) };
-    let (gu, gv) = if video { (0.344136, 0.714136) } else { (0.34414, 0.71414) };
+    let (rv, gu, gv, bu) = coefficients(out);
     let y = f(sy);
     let half = if video { 1 << (FRAC - 1) } else { 0 };
-    Linear { y, rv: f(1.402 * su), gu: f(gu * su), gv: f(gv * su), bu: f(1.772 * su), base: half - if video { 16 * y } else { 0 } }
+    Linear { y, rv: f(rv * su), gu: f(gu * su), gv: f(gv * su), bu: f(bu * su), base: half - if video { 16 * y } else { 0 } }
 }
 
 /// The SIMD lanes' sums for one pixel (B, G, R before the shift), and whether one is NEAR a step.
@@ -720,8 +825,12 @@ unsafe fn convert_any(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u
                     *o.add(2) = cr;
                     *o.add(3) = al;
                 }
-                Out::Rgb | Out::Rgb601 => {
-                    let (r, g, b) = if out == Out::Rgb { ycc_to_rgb(yy, cb, cr) } else { ycc601_to_rgb(yy, cb, cr) };
+                Out::Rgb | Out::Rgb601 | Out::Rgb709 => {
+                    let (r, g, b) = match out {
+                        Out::Rgb => ycc_to_rgb(yy, cb, cr),
+                        Out::Rgb601 => ycc601_to_rgb(yy, cb, cr),
+                        _ => ycc709_to_rgb(yy, cb, cr),
+                    };
                     *o = b;
                     *o.add(1) = g;
                     *o.add(2) = r;
@@ -744,6 +853,14 @@ pub fn ycc601_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
     let (y, u, v) = ((y as f64 - 16.0) * 255.0 / 219.0, (cb as f64 - 128.0) * 255.0 / 224.0, (cr as f64 - 128.0) * 255.0 / 224.0);
     let c = |x: f64| x.round().clamp(0.0, 255.0) as u8;
     (c(y + 1.402 * v), c(y - 0.344136 * u - 0.714136 * v), c(y + 1.772 * u))
+}
+
+/// BT.709 from video range, rounded.
+pub fn ycc709_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
+    let (y, u, v) = ((y as f64 - 16.0) * 255.0 / 219.0, (cb as f64 - 128.0) * 255.0 / 224.0, (cr as f64 - 128.0) * 255.0 / 224.0);
+    let c = |x: f64| x.round().clamp(0.0, 255.0) as u8;
+    let (rv, gu, gv, bu) = coefficients(Out::Rgb709);
+    (c(y + rv * v), c(y - gu * u - gv * v), c(y + bu * u))
 }
 
 fn rgb_to_ycc(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
@@ -799,10 +916,11 @@ pub unsafe extern "C" fn vnhost_video_list(out: *mut u32, max: u32) -> u32 {
 static CHUNK: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// The bytes of frame `n` of track `t` of stream `id`, copied for the page (and their size in
-/// `*size`); 0 when they are not read yet (`fill`: the page tries again on its next frame).
+/// `size[0]`, the frame's place in presentation order in `size[1]`); 0 when they are not read
+/// yet (`fill`: the page tries again on its next frame).
 ///
 /// # Safety
-/// `size` must be writable.
+/// `size` must hold two writable words.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_video_chunk(id: u32, t: u32, n: u32, size: *mut u32) -> u32 {
     let mut c = CHUNK.lock().unwrap_or_else(|e| e.into_inner());
@@ -812,12 +930,12 @@ pub unsafe extern "C" fn vnhost_video_chunk(id: u32, t: u32, n: u32, size: *mut 
         let b = s.src.bytes(off as u64, sz as usize)?;
         c.clear();
         c.extend_from_slice(b);
-        Some(())
+        Some(s.pts.as_ref().and_then(|p| p.get(n as usize).copied()).unwrap_or(n))
     });
-    if ok.is_none() {
-        return 0;
-    }
+    let Some(pts) = ok else { return 0 };
     *size = c.len() as u32;
+    // (its frame in presentation order: the page's timestamp of it)
+    *size.add(1) = pts;
     // (an empty frame still has an address the page can read nothing from)
     c.reserve(1);
     c.as_ptr() as u32
@@ -1137,7 +1255,7 @@ mod tests {
                 }
                 let held: usize = with(|m| match &m[&id].src {
                     Source::File { wins, .. } => wins.iter().map(|w| w.1.len()).sum(),
-                    Source::Mem(_) => unreachable!(),
+                    Source::Mem(_) | Source::Chunks { .. } => unreachable!(),
                 });
                 // (a track's run is one read: from a key frame to READ_HIGH frames past a request,
                 // this one's or an earlier one's that still covers this)
@@ -1292,14 +1410,14 @@ mod tests {
         /// strides, I420 / NV12, both RGB outputs (the truncating one takes the general loop).
         #[test]
         #[cfg_attr(miri, ignore)] // (proptest's regression file: Miri isolates the file system)
-        fn to_rgb_as_any(seed in proptest::prelude::any::<u64>(), w in 1u32..40, h in 1u32..12, pad in 0u32..5, nv12 in proptest::prelude::any::<bool>(), r601 in proptest::prelude::any::<bool>()) {
+        fn to_rgb_as_any(seed in proptest::prelude::any::<u64>(), w in 1u32..40, h in 1u32..12, pad in 0u32..5, nv12 in proptest::prelude::any::<bool>(), r601 in 0u8..3) {
             let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
             let ys = w + pad;
             let layout = if nv12 { [NV12, 0, ys, ys * h, 2 * cw + pad, 0, 0] } else { [I420, 0, ys, ys * h, cw + pad, ys * h + (cw + pad) * ch, cw + pad] };
             let n = (ys * h + 2 * (cw + pad) * ch) as usize;
             let mut x = seed | 1;
             let buf: Vec<u8> = (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
-            let out = if r601 { Out::Rgb601 } else { Out::Rgb };
+            let out = [Out::Rgb, Out::Rgb601, Out::Rgb709][r601 as usize];
             let pitch = 4 * w as usize + 8;
             let (mut a, mut b) = (vec![0xeeu8; pitch * h as usize], vec![0xeeu8; pitch * h as usize]);
             unsafe {
@@ -1316,6 +1434,11 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // (16M pixels: hours under Miri; convert_planes runs the table path there)
     fn terms_as_the_function() {
+        for (out, f) in [(Out::Rgb601, ycc601_to_rgb as fn(u8, u8, u8) -> (u8, u8, u8)), (Out::Rgb709, ycc709_to_rgb)] {
+            terms_as(out, f);
+        }
+    }
+    fn terms_as(out: Out, f: fn(u8, u8, u8) -> (u8, u8, u8)) {
         let mut off = 0;
         for cb in 0..=255u8 {
             for cr in 0..=255u8 {
@@ -1323,9 +1446,9 @@ mod tests {
                 let mut b: Vec<u8> = (0..=255u8).collect();
                 b.extend((0..128).flat_map(|_| [cb, cr]));
                 let mut d = vec![0u8; 1024];
-                unsafe { to_rgb(b.as_ptr(), &[NV12, 0, 256, 256, 256, 0, 0], d.as_mut_ptr(), 1024, 256, 1, Out::Rgb601) };
+                unsafe { to_rgb(b.as_ptr(), &[NV12, 0, 256, 256, 256, 0, 0], d.as_mut_ptr(), 1024, 256, 1, out) };
                 for y in 0..256 {
-                    let (r, g, bl) = ycc601_to_rgb(y as u8, cb, cr);
+                    let (r, g, bl) = f(y as u8, cb, cr);
                     for (got, want) in d[4 * y..4 * y + 3].iter().zip([bl, g, r]) {
                         assert!(got.abs_diff(want) <= 1, "{y} {cb} {cr}: {got} for {want}");
                         off += (*got != want) as u32;
@@ -1333,7 +1456,7 @@ mod tests {
                 }
             }
         }
-        eprintln!("{off} of {} bytes off by 1", 3 << 24);
+        eprintln!("{out:?}: {off} of {} bytes off by 1", 3 << 24);
         assert!(off < 3 << 14, "{off}");
     }
 
@@ -1344,7 +1467,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn linear_as_px_ref() {
-        for out in [Out::Rgb601, Out::Rgb] {
+        for out in [Out::Rgb601, Out::Rgb709, Out::Rgb] {
             let (t, l) = (terms(out), linear(out));
             let (mut near, mut worst) = (0u64, 0i64);
             for y in 0..=255u8 {
@@ -1352,7 +1475,7 @@ mod tests {
                     for v in 0..=255u8 {
                         let (s, n) = linear_sums(&l, y, u, v);
                         let want = px_ref(t, out, y, u, v);
-                        if out == Out::Rgb601 {
+                        if out != Out::Rgb {
                             let (yy, u, v) = (t.y[y as usize] as i64, u as usize, v as usize);
                             let half = 1i64 << (FRAC - 1);
                             let exact = [yy + t.bu[u] as i64 + half, yy - t.gu[u] as i64 - t.gv[v] as i64 + half, yy + t.rv[v] as i64 + half];
@@ -1396,7 +1519,7 @@ mod tests {
     fn convert_planes() {
         for fmt in [I420, NV12, RGBA] {
             for alpha in [None, Some(I420), Some(RGBA)] {
-                for out in [Out::Ycc, Out::Rgb, Out::Rgb601] {
+                for out in [Out::Ycc, Out::Rgb, Out::Rgb601, Out::Rgb709] {
                     let (b, dst) = slot_pixels(fmt, alpha, out);
                     for y in 0..4 {
                         for x in 0..4 {
@@ -1429,6 +1552,10 @@ mod tests {
                                 }
                                 Out::Rgb601 => {
                                     let (r, g, bl) = ycc601_to_rgb(ycc.0, ycc.1, ycc.2);
+                                    [bl, g, r, 255]
+                                }
+                                Out::Rgb709 => {
+                                    let (r, g, bl) = ycc709_to_rgb(ycc.0, ycc.1, ycc.2);
                                     [bl, g, r, 255]
                                 }
                             };

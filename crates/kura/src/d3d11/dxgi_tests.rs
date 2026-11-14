@@ -289,3 +289,26 @@ fn adapter_enumeration_model() {
         assert_eq!(call1(m(IF_FACTORY, 2), &[f]), 0, "seed {seed}");
     }
 }
+
+/// A device asked for video (D3D11_CREATE_DEVICE_VIDEO_SUPPORT, with or without BGRA_SUPPORT, as
+/// Unity's VideoPlayer asks for its own decoding device, #227): unsupported, nothing comes back
+/// (no device, context, swap chain, level); the same call without the flag makes a device.
+#[test]
+fn video_support_device_is_refused() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    init();
+    for flags in [0x800, 0x820, 0x822] {
+        let (dev, level, ctx) = (mem(2), mem(2), mem(2));
+        put(dev, &[0xdead, 0]);
+        put(level, &[0xdead]);
+        put(ctx, &[0xdead, 0]);
+        assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, flags, 0, 0, 7, 0, 0, dev, level, ctx]), DXGI_ERROR_UNSUPPORTED, "flags {flags:#x}");
+        assert_eq!((rd1(dev), rd1(level), rd1(ctx)), (0, 0, 0));
+    }
+    let (dev, level, ctx) = (mem(2), mem(2), mem(2));
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0x20, 0, 0, 7, 0, 0, dev, level, ctx]), 0);
+    assert_ne!(rd1(dev), 0);
+    assert_eq!(rd1(level), 0xb000);
+    call1(m(IF_CONTEXT, 2), &[rd1(ctx)]);
+    call1(m(IF_DEVICE, 2), &[rd1(dev)]);
+}

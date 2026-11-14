@@ -12,6 +12,8 @@
 //! resampling: a current type of another rate or channel count is refused (MF_E_INVALIDMEDIATYPE).
 //! Windows' answers: tests/winref/probes/mfreader.c.
 
+use super::source::{self, Data, Media};
+use super::vstream::{VOut, VStream};
 use super::*;
 use crate::audiofile::{self, Codec, Track};
 use std::sync::Arc;
@@ -41,7 +43,7 @@ fn guid(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> Guid {
 fn audio_format(tag: u32) -> Guid {
     guid(tag, 0, 0x10, [0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71])
 }
-fn major_audio() -> Guid {
+pub fn major_audio() -> Guid {
     audio_format(0x7364_7561)
 }
 fn tag_of(g: &Guid) -> Option<u32> {
@@ -247,7 +249,7 @@ impl Resample {
 /// One stream of a reader, kept free of the guest: packets in order, decoded as needed.
 pub struct Stream {
     pub track: Track,
-    data: Arc<Vec<u8>>,
+    data: Arc<Data>,
     pub out: Out,
     /// next packet, the frame it starts at
     next: usize,
@@ -280,7 +282,11 @@ pub struct Piece {
 }
 
 impl Stream {
+    #[cfg(test)]
     pub fn new(track: Track, data: Arc<Vec<u8>>) -> Stream {
+        Stream::with_data(track, Arc::new(Data::mem_arc(data)))
+    }
+    pub fn with_data(track: Track, data: Arc<Data>) -> Stream {
         Stream {
             track,
             data,
@@ -301,6 +307,11 @@ impl Stream {
 
     pub fn duration(&self) -> u64 {
         self.track.duration.unwrap_or_else(|| self.time(self.track.total_frames()))
+    }
+
+    /// The time of the next sample.
+    pub fn next_time(&self) -> i64 {
+        self.time(self.at) as i64
     }
 
     /// Sets what reads hand out.
@@ -339,8 +350,14 @@ impl Stream {
         }
     }
 
-    /// The next sample, or None at the end of the stream (Err: the page did not decode).
+    #[cfg(test)]
     pub fn read(&mut self) -> Result<Option<Piece>, u32> {
+        self.read_in(None)
+    }
+
+    /// The next sample, or None at the end of the stream (Err: the page did not decode, or the
+    /// bytes could not be read: a program's byte stream is read on `c`'s thread).
+    pub fn read_in(&mut self, mut c: Option<&mut Ctx>) -> Result<Option<Piece>, u32> {
         let t = &self.track;
         let ch = t.channels.max(1) as usize;
         match (self.out, &t.codec) {
@@ -353,7 +370,9 @@ impl Stream {
                 let skip = self.into.min(all);
                 let frames = all - skip;
                 let per = if all > 0 { n as u64 / all } else { 0 };
-                let raw = &self.data[(o + skip * per) as usize..(o + n as u64) as usize];
+                let from = o + skip * per;
+                let raw = self.data.read(c, from, (o + n as u64 - from) as usize).ok_or(E_FAIL)?;
+                let raw = &raw[..];
                 let bytes = match (self.out, &t.codec) {
                     (Out::Pcm { bits, float, .. }, Codec::Pcm { bits: from, float: ffloat }) if (bits, float) != (*from as u32, *ffloat) || self.rs.is_some() => {
                         let mut v = Vec::new();
@@ -384,7 +403,8 @@ impl Stream {
                 // decode a few packets ahead of what is wanted
                 while self.pending.len() < per * ch && self.next < t.packets.len() {
                     let end = (self.next + 8).min(t.packets.len());
-                    let chunks: Vec<&[u8]> = t.packets[self.next..end].iter().map(|&(o, n)| &self.data[o as usize..(o + n as u64) as usize]).collect();
+                    let bufs: Vec<Vec<u8>> = t.packets[self.next..end].iter().map(|&(o, n)| self.data.read(c.as_deref_mut(), o, n as usize)).collect::<Option<_>>().ok_or(E_FAIL)?;
+                    let chunks: Vec<&[u8]> = bufs.iter().map(|b| &b[..]).collect();
                     let mut got = Vec::new();
                     let ok = kura::adec::decode(dec, chunks, WAIT, &mut got);
                     self.pending.extend(got);
@@ -485,13 +505,28 @@ pub fn out_for(t: &Track, want: &Store) -> Option<Out> {
 // ---------------------------------------------------------------------------------------------
 // the guest's objects
 
-/// Readers: references, the stream (behind its own lock: a read waits for the page), whether
-/// it is selected, its current type (a store of ours, the reader holds a reference).
-struct Reader {
-    refs: u32,
-    stream: Arc<Mutex<Stream>>,
+/// A reader's stream: what it reads (behind its own lock: a read waits for the page or for
+/// the program's byte stream), whether it is selected, its current type (a store of ours, the
+/// reader holds a reference).
+pub enum Kind {
+    Audio(Arc<Mutex<Stream>>),
+    Video(Arc<Mutex<VStream>>),
+}
+struct Slot {
+    kind: Kind,
     selected: bool,
     current: u32,
+}
+/// Readers: references, their streams (the file's order), the bytes (released with the
+/// reader), the media's length, the media source it reads (a reference, or 0), whether RGB out
+/// of video is allowed (MF_SOURCE_READER_ENABLE_(ADVANCED_)VIDEO_PROCESSING).
+struct Reader {
+    refs: u32,
+    streams: Vec<Slot>,
+    data: Option<Arc<Data>>,
+    duration: u64,
+    source: u32,
+    processing: bool,
     /// asynchronous mode: the program's IMFSourceReaderCallback (a reference of the reader's)
     callback: u32,
     /// its requests not yet answered, in order; whether a worker thread answers them now
@@ -514,7 +549,7 @@ fn reader<R>(b: u32, f: impl FnOnce(&mut Reader) -> R) -> Option<R> {
 
 /// IMFMediaType {44ae0fa8-ea31-4109-8d2e-4cae4997c555}, IMFSample {c40a00f2-...}: both
 /// attribute stores with more methods; their QueryInterface answers for themselves too.
-fn typed_qi(c: &mut Ctx, d1: u32, d2: u16, d3: u16) -> u32 {
+pub fn typed_qi(c: &mut Ctx, d1: u32, d2: u16, d3: u16) -> u32 {
     let (this, iid, out) = (c.a(0), c.a(1), c.a(2));
     if out == 0 {
         return E_POINTER;
@@ -1082,6 +1117,8 @@ fn MFCreateSample(c: &mut Ctx) -> u32 {
 
 // --- the reader -----------------------------------------------------------------------------
 
+const FIRST_VIDEO: u32 = 0xffff_fffc;
+
 fn sr_qi(c: &mut Ctx) -> u32 {
     let (this, out) = (c.a(0), c.a(2));
     if out == 0 {
@@ -1114,16 +1151,31 @@ fn sr_release(c: &mut Ctx) -> u32 {
     if n == 0 {
         let gone = READERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&this);
         if let Some(r) = gone {
-            release(c, r.current);
+            for s in &r.streams {
+                release(c, s.current);
+            }
             release(c, r.callback);
+            release(c, r.source);
+            drop(r.streams);
+            if let Some(d) = r.data {
+                source::release_data(c, d);
+            }
             mem::heap_free(this);
         }
     }
     n
 }
-/// Whether `i` names the reader's one stream.
-fn ours(i: u32) -> bool {
-    i == 0 || i == FIRST_AUDIO
+/// The stream `i` names: an index, MF_SOURCE_READER_FIRST_VIDEO_STREAM or FIRST_AUDIO_STREAM.
+fn index(r: &Reader, i: u32) -> Option<usize> {
+    match i {
+        FIRST_VIDEO => r.streams.iter().position(|s| matches!(s.kind, Kind::Video(_))),
+        FIRST_AUDIO => r.streams.iter().position(|s| matches!(s.kind, Kind::Audio(_))),
+        _ => ((i as usize) < r.streams.len()).then_some(i as usize),
+    }
+}
+/// `f` on reader `this`'s stream `i`; MF_E_INVALIDSTREAMNUMBER when there is none.
+fn on_stream<R>(this: u32, i: u32, f: impl FnOnce(&mut Reader, usize) -> R) -> Result<R, u32> {
+    reader(this, |r| index(r, i).map(|k| f(r, k))).ok_or(E_INVALIDARG)?.ok_or(MF_E_INVALIDSTREAMNUMBER)
 }
 /// GetStreamSelection(DWORD, BOOL *)
 fn sr_get_selection(c: &mut Ctx) -> u32 {
@@ -1131,20 +1183,35 @@ fn sr_get_selection(c: &mut Ctx) -> u32 {
     if out == 0 {
         return E_POINTER;
     }
-    if !ours(i) {
-        return MF_E_INVALIDSTREAMNUMBER;
+    match on_stream(c.a(0), i, |r, k| r.streams[k].selected) {
+        Ok(on) => {
+            w32(out, on as u32);
+            0
+        }
+        Err(e) => e,
     }
-    w32(out, reader(c.a(0), |r| r.selected).unwrap_or(false) as u32);
-    0
 }
 /// SetStreamSelection(DWORD, BOOL)
 fn sr_set_selection(c: &mut Ctx) -> u32 {
     let (i, on) = (c.a(1), c.a(2) != 0);
-    if !ours(i) && i != ALL_STREAMS {
-        return MF_E_INVALIDSTREAMNUMBER;
+    if i == ALL_STREAMS {
+        reader(c.a(0), |r| r.streams.iter_mut().for_each(|s| s.selected = on));
+        return 0;
     }
-    reader(c.a(0), |r| r.selected = on);
-    0
+    on_stream(c.a(0), i, |r, k| r.streams[k].selected = on).err().unwrap_or(0)
+}
+/// The native type of a stream.
+fn native_of(k: &Kind) -> Store {
+    match k {
+        Kind::Audio(s) => native_type(&s.lock().unwrap_or_else(|e| e.into_inner()).track),
+        Kind::Video(s) => source::video_native(&s.lock().unwrap_or_else(|e| e.into_inner()).v),
+    }
+}
+fn kind_of(this: u32, i: u32) -> Result<Kind, u32> {
+    on_stream(this, i, |r, k| match &r.streams[k].kind {
+        Kind::Audio(s) => Kind::Audio(s.clone()),
+        Kind::Video(s) => Kind::Video(s.clone()),
+    })
 }
 /// GetNativeMediaType(DWORD stream, DWORD index, IMFMediaType **)
 fn sr_native(c: &mut Ctx) -> u32 {
@@ -1152,15 +1219,14 @@ fn sr_native(c: &mut Ctx) -> u32 {
     if out == 0 {
         return E_POINTER;
     }
-    if !ours(i) {
-        return MF_E_INVALIDSTREAMNUMBER;
-    }
+    let kind = match kind_of(c.a(0), i) {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
     if k != 0 {
         return MF_E_NO_MORE_TYPES;
     }
-    let Some(s) = reader(c.a(0), |r| r.stream.clone()) else { return E_INVALIDARG };
-    let t = native_type(&s.lock().unwrap_or_else(|e| e.into_inner()).track);
-    putp(out, new_type(t));
+    putp(out, new_type(native_of(&kind)));
     0
 }
 /// GetCurrentMediaType(DWORD stream, IMFMediaType **): a copy (Windows hands out its own
@@ -1170,12 +1236,38 @@ fn sr_current(c: &mut Ctx) -> u32 {
     if out == 0 {
         return E_POINTER;
     }
-    if !ours(i) {
-        return MF_E_INVALIDSTREAMNUMBER;
+    match on_stream(c.a(0), i, |r, k| r.streams[k].current) {
+        Ok(cur) => {
+            putp(out, new_type(store_of(cur).unwrap_or_default()));
+            0
+        }
+        Err(e) => e,
     }
-    let Some(cur) = reader(c.a(0), |r| r.current) else { return E_INVALIDARG };
-    putp(out, new_type(store_of(cur).unwrap_or_default()));
-    0
+}
+/// The type a video stream gives for `want`, and how: its native type, or decoded frames of a
+/// FOURCC (RGB only with video processing); None: not one it gives.
+fn video_out(v: &mp4::Video, want: &Store, processing: bool) -> Option<(VOut, Store)> {
+    if guid_of(want, &k_major()).is_some_and(|g| g != source::major_video()) {
+        return None;
+    }
+    let sub = guid_of(want, &k_subtype())?;
+    let d1 = u32::from_le_bytes(sub[0..4].try_into().unwrap());
+    if sub != source::video_format(d1) {
+        return None;
+    }
+    // (a size of its own: no scaling here)
+    if let Some(Val::U64(sz)) = want.get(&source::k_frame_size()) {
+        if *sz != (v.w as u64) << 32 | v.h as u64 {
+            return None;
+        }
+    }
+    if d1 == source::H264 {
+        return Some((VOut::Native, source::video_native(v)));
+    }
+    if !source::DECODED.contains(&d1) || (matches!(d1, source::RGB32 | source::ARGB32) && !processing) {
+        return None;
+    }
+    Some((VOut::Decoded(d1), source::video_decoded(v, d1)?))
 }
 /// SetCurrentMediaType(DWORD stream, DWORD *reserved, IMFMediaType *)
 fn sr_set_current(c: &mut Ctx) -> u32 {
@@ -1183,25 +1275,39 @@ fn sr_set_current(c: &mut Ctx) -> u32 {
     if t == 0 {
         return E_POINTER;
     }
-    if !ours(i) {
-        return MF_E_INVALIDSTREAMNUMBER;
-    }
-    let Some(want) = store_of(t) else { return E_INVALIDARG };
-    let Some(s) = reader(this, |r| r.stream.clone()) else { return E_INVALIDARG };
-    let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(out) = out_for(&st.track, &want) else { return MF_E_INVALIDMEDIATYPE };
-    // a decoded type needs the page's decoder
-    if matches!((out, &st.track.codec), (Out::Pcm { .. }, Codec::Page { .. })) && !kura::adec::available() {
-        return MF_E_INVALIDMEDIATYPE;
-    }
-    st.set_out(out);
-    let store = match out {
-        Out::Native => native_type(&st.track),
-        Out::Pcm { bits, float, rate, channels } => pcm_type_at(rate, channels, bits, float),
+    let kind = match kind_of(this, i) {
+        Ok(k) => k,
+        Err(e) => return e,
     };
-    drop(st);
+    let Some(want) = store_of(t) else { return E_INVALIDARG };
+    let processing = reader(this, |r| r.processing).unwrap_or(false);
+    let store = match kind {
+        Kind::Audio(s) => {
+            let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(out) = out_for(&st.track, &want) else { return MF_E_INVALIDMEDIATYPE };
+            // a decoded type needs the page's decoder
+            if matches!((out, &st.track.codec), (Out::Pcm { .. }, Codec::Page { .. })) && !kura::adec::available() {
+                return MF_E_INVALIDMEDIATYPE;
+            }
+            st.set_out(out);
+            match out {
+                Out::Native => native_type(&st.track),
+                Out::Pcm { bits, float, rate, channels } => pcm_type_at(rate, channels, bits, float),
+            }
+        }
+        Kind::Video(s) => {
+            let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
+            let Some((out, store)) = video_out(&st.v, &want, processing) else { return MF_E_INVALIDMEDIATYPE };
+            // decoded frames need the page's decoder
+            if out != VOut::Native && !kura::video::available() {
+                return MF_E_INVALIDMEDIATYPE;
+            }
+            st.set_out(out);
+            store
+        }
+    };
     let nt = new_type(store);
-    let old = reader(this, |r| std::mem::replace(&mut r.current, nt)).unwrap_or(0);
+    let old = on_stream(this, i, |r, k| std::mem::replace(&mut r.streams[k].current, nt)).unwrap_or(0);
     release(c, old);
     0
 }
@@ -1219,9 +1325,20 @@ fn sr_seek(c: &mut Ctx) -> u32 {
     if reader(c.a(0), |r| pending(r)).unwrap_or(false) {
         return MF_E_INVALIDREQUEST;
     }
-    let Some(s) = reader(c.a(0), |r| r.stream.clone()) else { return E_INVALIDARG };
-    s.lock().unwrap_or_else(|e| e.into_inner()).seek(t.max(0) as u64);
+    let kinds = reader(c.a(0), |r| r.streams.iter().map(|s| clone_kind(&s.kind)).collect::<Vec<_>>()).unwrap_or_default();
+    for k in kinds {
+        match k {
+            Kind::Audio(s) => s.lock().unwrap_or_else(|e| e.into_inner()).seek(t.max(0) as u64),
+            Kind::Video(s) => s.lock().unwrap_or_else(|e| e.into_inner()).seek(t.max(0)),
+        }
+    }
     0
+}
+fn clone_kind(k: &Kind) -> Kind {
+    match k {
+        Kind::Audio(s) => Kind::Audio(s.clone()),
+        Kind::Video(s) => Kind::Video(s.clone()),
+    }
 }
 /// ReadSample(DWORD stream, DWORD flags, DWORD *actual, DWORD *streamflags, LONGLONG *time,
 /// IMFSample **)
@@ -1232,11 +1349,12 @@ fn sr_read(c: &mut Ctx) -> u32 {
         if actual != 0 || sflags != 0 || time != 0 || out != 0 {
             return E_INVALIDARG;
         }
-        if !ours(i) && i != ALL_STREAMS {
-            return MF_E_INVALIDSTREAMNUMBER;
-        }
-        if !reader(this, |r| r.selected).unwrap_or(false) {
-            return MF_E_INVALIDREQUEST;
+        if i != ALL_STREAMS {
+            match on_stream(this, i, |r, k| r.streams[k].selected) {
+                Ok(true) => {}
+                Ok(false) => return MF_E_INVALIDREQUEST,
+                Err(e) => return e,
+            }
         }
         request(this, Req::Read(i));
         return 0;
@@ -1246,13 +1364,15 @@ fn sr_read(c: &mut Ctx) -> u32 {
         return E_POINTER;
     }
     putp(out, 0);
-    if !ours(i) && i != ALL_STREAMS {
-        return MF_E_INVALIDSTREAMNUMBER;
+    if i != ALL_STREAMS {
+        if let Err(e) = on_stream(this, i, |_, _| ()) {
+            return e;
+        }
     }
+    let (hr, k, flags, t, sample) = read_one(c, this, i);
     if actual != 0 {
-        w32(actual, 0);
+        w32(actual, k);
     }
-    let (hr, flags, t, sample) = read_one(this);
     w32(sflags, flags);
     if time != 0 && hr == 0 {
         w64(time, t);
@@ -1261,21 +1381,43 @@ fn sr_read(c: &mut Ctx) -> u32 {
     hr
 }
 
-/// The next sample of reader `this`: (HRESULT, stream flags, its time, the sample or 0).
-fn read_one(this: u32) -> (u32, u32, u64, u32) {
-    let Some((s, on)) = reader(this, |r| (r.stream.clone(), r.selected)) else { return (E_INVALIDARG, 0, 0, 0) };
+/// The next sample of reader `this`'s stream `i` (or of the selected stream whose next sample
+/// comes first: MF_SOURCE_READER_ANY_STREAM): (HRESULT, the stream, stream flags, its time, the
+/// sample or 0).
+fn read_one(c: &mut Ctx, this: u32, i: u32) -> (u32, u32, u32, u64, u32) {
+    let pick = reader(this, |r| {
+        if i != ALL_STREAMS {
+            let k = index(r, i)?;
+            return Some((k, r.streams[k].selected, clone_kind(&r.streams[k].kind), r.duration));
+        }
+        let live = |s: &Slot| match &s.kind {
+            Kind::Audio(a) => {
+                let a = a.lock().unwrap_or_else(|e| e.into_inner());
+                (!a.ended).then(|| a.next_time())
+            }
+            Kind::Video(v) => {
+                let v = v.lock().unwrap_or_else(|e| e.into_inner());
+                if v.ended { None } else { v.next_time() }
+            }
+        };
+        let k = r.streams.iter().enumerate().filter(|(_, s)| s.selected).filter_map(|(k, s)| live(s).map(|t| (t, k))).min().map(|x| x.1);
+        let k = k.or_else(|| r.streams.iter().position(|s| s.selected))?;
+        Some((k, true, clone_kind(&r.streams[k].kind), r.duration))
+    })
+    .flatten();
+    let Some((k, on, kind, dur)) = pick else { return (MF_E_INVALIDSTREAMNUMBER, 0, 0, 0, 0) };
     if !on {
-        return (MF_E_INVALIDREQUEST, 0, 0, 0);
+        return (MF_E_INVALIDREQUEST, k as u32, 0, 0, 0);
     }
-    let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
-    let got = st.read();
-    let end_time = st.duration();
-    drop(st);
+    let got = match kind {
+        Kind::Audio(s) => s.lock().unwrap_or_else(|e| e.into_inner()).read_in(Some(c)),
+        Kind::Video(s) => s.lock().unwrap_or_else(|e| e.into_inner()).read(Some(c)),
+    };
     match got {
-        Ok(Some(p)) => (0, 0, p.time, new_sample(Some(p.time), Some(p.dur), Some(&p.bytes))),
-        Ok(None) => (0, ENDOFSTREAM, end_time, 0),
+        Ok(Some(p)) => (0, k as u32, 0, p.time, new_sample(Some(p.time), Some(p.dur), Some(&p.bytes))),
+        Ok(None) => (0, k as u32, ENDOFSTREAM, dur, 0),
         // MF_SOURCE_READERF_ERROR
-        Err(e) => (e, 1, 0, 0),
+        Err(e) => (e, k as u32, 1, 0, 0),
     }
 }
 
@@ -1325,13 +1467,13 @@ fn worker(c: &mut Ctx) -> u32 {
         // release the reader in it)
         add_ref(c, cb);
         match q {
-            Req::Read(_) => {
-                let (hr, flags, t, sample) = read_one(b);
+            Req::Read(i) => {
+                let (hr, k, flags, t, sample) = read_one(c, b, i);
                 let f = mem::rp(mem::rp(cb) + ps() * 3);
                 if mem::x64() {
-                    crate::call64(c.cpu, mem::widen(f), &[mem::widen(cb), hr as u64, 0, flags as u64, t, sample as u64]);
+                    crate::call64(c.cpu, mem::widen(f), &[mem::widen(cb), hr as u64, k as u64, flags as u64, t, sample as u64]);
                 } else {
-                    c.call(f, &[cb, hr, 0, flags, t as u32, (t >> 32) as u32, sample]);
+                    c.call(f, &[cb, hr, k, flags, t as u32, (t >> 32) as u32, sample]);
                 }
                 release(c, sample);
             }
@@ -1349,8 +1491,10 @@ fn worker(c: &mut Ctx) -> u32 {
 /// Flush(DWORD stream): asynchronous, the reads not answered yet are dropped and OnFlush told.
 fn sr_flush(c: &mut Ctx) -> u32 {
     let (this, i) = (c.a(0), c.a(1));
-    if !ours(i) && i != ALL_STREAMS {
-        return MF_E_INVALIDSTREAMNUMBER;
+    if i != ALL_STREAMS {
+        if let Err(e) = on_stream(this, i, |_, _| ()) {
+            return e;
+        }
     }
     if reader(this, |r| r.callback != 0).unwrap_or(false) {
         request(this, Req::Flush(i));
@@ -1364,11 +1508,11 @@ fn sr_presentation(c: &mut Ctx) -> u32 {
         return E_POINTER;
     }
     let k = guid_at(g);
-    let Some(s) = reader(c.a(0), |r| r.stream.clone()) else { return E_INVALIDARG };
+    let Some(dur) = reader(c.a(0), |r| r.duration) else { return E_INVALIDARG };
     mem::fill(p, 8 + 2 * ps(), 0);
     if i == MEDIASOURCE && k == k_duration() {
         w16(p, 21); // VT_UI8
-        w64(p + 8, s.lock().unwrap_or_else(|e| e.into_inner()).duration());
+        w64(p + 8, dur);
         return 0;
     }
     if i == MEDIASOURCE && k == k_characteristics() {
@@ -1376,8 +1520,10 @@ fn sr_presentation(c: &mut Ctx) -> u32 {
         w32(p + 8, 6);
         return 0;
     }
-    if i != MEDIASOURCE && !ours(i) {
-        return MF_E_INVALIDSTREAMNUMBER;
+    if i != MEDIASOURCE {
+        if let Err(e) = on_stream(c.a(0), i, |_, _| ()) {
+            return e;
+        }
     }
     MF_E_ATTRIBUTENOTFOUND
 }
@@ -1406,33 +1552,73 @@ fn reader_vtable() -> u32 {
     })
 }
 
-/// A reader of the sound file whose bytes are `data`.
-fn new_reader(c: &mut Ctx, attributes: u32, data: Vec<u8>, out: u32) -> u32 {
-    let callback = match store_of(attributes).and_then(|s| s.get(&k_async()).cloned()) {
+/// MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING
+fn k_processing() -> [Guid; 2] {
+    [
+        guid(0xfb39_4f3d, 0xccf1, 0x42ee, [0xbb, 0xb3, 0xf9, 0xb8, 0x45, 0xd5, 0x68, 0x1d]),
+        guid(0x0f81_da2c, 0xb537, 0x4672, [0xa8, 0xb2, 0xa6, 0x81, 0xb1, 0x73, 0x07, 0xa3]),
+    ]
+}
+
+/// A reader of `media` (whose bytes are `data`), made of media source `source` (0: none).
+fn new_reader(c: &mut Ctx, attributes: u32, data: Arc<Data>, media: &Media, source: u32, out: u32) -> u32 {
+    let at = store_of(attributes);
+    let callback = match at.as_ref().and_then(|s| s.get(&k_async()).cloned()) {
         Some(Val::Unk(u)) => u,
         _ => 0,
     };
-    let Some(track) = audiofile::open(&data) else { return MF_E_UNSUPPORTED_BYTESTREAM_TYPE };
-    let native = native_type(&track);
-    let stream = Stream::new(track, Arc::new(data));
+    let processing = at.as_ref().is_some_and(|s| k_processing().iter().any(|k| matches!(s.get(k), Some(Val::U32(v)) if *v != 0)));
+    let selected = source::first_selected(media);
+    let mut streams = Vec::new();
+    let mut duration = media.duration.unwrap_or(0);
+    for (t, sel) in media.tracks.iter().zip(selected) {
+        let native = source::native_of(t);
+        let kind = match t {
+            mp4::Track::Audio(a) => {
+                let s = Stream::with_data(a.clone(), data.clone());
+                if media.duration.is_none() {
+                    duration = duration.max(s.duration());
+                }
+                Kind::Audio(Arc::new(Mutex::new(s)))
+            }
+            mp4::Track::Video(v) => {
+                let s = VStream::new(v.clone(), data.clone());
+                if media.duration.is_none() {
+                    duration = duration.max(s.duration());
+                }
+                Kind::Video(Arc::new(Mutex::new(s)))
+            }
+        };
+        streams.push(Slot { kind, selected: sel, current: new_type(native) });
+    }
     let b = object(reader_vtable(), 1);
-    let current = new_type(native);
+    add_ref(c, callback);
+    add_ref(c, source);
     READERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(
         b,
         Reader {
             refs: 1,
-            stream: Arc::new(Mutex::new(stream)),
-            selected: true,
-            current,
+            streams,
+            data: Some(data),
+            duration,
+            source,
+            processing,
             callback,
             queue: Default::default(),
             busy: false,
             taken: 0,
         },
     );
-    add_ref(c, callback);
     putp(out, b);
     0
+}
+/// A reader of the file in `data`, or why none.
+fn reader_of(c: &mut Ctx, attributes: u32, data: Data, out: u32) -> u32 {
+    let Some(media) = source::open_media(Some(c), &data) else {
+        release(c, data.guest_stream());
+        return MF_E_UNSUPPORTED_BYTESTREAM_TYPE;
+    };
+    new_reader(c, attributes, Arc::new(data), &media, 0, out)
 }
 
 /// MFCreateSourceReaderFromURL(LPCWSTR url, IMFAttributes *, IMFSourceReader **)
@@ -1447,8 +1633,8 @@ fn MFCreateSourceReaderFromURL(c: &mut Ctx) -> u32 {
     // (HRESULT_FROM_WIN32: ERROR_PATH_NOT_FOUND when the folder is missing too, winref mfreader)
     let missing = || 0x8007_0000 | crate::files::missing(&path);
     let Some(host) = crate::files::resolve(&path) else { return missing() };
-    let Ok(data) = kura::fs::read(&host) else { return missing() };
-    new_reader(c, at, data, out)
+    let Some(d) = kura::fs::File::open(&host).ok().and_then(Data::host) else { return missing() };
+    reader_of(c, at, d, out)
 }
 
 /// A file: URL's path ("file:///C:/a%20b.mp3" -> "C:\a b.mp3"); anything else as it is.
@@ -1474,47 +1660,33 @@ pub fn file_url_path(u: &str) -> String {
 }
 
 /// MFCreateSourceReaderFromByteStream(IMFByteStream *, IMFAttributes *, IMFSourceReader **):
-/// the stream's bytes read from its start (GetLength, SetCurrentPosition, Read)
+/// the stream read as samples are wanted (GetLength, SetCurrentPosition, Read)
 fn MFCreateSourceReaderFromByteStream(c: &mut Ctx) -> u32 {
     let (bs, at, out) = (c.a(0), c.a(1), c.a(2));
     if bs == 0 || out == 0 {
         return E_POINTER;
     }
     putp(out, 0);
-    let tmp = mem::heap_alloc(16, true);
-    let hr = com(c, bs, 4, &[tmp]);
-    let len = mem::r64(tmp);
-    if hr & 0x8000_0000 != 0 || len > 1 << 30 {
-        mem::heap_free(tmp);
-        return if hr & 0x8000_0000 != 0 { hr } else { E_INVALIDARG };
+    let Some(d) = Data::guest(c, bs) else { return E_INVALIDARG };
+    reader_of(c, at, d, out)
+}
+
+/// MFCreateSourceReaderFromMediaSource(IMFMediaSource *, IMFAttributes *, IMFSourceReader **):
+/// a source of ours (MFCreateSourceResolver's)
+fn MFCreateSourceReaderFromMediaSource(c: &mut Ctx) -> u32 {
+    let (src, at, out) = (c.a(0), c.a(1), c.a(2));
+    if src == 0 || out == 0 {
+        return E_POINTER;
     }
-    // SetCurrentPosition(QWORD): two words on x86
-    if mem::x64() {
-        com(c, bs, 7, &[0]);
-    } else {
-        com(c, bs, 7, &[0, 0]);
-    }
-    const PIECE: u32 = 1 << 20;
-    let b = mem::heap_alloc(PIECE, false);
-    let mut data = Vec::with_capacity(len as usize);
-    while (data.len() as u64) < len {
-        let want = (len - data.len() as u64).min(PIECE as u64) as u32;
-        w32(tmp, 0);
-        let hr = com(c, bs, 9, &[b, want, tmp]);
-        let got = r32(tmp).min(want);
-        if hr & 0x8000_0000 != 0 || got == 0 {
-            break;
-        }
-        data.extend_from_slice(mem::slice(b, got));
-    }
-    mem::heap_free(b);
-    mem::heap_free(tmp);
-    new_reader(c, at, data, out)
+    putp(out, 0);
+    let Some((data, media)) = source::source_of(src) else { return E_NOTIMPL };
+    new_reader(c, at, data, &media, src, out)
 }
 
 pub fn init() {
     implement("mfreadwrite", "MFCreateSourceReaderFromURL", MFCreateSourceReaderFromURL);
     implement("mfreadwrite", "MFCreateSourceReaderFromByteStream", MFCreateSourceReaderFromByteStream);
+    implement("mfreadwrite", "MFCreateSourceReaderFromMediaSource", MFCreateSourceReaderFromMediaSource);
     implement("mfplat", "MFCreateMediaType", MFCreateMediaType);
     implement("mfplat", "MFCreateWaveFormatExFromMFMediaType", MFCreateWaveFormatExFromMFMediaType);
     implement("mfplat", "MFInitMediaTypeFromWaveFormatEx", MFInitMediaTypeFromWaveFormatEx);
@@ -1788,9 +1960,11 @@ mod tests {
         let (t, d) = pcm_track(100, 1);
         Reader {
             refs: 1,
-            stream: Arc::new(Mutex::new(Stream::new(t, d))),
-            selected: true,
-            current: 0,
+            streams: vec![Slot { kind: Kind::Audio(Arc::new(Mutex::new(Stream::new(t, d)))), selected: true, current: 0 }],
+            data: None,
+            duration: 0,
+            source: 0,
+            processing: false,
             callback: 1,
             queue: Default::default(),
             busy: false,

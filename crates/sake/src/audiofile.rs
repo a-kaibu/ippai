@@ -184,7 +184,7 @@ fn mp3(b: &[u8], from: usize, to: usize) -> Option<Track> {
 // MP4 (ISO base media): boxes
 
 /// The boxes in `b[from..to]`: (type, body start, body end).
-fn boxes(b: &[u8], from: usize, to: usize) -> Vec<([u8; 4], usize, usize)> {
+pub fn boxes(b: &[u8], from: usize, to: usize) -> Vec<([u8; 4], usize, usize)> {
     let mut out = Vec::new();
     let mut o = from;
     while o + 8 <= to {
@@ -208,7 +208,7 @@ fn boxes(b: &[u8], from: usize, to: usize) -> Vec<([u8; 4], usize, usize)> {
     out
 }
 
-fn child(b: &[u8], from: usize, to: usize, kind: &[u8; 4]) -> Option<(usize, usize)> {
+pub fn child(b: &[u8], from: usize, to: usize, kind: &[u8; 4]) -> Option<(usize, usize)> {
     boxes(b, from, to).into_iter().find(|x| &x.0 == kind).map(|x| (x.1, x.2))
 }
 
@@ -227,7 +227,7 @@ fn mp4(b: &[u8]) -> Option<Track> {
         let timescale = if b[mds] == 1 { u32be(b, mds + 20)? } else { u32be(b, mds + 12)? };
         let (ns, ne) = child(b, ds, de, b"minf")?;
         let (ss, se) = child(b, ns, ne, b"stbl")?;
-        let mut t = sound_track(b, ss, se, timescale)?;
+        let mut t = sound_track(b, ss, se, timescale, b.len() as u64)?;
         t.duration = movie_duration(b, ms, me);
         return Some(t);
     }
@@ -235,7 +235,7 @@ fn mp4(b: &[u8]) -> Option<Track> {
 }
 
 /// mvhd's duration (100 ns): none when it gives none (0, all ones, no timescale)
-fn movie_duration(b: &[u8], ms: usize, me: usize) -> Option<u64> {
+pub fn movie_duration(b: &[u8], ms: usize, me: usize) -> Option<u64> {
     let (o, _) = child(b, ms, me, b"mvhd")?;
     let (scale, d) = if *b.get(o)? == 1 {
         (u32be(b, o + 20)?, (u32be(b, o + 24)? as u64) << 32 | u32be(b, o + 28)? as u64)
@@ -262,7 +262,9 @@ fn descriptor(b: &[u8], o: usize, end: usize) -> Option<(u8, usize, usize)> {
     (e <= end).then_some((tag, p, e))
 }
 
-fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32) -> Option<Track> {
+/// The sound track whose stbl is `ss..se` of `b` (a moov's bytes, or the whole file) in a file
+/// of `file_len` bytes (its packets must lie within).
+pub fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32, file_len: u64) -> Option<Track> {
     let (sds, sde) = child(b, ss, se, b"stsd")?;
     // stsd: version/flags, count, then sample entries
     let (kind, es, ee) = *boxes(b, sds + 8, sde).first()?;
@@ -384,7 +386,7 @@ fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32) -> Option<Track> 
             k += 1;
         }
     }
-    if packets.len() != count || packets.iter().any(|&(o, s)| o + s as u64 > b.len() as u64) {
+    if packets.len() != count || packets.iter().any(|&(o, s)| o + s as u64 > file_len) {
         return None;
     }
     let (ts, _) = child(b, ss, se, b"stts")?;

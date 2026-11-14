@@ -39,6 +39,9 @@ interface Track {
   /** the next frame fed to the decoder, and the first fed since the last reset */
   fed: number;
   from: number;
+  /** flushed after its last frame was fed (frames a decoder holds back, H.264's reordered
+   * ones, come out only then) */
+  flushed: boolean;
   /** decoded and not yet copied, by frame */
   out: Map<number, VideoFrame>;
 }
@@ -142,6 +145,7 @@ export class Video {
         config: null,
         fed: 0,
         from: 0,
+        flushed: false,
         out: new Map(),
       });
     }
@@ -201,10 +205,11 @@ export class Video {
     const key = s.tracks[t]!.frames[n * 3 + 2]!;
     const ptr = this.wasm._vnhost_video_chunk(s.id, t, n, this.layoutBuf) >>> 0;
     if (!ptr) return null;
-    const size = new Uint32Array(this.wasm.wasmMemory.buffer, this.layoutBuf, 1)[0]!;
+    // (its size, and its frame in presentation order: B frames come out reordered)
+    const [size, pts] = new Uint32Array(this.wasm.wasmMemory.buffer, this.layoutBuf, 2);
     return new EncodedVideoChunk({
       type: key ? "key" : "delta",
-      timestamp: n * 1000,
+      timestamp: pts! * 1000,
       data: new Uint8Array(this.wasm.wasmMemory.buffer, ptr, size).slice(),
     });
   }
@@ -212,6 +217,8 @@ export class Video {
   private serve(s: Stream, want: number): void {
     if (this.gate.closed) return this.gate.run(() => this.serve(s, s.want), s.held.serve);
     want = Math.min(want, s.frames - 1);
+    // (a jump back to a frame already passed: its frame was closed, the decoder starts over)
+    const back = want < s.want;
     s.want = want;
     if (s.tracks.some((t) => !t.dec || t.dec.state !== "configured")) return;
     const end = Math.min(s.frames, want + AHEAD);
@@ -220,12 +227,13 @@ export class Video {
       // (resetting a hardware decoder costs; the tracks' key frames need not line up)
       let k = want;
       while (k > 0 && !t.frames[k * 3 + 2]) k--;
-      if (want < t.from || k > t.fed) {
+      if (want < t.from || k > t.fed || (back && !t.out.has(want))) {
         t.dec!.reset();
         t.dec!.configure(t.config!);
         for (const f of t.out.values()) f.close();
         t.out.clear();
         t.fed = t.from = k;
+        t.flushed = false;
       }
       for (const [n, f] of t.out)
         if (n < want) {
@@ -238,6 +246,10 @@ export class Video {
         if (!c) break;
         t.dec!.decode(c);
         t.fed++;
+      }
+      if (t.fed === s.frames && !t.flushed) {
+        t.flushed = true;
+        t.dec!.flush().catch(() => {});
       }
     }
     this.copyReady(s);

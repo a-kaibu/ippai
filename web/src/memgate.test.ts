@@ -118,9 +118,9 @@ function videoModule(frames: number) {
       return 1;
     },
     _vnhost_video_has: (_id, n) => (note("has"), has.has(n) ? 1 : 0),
-    _vnhost_video_chunk(_id, _t, _n, size) {
+    _vnhost_video_chunk(_id, _t, n, size) {
       note("chunk");
-      new Uint32Array(mem.buffer, size, 1)[0] = 4;
+      new Uint32Array(mem.buffer, size, 2).set([4, n]);
       return 0x8000;
     },
     _vnhost_video_begin: () => (note("begin"), (nextBuf += 0x100)),
@@ -186,6 +186,7 @@ test("video: a frame copy under way when a state starts ends before the copy of 
     decode(c: { timestamp: number }) {
       fed.push(c.timestamp / 1000);
     }
+    async flush() {}
     close() {}
   };
   try {
@@ -219,6 +220,65 @@ test("video: a frame copy under way when a state starts ends before the copy of 
     g.open();
     await tick(5);
     expect(copies).toEqual([0, 1, 2]);
+  } finally {
+    g2.VideoDecoder = old;
+    g2.EncodedVideoChunk = oldChunk;
+  }
+});
+
+test("video: a jump back to a frame already passed (a seek back after the end) feeds the decoder again from that frame", async () => {
+  const m = videoModule(8);
+  const g = new Gate();
+  const fed: number[] = [];
+  let resets = 0;
+  const g2 = globalThis as unknown as { VideoDecoder?: unknown; EncodedVideoChunk?: unknown };
+  const old = g2.VideoDecoder;
+  const oldChunk = g2.EncodedVideoChunk;
+  g2.EncodedVideoChunk = class {
+    timestamp: number;
+    constructor(i: { timestamp: number }) {
+      this.timestamp = i.timestamp;
+    }
+  };
+  g2.VideoDecoder = class {
+    static isConfigSupported = async () => ({ supported: true });
+    state = "unconfigured";
+    decodeQueueSize = 0;
+    configure() {
+      this.state = "configured";
+    }
+    reset() {
+      resets++;
+    }
+    decode(c: { timestamp: number }) {
+      fed.push(c.timestamp / 1000);
+    }
+    async flush() {}
+    close() {}
+  };
+  try {
+    const v = new Video(m.wasm, () => {}, g, false);
+    v.tick();
+    await tick(5);
+    // read to the end: every frame fed once, no reset
+    for (let n = 0; n < 8; n++) {
+      m.setWant(n);
+      v.tick();
+      await tick(1);
+    }
+    expect(fed).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    const before = resets;
+    // the same frame again: nothing new
+    v.tick();
+    await tick(1);
+    expect(resets).toBe(before);
+    // back to frame 3 (all key frames): the decoder starts over there
+    fed.length = 0;
+    m.setWant(3);
+    v.tick();
+    await tick(1);
+    expect(resets).toBe(before + 1);
+    expect(fed[0]).toBe(3);
   } finally {
     g2.VideoDecoder = old;
     g2.EncodedVideoChunk = oldChunk;

@@ -923,6 +923,17 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
         wr(level_out, 0, 0);
         return E_INVALIDARG;
     }
+    // D3D11_CREATE_DEVICE_VIDEO_SUPPORT: the adapter has no video decoder or processor (no
+    // ID3D11VideoDevice), so a device for video fails as on a driver without video support
+    // (Microsoft Basic Render Driver); Unity's VideoPlayer then decodes in software through
+    // Media Foundation (#227), not into D3D11 textures this device could not give it
+    if a(3) & 0x800 != 0 {
+        for o in [sc_out, dev_out, ctx_out] {
+            wrp(o, 0, 0);
+        }
+        wr(level_out, 0, 0);
+        return DXGI_ERROR_UNSUPPORTED;
+    }
     // (the swap chain's description is checked before anything is made: no window, or a format
     // a swap chain can't have, and nothing comes back)
     if desc != 0 && sc_out != 0 {

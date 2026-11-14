@@ -1807,17 +1807,21 @@ pub fn init() {
     implement("mfplat", "MFShutdown", MFShutdown);
     implement("mfplat", "MFCreateAttributes", MFCreateAttributes);
     implement("mfplat", "MFCreateDXGIDeviceManager", MFCreateDXGIDeviceManager);
-    implement("mfplat", "MFCreateSourceResolver", |c| none(c, 0));
     implement("mf", "MFCreateMediaSession", |c| none(c, 1));
     implement("mf", "MFCreateTopology", |c| none(c, 0));
     implement("mf", "MFCreateTopologyNode", |c| none(c, 1));
     implement("mf", "MFGetService", |c| none(c, 3));
     implement("mf", "MFCreateVideoRendererActivate", |c| none(c, 1));
     implement("mf", "MFCreateAudioRendererActivate", |c| none(c, 0));
-    implement("mfreadwrite", "MFCreateSourceReaderFromMediaSource", |c| none(c, 2));
     reader::init();
+    plat::init();
+    source::init();
 }
 
+mod mp4;
+mod source;
+mod vstream;
+mod plat;
 mod reader;
 
 #[cfg(test)]
