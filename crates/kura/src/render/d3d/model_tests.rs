@@ -458,6 +458,8 @@ fn run(seed: u64, batches: &[Batch], pass_opt: bool, seg: bool) -> (Vec<Obs>, Ve
     d.no_pass_opt = !pass_opt;
     d.no_seg = !seg;
     d.skip_check = false;
+    // (the optimized run forgets dead textures after every batch: the same pictures still)
+    d.prune_slack = if seg { 0 } else { 256 };
     let mut obs = Vec::new();
     for (k, b) in batches.iter().enumerate() {
         if dump {

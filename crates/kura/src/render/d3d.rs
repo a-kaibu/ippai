@@ -591,6 +591,8 @@ pub struct D3d {
     stamp: u64,
     /// Direct3D 9: the last segment drawn to each target (see `segment`)
     segs: HashMap<u32, Seg>,
+    /// how many more stamps than textures there may be before `prune_dead` looks
+    pub(crate) prune_slack: usize,
     /// a segment run as usual: its target and where it ends (its stamp is taken there)
     seg_open: Option<(u32, usize)>,
     /// the part of the target draws may change now (a segment drawn again in part)
@@ -701,6 +703,7 @@ impl D3d {
             tex_changes: HashMap::new(),
             stamp: 0,
             segs: HashMap::new(),
+            prune_slack: 256,
             seg_open: None,
             clip: None,
             seg_stats: Cell::new((0, 0)),
@@ -1169,6 +1172,22 @@ impl D3d {
         }
         self.end_pass();
         self.submit();
+        self.prune_dead();
+    }
+
+    /// Forgets the stamps, last changes and segments of textures that are no more. Ids are not
+    /// given again soon, so a game that makes and frees textures per scene left an entry (a
+    /// segment: up to a thousand draw keys) per texture it ever had. A texture that is gone
+    /// has stamp 0 like one never made; one made again is touched, and stamps never repeat.
+    /// Looked at only once there are well more stamps than textures.
+    fn prune_dead(&mut self) {
+        if self.stamps.len().max(self.segs.len()) <= self.textures.len() + self.prune_slack {
+            return;
+        }
+        let live = &self.textures;
+        self.stamps.retain(|id, _| live.contains_key(id));
+        self.tex_changes.retain(|id, _| live.contains_key(id));
+        self.segs.retain(|id, _| live.contains_key(id));
     }
 
     /// The pixels of texture `id` change.
@@ -4034,6 +4053,22 @@ mod damage_tests {
         let d = quad(Some([1.0, 0.0, 1.0, 0.0]));
         assert_eq!(d.damage([1270, 700, 1300, 800]), Some([1268, 698, 1282, 722]));
         assert_eq!(quad(None).damage([0, 0, 1, 1]), None);
+    }
+
+    /// Textures touched and gone leave nothing behind once there are more than the slack.
+    #[test]
+    fn dead_textures_are_forgotten() {
+        let mut d = super::D3d::new();
+        for id in 1..=1000 {
+            d.touch_box(id, Some([0, 0, 1, 1]));
+            d.prune_dead();
+            assert!(d.stamps.len() <= d.prune_slack + 1 && d.tex_changes.len() <= d.prune_slack + 1, "{id}");
+        }
+        assert_eq!(d.stamp_of(3), 0);
+        // (a stamp given after is none of the old ones)
+        let before = d.stamp;
+        d.touch(3);
+        assert!(d.stamp_of(3) > before);
     }
 
     #[test]
