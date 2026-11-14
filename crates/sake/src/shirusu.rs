@@ -58,11 +58,15 @@ fn name_of(i: u32) -> Option<String> {
     let mut g = M.lock().unwrap();
     g.get_or_insert_with(HashMap::default)
         .entry(i)
-        .or_insert_with(|| {
-            let a = crate::api::TRAP_LO + 4 * i;
-            api_name(&crate::api::dll_of(a)?, &crate::api::name_of(a)?)
-        })
+        .or_insert_with(|| trap_api(crate::api::TRAP_LO + 4 * i))
         .clone()
+}
+
+/// The catalog name of the API at trap address `a` (api::name_of is "dll!name")
+fn trap_api(a: u32) -> Option<String> {
+    let full = crate::api::name_of(a)?;
+    let (dll, name) = full.split_once('!')?;
+    api_name(dll, name)
 }
 
 thread_local! {
@@ -200,6 +204,26 @@ mod tests {
         assert_eq!(api_name("d3d9", "Direct3DCreate9").as_deref(), Some("d3d9!Direct3DCreate9"));
         assert_eq!(api_name("kernel32", "GetTickCount"), None);
         assert_eq!(api_name("user32", "CreateFileW"), None);
+    }
+
+    /// the traps programs call land on their catalog names (the trap table's names are
+    /// "dll!name": taken for the bare name, nothing was ever recorded)
+    #[test]
+    fn traps() {
+        fn a(d: &str, n: &str) -> Option<String> {
+            trap_api(crate::api::export(d, n))
+        }
+        assert_eq!(a("kernel32.dll", "CreateFileW").as_deref(), Some("kernel32!CreateFileW"));
+        assert_eq!(a("KERNEL32", "ReadFile").as_deref(), Some("kernel32!ReadFile"));
+        assert_eq!(a("kernelbase.dll", "WriteFile").as_deref(), Some("kernel32!WriteFile"));
+        assert_eq!(a("advapi32.dll", "RegQueryValueExW").as_deref(), Some("advapi32!RegQueryValueExW"));
+        assert_eq!(a("user32.dll", "CreateWindowExW").as_deref(), Some("user32!CreateWindowExW"));
+        assert_eq!(a("kernel32.dll", "GetTickCount"), None);
+        // every API of the list, through the table
+        for (d, n) in apis() {
+            assert_eq!(a(&format!("{d}.dll"), n), Some(format!("{d}!{n}")), "{d}!{n}");
+        }
+        assert_eq!(trap_api(0), None);
     }
 
     /// no API twice (the converter keys the Trace's API set by name)
