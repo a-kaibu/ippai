@@ -308,6 +308,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ctab"
+path = "fuzz_targets/ctab.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "undname"
 path = "fuzz_targets/undname.rs"
 test = false

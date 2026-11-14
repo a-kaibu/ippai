@@ -118,6 +118,18 @@ struct Effect {
     /// guest copies of the names and strings the Get*Desc / GetString calls handed out (one
     /// per string, valid while the effect lives, as Windows' point into the effect)
     strings: HashMap<Vec<u8>, u32>,
+    /// top-level parameters by name (the first of a name), for handles given as names and the
+    /// shader constants matched to parameters on every pass
+    names: HashMap<String, usize>,
+}
+
+/// The first top-level parameter of each name.
+fn top_names(params: &[Param], top: &[usize]) -> HashMap<String, usize> {
+    let mut m = HashMap::default();
+    for &i in top {
+        m.entry(params[i].name.clone()).or_insert(i);
+    }
+    m
 }
 
 /// A guest copy of `s` (NUL-terminated) owned by effect `this`.
@@ -166,6 +178,9 @@ struct Parser<'a> {
     base: &'a [u8],
     params: Vec<Param>,
     obj_ty: HashMap<u32, u32>,
+    /// values of states and annotations, collected while parsing: they are top-level parameters
+    /// of their own (this parse's alone: a loader thread may create an effect at the same time)
+    state_values: Vec<(usize, Vec<u8>)>,
 }
 
 impl<'a> Parser<'a> {
@@ -297,7 +312,7 @@ impl<'a> Parser<'a> {
         let i = self.typedef(&mut r, None, flags)?;
         let bytes = self.params[i].bytes as usize;
         let numeric = self.params[i].class != PC_OBJECT;
-        let v = if numeric { self.base.get(val as usize..val as usize + bytes).map(|b| b.to_vec()).unwrap_or(vec![0; bytes]) } else { vec![0; bytes] };
+        let v = if numeric { self.base.get(val as usize..val as usize + bytes).map(|b| b.to_vec()).unwrap_or_else(|| vec![0; bytes]) } else { vec![0; bytes] };
         let mut r = self.at(val);
         self.value(i, i, 0, &mut r)?;
         Ok((i, v))
@@ -307,7 +322,7 @@ impl<'a> Parser<'a> {
         let index = r.u32()?;
         let (t, v) = (r.u32()?, r.u32()?);
         let (param, val) = self.param(t, v, 0)?;
-        STATE_VALUES.lock().unwrap().push((param, val));
+        self.state_values.push((param, val));
         Ok(State { op, index, param, kind: Kind::Const })
     }
     fn annotations(&mut self, r: &mut Rd, n: u32) -> Result<Vec<usize>, String> {
@@ -315,16 +330,12 @@ impl<'a> Parser<'a> {
         for _ in 0..n {
             let (t, val) = (r.u32()?, r.u32()?);
             let (a, bytes) = self.param(t, val, 0)?;
-            STATE_VALUES.lock().unwrap().push((a, bytes));
+            self.state_values.push((a, bytes));
             v.push(a);
         }
         Ok(v)
     }
 }
-
-/// (values of states and annotations, collected while parsing: they are top-level parameters of
-/// their own)
-static STATE_VALUES: Mutex<Vec<(usize, Vec<u8>)>> = Mutex::new(Vec::new());
 
 fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>, Vec<Technique>, Vec<Object>), String> {
     let mut r = Rd { d: data, at: 0 };
@@ -334,8 +345,7 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
     }
     let start = r.u32()?;
     let base = &data[8..];
-    let mut p = Parser { base, params: Vec::new(), obj_ty: HashMap::default() };
-    STATE_VALUES.lock().unwrap().clear();
+    let mut p = Parser { base, params: Vec::new(), obj_ty: HashMap::default(), state_values: Vec::new() };
     let mut r = p.at(start);
     let nparams = r.u32()?;
     let ntech = r.u32()?;
@@ -456,7 +466,7 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
             o.ty = *ty;
         }
     }
-    for (i, v) in STATE_VALUES.lock().unwrap().drain(..) {
+    for (i, v) in p.state_values.drain(..) {
         values.insert(i, v);
     }
     Ok((p.params, top, values, techniques, objects))
@@ -466,13 +476,41 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
 /// parameter count, or why it does not read. Every parameter's value lies inside its top-level
 /// parameter's bytes.
 pub fn check(data: &[u8]) -> Result<usize, String> {
-    let (params, _top, values, _techniques, _objects) = parse(data)?;
+    let (params, top, values, techniques, objects) = parse(data)?;
     for p in &params {
         if let Some(v) = values.get(&p.top) {
             assert!(p.off as u64 + p.bytes as u64 <= v.len() as u64, "parameter {} at {}+{} outside its {} bytes", p.name, p.off, p.bytes, v.len());
         }
     }
-    Ok(params.len())
+    let n = params.len();
+    // (then what BeginPass works out from it: the shaders' constant tables and preshaders, and
+    // every pass's states, run on the file's own values; their outputs stay in the registers)
+    let mut e = Effect { device: 0, names: top_names(&params, &top), params, top, values, techniques, objects, hbase: 0, tech: 0, block: 0, pass: None, ctabs: HashMap::default(), pres: HashMap::default(), strings: HashMap::default() };
+    for (i, o) in e.objects.iter().enumerate() {
+        if matches!(o.ty, PT_VERTEXSHADER | PT_PIXELSHADER) {
+            let k = ctab(&o.data);
+            assert!(k.len() <= o.data.len() / 20);
+            e.ctabs.insert(i as u32 + 1, k);
+            if let Some(p) = pres(&o.data) {
+                e.pres.insert(i as u32 + 1, p);
+            }
+        }
+    }
+    for (_, p) in e.pres.iter() {
+        assert!(e.run_pres(p).len() <= PRES_SCALARS);
+    }
+    let shaders: Vec<u32> = e.ctabs.keys().copied().collect();
+    let mut out = Vec::new();
+    for sh in shaders {
+        e.const_calls(sh, true, &mut out);
+    }
+    for t in 0..e.techniques.len() {
+        e.tech = t;
+        for k in 0..e.techniques[t].passes.len() {
+            out.extend(e.pass_calls(k));
+        }
+    }
+    Ok(n)
 }
 
 /// The comment blocks of shader-style bytecode (after its version token): (fourcc, body).
@@ -500,22 +538,25 @@ pub(crate) fn comments(code: &[u8]) -> Vec<([u8; 4], &[u8])> {
 
 /// A constant table (a CTAB comment's body).
 fn ctab_of(d: &[u8]) -> Vec<Const> {
-    let r16 = |o: usize| d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
-    let r32 = |o: usize| d.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+    // (offsets from the table: past its end reads 0, without adding past usize)
+    let at = |o: usize, k: usize, n: usize| d.get(o..).and_then(|b| b.get(k..)).and_then(|b| b.get(..n));
+    let r16 = |o: usize, k: usize| at(o, k, 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+    let r32 = |o: usize, k: usize| at(o, k, 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
     let s = |o: usize| String::from_utf8_lossy(d.get(o..).unwrap_or(&[]).split(|&x| x == 0).next().unwrap_or(&[])).into_owned();
-    let (count, info) = (r32(12) as usize, r32(16) as usize);
+    // (an entry is 20 bytes of the table: a count past that is a damaged CTAB)
+    let (count, info) = ((r32(12, 0) as usize).min(d.len() / 20), r32(16, 0) as usize);
     (0..count)
         .map(|k| {
-            let e = info + 20 * k;
-            let ti = r32(e + 12) as usize;
+            let e = info.saturating_add(20 * k);
+            let ti = r32(e, 12) as usize;
             Const {
-                name: s(r32(e) as usize),
-                set: r16(e + 4),
-                reg: r16(e + 6) as u32,
-                count: r16(e + 8) as u32,
-                class: r16(ti),
-                rows: r16(ti + 4) as u32,
-                cols: r16(ti + 6) as u32,
+                name: s(r32(e, 0) as usize),
+                set: r16(e, 4),
+                reg: r16(e, 6) as u32,
+                count: r16(e, 8) as u32,
+                class: r16(ti, 0),
+                rows: r16(ti, 4) as u32,
+                cols: r16(ti, 6) as u32,
             }
         })
         .collect()
@@ -617,14 +658,15 @@ fn pres_body(body: &[u8]) -> Option<Pres> {
 impl Effect {
     fn value(&self, i: usize) -> &[u8] {
         let p = &self.params[i];
-        let v = &self.values[&p.top];
-        &v[(p.off as usize).min(v.len())..((p.off + p.bytes) as usize).min(v.len())]
+        let Some(v) = self.values.get(&p.top) else { return &[] };
+        let end = (p.off as u64 + p.bytes as u64).min(v.len() as u64) as usize;
+        &v[(p.off as usize).min(end)..end]
     }
     fn value_mut(&mut self, i: usize) -> &mut [u8] {
         let (top, off, bytes) = (self.params[i].top, self.params[i].off, self.params[i].bytes);
-        let v = self.values.get_mut(&top).unwrap();
-        let n = v.len();
-        &mut v[(off as usize).min(n)..((off + bytes) as usize).min(n)]
+        let Some(v) = self.values.get_mut(&top) else { return &mut [] };
+        let end = (off as u64 + bytes as u64).min(v.len() as u64) as usize;
+        &mut v[(off as usize).min(end)..end]
     }
     fn u32_at(&self, i: usize, k: usize) -> u32 {
         self.value(i).get(4 * k..4 * k + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
@@ -677,11 +719,10 @@ impl Effect {
             let k: usize = rest.trim_end_matches(']').parse().ok()?;
             return self.params[p].children.get(k).copied();
         }
-        let list: &[usize] = match parent {
-            None => &self.top,
-            Some(p) => &self.params[p].children,
-        };
-        list.iter().copied().find(|&i| self.params[i].name == name)
+        match parent {
+            None => self.names.get(name).copied(),
+            Some(p) => self.params[p].children.iter().copied().find(|&i| self.params[i].name == name),
+        }
     }
     fn tech_of(&self, h: u32) -> Option<usize> {
         let b = self.hbase + 4 * self.params.len() as u32;
@@ -781,7 +822,10 @@ impl Effect {
             }
             164 => out.push(Call::Dev(65, vec![if stage != u32::MAX { stage } else { s.index }, obj(vp)])),
             165..=177 => out.push(Call::Dev(69, vec![if stage != u32::MAX { stage } else { s.index }, s.op - 164, first])),
-            178 => self.sampler_calls(vp, s.index, out),
+            // (a sampler's states on stage s.index; a sampler state inside a sampler's own states
+            // is nothing D3DX applies, and one naming its own sampler would never end)
+            178 if stage == u32::MAX => self.sampler_calls(vp, s.index, out),
+            178 => {}
             _ => {
                 static ONCE: std::sync::Once = std::sync::Once::new();
                 ONCE.call_once(|| eprintln!("sake: D3DXEffect: state {} not applied", s.op));
@@ -869,15 +913,16 @@ impl Effect {
             }
         };
         for ins in &pr.ins {
-            let nin = ins.args.len() - 1;
+            let Some(nin) = ins.args.len().checked_sub(1) else { continue };
             let base = |a: &PresArg, t: &[f64], o: &[Option<f64>]| -> usize {
-                let rel = a.index.map_or(0, |(tb, off)| get(t, o, tb, off as usize).round() as i64 * 4);
-                (a.off as i64 + rel).max(0) as usize
+                // (a register index from a value: any float, so the sum saturates)
+                let rel = a.index.map_or(0, |(tb, off)| (get(t, o, tb, off as usize).round() as i64).saturating_mul(4));
+                usize::try_from((a.off as i64).saturating_add(rel).max(0)).unwrap_or(usize::MAX)
             };
             let arg = |k: usize, j: usize, t: &[f64], o: &[Option<f64>]| -> f64 {
                 let a = &ins.args[k];
                 let j = if ins.scalar && k == 0 && nin > 1 { 0 } else { j };
-                get(t, o, a.table, base(a, t, o) + j)
+                get(t, o, a.table, base(a, t, o).saturating_add(j))
             };
             let mut res: Vec<f64> = Vec::new();
             match ins.op {
@@ -921,6 +966,11 @@ impl Effect {
             let o = &ins.args[nin];
             let at = base(o, &temp, &outv);
             for (j, v) in res.into_iter().enumerate() {
+                // (an index from parameter values past the registers writes nothing, as it reads 0:
+                // a garbage index must not grow the tables to gigabytes)
+                if at.saturating_add(j) >= PRES_SCALARS {
+                    continue;
+                }
                 match o.table {
                     4 => {
                         if outv.len() <= at + j {
@@ -987,7 +1037,33 @@ impl Effect {
     }
 }
 
+/// The scalars a preshader's output or temporary table holds: 256 float4 registers (vs_3_0's
+/// constant file, the largest).
+const PRES_SCALARS: usize = 4 * 256;
+
+/// The device calls of a pass, the constant uploads through one scratch block.
 fn run(c: &mut Ctx, dev: u32, calls: Vec<Call>) {
+    let need = calls
+        .iter()
+        .map(|k| match k {
+            Call::Dev(..) => 0,
+            Call::ConstF(_, _, f) => 16 * f.len().div_ceil(4),
+            Call::ConstI(_, _, v) => 16 * v.len().div_ceil(4),
+            Call::ConstB(_, _, v) => 4 * v.len(),
+        })
+        .max()
+        .unwrap_or(0);
+    let scratch = if need == 0 { 0 } else { mem::heap_alloc(need as u32, false) };
+    if need != 0 && scratch == 0 {
+        return;
+    }
+    run_with(c, dev, calls, scratch);
+    if scratch != 0 {
+        mem::heap_free(scratch);
+    }
+}
+
+fn run_with(c: &mut Ctx, dev: u32, calls: Vec<Call>, p: u32) {
     for call in calls {
         match call {
             Call::Dev(m, a) => {
@@ -995,32 +1071,30 @@ fn run(c: &mut Ctx, dev: u32, calls: Vec<Call>) {
             }
             Call::ConstF(vs, start, f) => {
                 let n = f.len().div_ceil(4) as u32;
-                let p = mem::heap_alloc(16 * n, true);
-                for (i, x) in f.iter().enumerate() {
-                    w32(p + 4 * i as u32, x.to_bits());
+                let mut b = vec![0u8; 16 * n as usize];
+                for (d, x) in b.chunks_exact_mut(4).zip(&f) {
+                    d.copy_from_slice(&x.to_bits().to_le_bytes());
                 }
+                mem::write(p, &b);
                 com_call(c, dev, if vs { 94 } else { 109 }, &[start, p, n]);
-                mem::heap_free(p);
             }
             Call::ConstI(vs, start, v) | Call::ConstB(vs, start, v) if v.is_empty() => {
                 let _ = (vs, start);
             }
             Call::ConstI(vs, start, v) => {
                 let n = v.len().div_ceil(4) as u32;
-                let p = mem::heap_alloc(16 * n, true);
-                for (i, x) in v.iter().enumerate() {
-                    w32(p + 4 * i as u32, *x);
+                let mut b = vec![0u8; 16 * n as usize];
+                for (d, x) in b.chunks_exact_mut(4).zip(&v) {
+                    d.copy_from_slice(&x.to_le_bytes());
                 }
+                mem::write(p, &b);
                 com_call(c, dev, if vs { 96 } else { 111 }, &[start, p, n]);
-                mem::heap_free(p);
             }
             Call::ConstB(vs, start, v) => {
-                let p = mem::heap_alloc(4 * v.len() as u32, true);
                 for (i, x) in v.iter().enumerate() {
                     w32(p + 4 * i as u32, (*x != 0) as u32);
                 }
                 com_call(c, dev, if vs { 98 } else { 113 }, &[start, p, v.len() as u32]);
-                mem::heap_free(p);
             }
         }
     }
@@ -1587,7 +1661,8 @@ pub fn create(c: &mut Ctx, device: u32, data: &[u8]) -> Result<u32, String> {
     w32(o, effect_vtable());
     w32(o + 4, 1);
     com_call(c, device, 1, &[]);
-    let e = Effect { device, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs, pres: pres_map, strings: HashMap::default() };
+    let names = top_names(&params, &top);
+    let e = Effect { device, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs, pres: pres_map, strings: HashMap::default(), names };
     FX.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, e);
     Ok(o)
 }
@@ -1668,7 +1743,8 @@ mod lifetime_tests {
         let o = mem::heap_alloc(16, true);
         w32(o, effect_vtable());
         w32(o + 4, 1);
-        let e = Effect { device: 0, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs: HashMap::default(), pres: HashMap::default(), strings: HashMap::default() };
+        let names = top_names(&params, &top);
+        let e = Effect { device: 0, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs: HashMap::default(), pres: HashMap::default(), strings: HashMap::default(), names };
         FX.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, e);
         o
     }
@@ -1702,5 +1778,134 @@ mod lifetime_tests {
         }
         // (once too often: nothing)
         mem::heap_free(d);
+    }
+}
+
+/// Review b05: names looked up through a per-effect index, preshader writes bounded by the
+/// register file, parses that don't share state across threads, values of a missing top-level
+/// parameter read as nothing.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const SRC: &str = r#"
+float4x4 WorldViewProj : WORLDVIEWPROJECTION;
+float Alpha <string UIName = "alpha"; float UIMin = 0.0;> = 0.5;
+float Alpha2 = 0.25;
+texture Tex;
+sampler2D Samp = sampler_state { Texture = <Tex>; MinFilter = LINEAR; AddressU = Clamp; };
+float4 ps(float2 uv : TEXCOORD0) : COLOR { float4 c = tex2D(Samp, uv); c.a *= Alpha * Alpha2; return c; }
+technique T <string Desc = "main";> { pass P0 { ZEnable = false; CullMode = None; PixelShader = compile ps_2_0 ps(); } }
+"#;
+
+    fn compiled() -> Vec<u8> {
+        let mut none = |_: &str, _: bool| None;
+        hlslc::compile_effect(SRC, &[], &mut none, 0).unwrap()
+    }
+
+    fn effect(data: &[u8]) -> Effect {
+        let (params, top, values, techniques, objects) = parse(data).unwrap();
+        Effect { device: 0, names: top_names(&params, &top), params, top, values, techniques, objects, hbase: 0, tech: 0, block: 0, pass: None, ctabs: HashMap::default(), pres: HashMap::default(), strings: HashMap::default() }
+    }
+
+    /// what parse makes, as text (to compare two parses)
+    fn shape(data: &[u8]) -> String {
+        let (params, top, values, techniques, _) = parse(data).unwrap();
+        let mut v: Vec<_> = values.into_iter().collect();
+        v.sort();
+        format!("{:?} {:?} {:?} {:?}", params.iter().map(|p| (&p.name, p.top, p.off, p.bytes)).collect::<Vec<_>>(), top, v, techniques.iter().map(|t| t.passes.iter().map(|p| p.states.iter().map(|s| (s.op, s.param)).collect::<Vec<_>>()).collect::<Vec<_>>()).collect::<Vec<_>>())
+    }
+
+    /// two loader threads creating effects at once each get their own state values (they
+    /// shared one process-wide list, and a missing key then aborted in Effect::value)
+    #[test]
+    fn parses_on_threads_are_their_own() {
+        let a = compiled();
+        let mut none = |_: &str, _: bool| None;
+        let b = hlslc::compile_effect("float K = 3; technique U { pass Q { ZEnable = true; FillMode = Wireframe; StencilRef = 7; } }", &[], &mut none, 0).unwrap();
+        let (wa, wb) = (shape(&a), shape(&b));
+        let ts: Vec<_> = (0..8)
+            .map(|k| {
+                let d = if k % 2 == 0 { a.clone() } else { b.clone() };
+                std::thread::spawn(move || (0..200).map(|_| shape(&d)).collect::<Vec<_>>())
+            })
+            .collect();
+        for (k, t) in ts.into_iter().enumerate() {
+            for s in t.join().unwrap() {
+                assert_eq!(&s, if k % 2 == 0 { &wa } else { &wb });
+            }
+        }
+    }
+
+    /// a top-level name finds the first parameter of that name, as the linear search did
+    #[test]
+    fn names_are_the_linear_search() {
+        let e = effect(&compiled());
+        for &i in &e.top {
+            let name = &e.params[i].name;
+            let want = e.top.iter().copied().find(|&j| e.params[j].name == *name);
+            assert_eq!(e.by_name(None, name), want);
+        }
+        assert_eq!(e.by_name(None, "Nope"), None);
+        assert!(e.by_name(None, "Alpha").is_some());
+    }
+
+    /// a value whose top-level parameter has no bytes reads as empty, not an abort
+    #[test]
+    fn missing_values_read_empty() {
+        let mut e = effect(&compiled());
+        let i = e.by_name(None, "Alpha").unwrap();
+        e.values.clear();
+        assert!(e.value(i).is_empty());
+        assert!(e.value_mut(i).is_empty());
+        assert_eq!(e.f32_at(i, 0), 0.0);
+    }
+
+    fn arg(table: u32, off: u32, index: Option<(u32, u32)>) -> PresArg {
+        PresArg { table, off, index }
+    }
+
+    proptest! {
+        /// a preshader output or temporary indexed through a parameter's value (any float, as the
+        /// game set it) writes inside the register file or not at all: the tables never pass
+        /// 1024 scalars, and an index inside writes exactly there
+        #[test]
+        fn relative_writes_stay_in_registers(x in prop_oneof![any::<f32>(), -2000.0f32..2000.0], table in prop_oneof![Just(4u32), Just(7u32)], off in 0u32..2000) {
+            let mut e = effect(&compiled());
+            let i = e.by_name(None, "Alpha").unwrap();
+            e.set_floats(i, &[x]);
+            // mov out[off + 4 * round(Alpha)] = 1.5 (the input register 0 is Alpha's)
+            let k = Const { name: "Alpha".into(), set: 2, reg: 0, count: 1, class: PC_SCALAR as u16, rows: 1, cols: 1 };
+            let mut ins = vec![PresIns { op: 0x100, comps: 1, scalar: false, args: vec![arg(1, 0, None), arg(table, off, Some((2, 0)))] }];
+            if table == 7 {
+                // (then the temporary copied to output 0, to see it)
+                ins.push(PresIns { op: 0x100, comps: 1, scalar: false, args: vec![arg(7, off, Some((2, 0))), arg(4, 0, None)] });
+            }
+            let pr = Pres { inputs: vec![k], lits: vec![1.5], ins };
+            let out = e.run_pres(&pr);
+            prop_assert!(out.len() <= PRES_SCALARS);
+            let at = (off as i64).saturating_add(((x as f64).round() as i64).saturating_mul(4)).max(0) as u64;
+            let inside = at < PRES_SCALARS as u64;
+            let got = if table == 4 { out.get(at as usize).copied().flatten() } else { out.first().copied().flatten() };
+            if inside {
+                prop_assert_eq!(got, Some(1.5));
+            } else if table == 4 {
+                prop_assert!(out.iter().all(|v| v.is_none()));
+            } else {
+                prop_assert_eq!(got, Some(0.0));
+            }
+        }
+    }
+
+    /// a CTAB whose count is past its own bytes is read as the entries it can hold
+    #[test]
+    fn ctab_counts_are_bounded() {
+        let mut d = vec![0u8; 28 + 20 * 2];
+        d[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        d[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        let k = ctab_of(&d);
+        assert!(k.len() <= d.len() / 20);
+        assert!(k.iter().all(|c| c.name.is_empty() && c.count == 0));
     }
 }

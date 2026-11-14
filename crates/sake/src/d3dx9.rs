@@ -1365,6 +1365,11 @@ pub(crate) fn com_call(c: &mut Ctx, obj: u32, m: u32, args: &[u32]) -> u32 {
     let f = mem::rp(mem::rp(obj) + mem::ps() * m);
     let mut a = vec![obj];
     a.extend_from_slice(args);
+    // (tests have no guest code loop: a host method of a test object is called directly)
+    #[cfg(test)]
+    if let Some(h) = crate::api::handler_of(f) {
+        return crate::test_guest::call(h, &a);
+    }
     c.call(f, &a)
 }
 

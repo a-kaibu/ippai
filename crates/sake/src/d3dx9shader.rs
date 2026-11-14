@@ -15,10 +15,12 @@ use crate::mem::{self, r32, w32};
 const INVALIDDATA: u32 = 0x8876_0b59;
 const INVALIDCALL: u32 = 0x8876_086c;
 
-/// The bytes of shader bytecode at `p` (through its end token).
-fn shader_at(p: u32) -> Vec<u8> {
+/// The bytes of shader bytecode at `p` (through its end token), where the guest has them (not
+/// copied: D3DXGetShaderSize and friends read up to 4 MB of it on every call); empty when they
+/// are not all readable.
+fn shader_at<'a>(p: u32) -> &'a [u8] {
     if p == 0 {
-        return Vec::new();
+        return &[];
     }
     let ver = r32(p);
     let major = (ver >> 8) & 0xff;
@@ -37,7 +39,10 @@ fn shader_at(p: u32) -> Vec<u8> {
             i += 1;
         }
     }
-    mem::slice(p, 4 * i).to_vec()
+    if mem::accessible(p, 4 * i, false, false) < 4 * i {
+        return &[];
+    }
+    mem::slice(p, 4 * i)
 }
 
 // ---- the constant table ----
@@ -63,9 +68,9 @@ struct K {
 impl K {
     fn bytes(&self, t: &Table) -> u32 {
         if self.class == 5 {
-            return self.members.iter().map(|&m| t.ks[m].bytes(t)).sum::<u32>() * self.elems.max(1);
+            return self.members.iter().fold(0u32, |a, &m| a.saturating_add(t.ks[m].bytes(t))).saturating_mul(self.elems.max(1));
         }
-        4 * self.rows * self.cols * self.elems.max(1)
+        (4 * self.rows * self.cols).saturating_mul(self.elems.max(1))
     }
 }
 
@@ -109,27 +114,52 @@ fn ct_release(c: &mut Ctx) -> u32 {
 /// registers one element of a type takes
 fn regs_of(t: &Table, k: &K) -> u32 {
     match k.class {
-        5 => k.members.iter().map(|&m| regs_of(t, &t.ks[m]) * t.ks[m].elems.max(1)).sum(),
+        5 => k.members.iter().fold(0u32, |a, &m| a.saturating_add(regs_of(t, &t.ks[m]).saturating_mul(t.ks[m].elems.max(1)))),
         2 => k.rows,
         3 => k.cols,
         _ => 1,
     }
 }
 
+/// The constants a table expands to at most (members and array elements each one): a damaged
+/// or self-referencing CTAB stops there instead of making millions of guest strings.
+const MAX_CONSTANTS: usize = 16384;
+
+/// `n` bytes at `o` + `k` of `d`, without adding past usize.
+fn at(d: &[u8], o: usize, k: usize, n: usize) -> Option<&[u8]> {
+    d.get(o..).and_then(|b| b.get(k..)).and_then(|b| b.get(..n))
+}
+fn rd16(d: &[u8], o: usize, k: usize) -> u32 {
+    at(d, o, k, 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32
+}
+fn rd32(d: &[u8], o: usize, k: usize) -> u32 {
+    at(d, o, k, 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+}
+
 /// Parses a CTAB body into a table.
 fn parse(d: &[u8], vs: bool) -> Table {
-    let r16 = |o: usize| d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32;
-    let r32 = |o: usize| d.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+    parse_with(d, vs, true)
+}
+
+/// parse; `strings`: make the guest names and handle block (false: names only, nothing to free).
+fn parse_with(d: &[u8], vs: bool, strings: bool) -> Table {
+    let r32 = |o: usize| rd32(d, o, 0);
     let s = |o: usize| String::from_utf8_lossy(d.get(o..).unwrap_or(&[]).split(|&x| x == 0).next().unwrap_or(&[])).into_owned();
     let mut t = Table { vs, version: r32(8), ks: Vec::new(), top: Vec::new(), base: 0, creator: 0 };
     let creator = s(r32(4) as usize);
-    t.creator = guest_str(&creator);
-    // (type info at `ti` for a constant named `name` at register `reg`)
-    fn add(t: &mut Table, d: &[u8], name: String, set: u32, reg: u32, count: u32, ti: usize, depth: u32) -> usize {
-        let r16 = |o: usize| d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32;
-        let r32 = |o: usize| d.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+    t.creator = if strings { guest_str(&creator) } else { 0 };
+    // (type info at `ti` for a constant named `name` at register `reg`; None past MAX_CONSTANTS)
+    #[allow(clippy::too_many_arguments)]
+    // (`element`: one element of an array of type `ti`, which is not itself an array: before,
+    // each element expanded the array again, n^4 entries for an array of n)
+    fn add(t: &mut Table, d: &[u8], name: String, set: u32, reg: u32, count: u32, ti: usize, depth: u32, strings: bool, element: bool) -> Option<usize> {
+        if t.ks.len() >= MAX_CONSTANTS {
+            return None;
+        }
+        let r16 = |k: usize| rd16(d, ti, k);
         let s = |o: usize| String::from_utf8_lossy(d.get(o..).unwrap_or(&[]).split(|&x| x == 0).next().unwrap_or(&[])).into_owned();
-        let (class, ty, rows, cols, elems, nm, mi) = (r16(ti), r16(ti + 2), r16(ti + 4), r16(ti + 6), r16(ti + 8), r16(ti + 10), r32(ti + 12) as usize);
+        let (class, ty, rows, cols, elems, nm, mi) = (r16(0), r16(2), r16(4), r16(6), r16(8), r16(10), rd32(d, ti, 12) as usize);
+        let elems = if element { 1 } else { elems };
         let idx = t.ks.len();
         t.ks.push(K {
             name: name.clone(),
@@ -143,44 +173,46 @@ fn parse(d: &[u8], vs: bool) -> Table {
             elems,
             members: Vec::new(),
             elements: Vec::new(),
-            name_ptr: guest_str(&name),
+            name_ptr: if strings { guest_str(&name) } else { 0 },
         });
         if depth > 8 {
-            return idx;
+            return Some(idx);
         }
-        // members (of one element)
+        // members (of one element; a member is 8 bytes of the table)
         let mut members = Vec::new();
         let mut at = reg;
-        for m in 0..nm as usize {
-            let mname = s(r32(mi + 8 * m) as usize);
-            let mti = r32(mi + 8 * m + 4) as usize;
-            let k = add(t, d, mname, set, at, 0, mti, depth + 1);
-            let n = regs_of(t, &t.ks[k]) * t.ks[k].elems.max(1);
+        for m in 0..(nm as usize).min(d.len() / 8) {
+            let mname = s(rd32(d, mi, 8 * m) as usize);
+            let mti = rd32(d, mi, 8 * m + 4) as usize;
+            let Some(k) = add(t, d, mname, set, at, 0, mti, depth + 1, strings, false) else { break };
+            let n = regs_of(t, &t.ks[k]).saturating_mul(t.ks[k].elems.max(1));
             t.ks[k].count = n;
             members.push(k);
-            at += n;
+            at = at.saturating_add(n);
         }
-        t.ks[idx].members = members.clone();
+        t.ks[idx].members = members;
         // elements of an array (each with its own members)
         if elems > 1 && depth < 4 {
             let per = regs_of(t, &t.ks[idx]);
             let mut els = Vec::new();
             for e in 0..elems.min(256) {
-                let k = add(t, d, format!("{name}[{e}]"), set, reg + e * per, per, ti, depth + 1);
-                t.ks[k].elems = 1;
+                let Some(k) = add(t, d, format!("{name}[{e}]"), set, reg.saturating_add(e.saturating_mul(per)), per, ti, depth + 1, strings, true) else { break };
                 els.push(k);
             }
             t.ks[idx].elements = els;
         }
-        idx
+        Some(idx)
     }
-    let (n, info) = (r32(12) as usize, r32(16) as usize);
+    // (an entry is 20 bytes of the table)
+    let (n, info) = ((r32(12) as usize).min(d.len() / 20), r32(16) as usize);
     for k in 0..n {
-        let e = info + 20 * k;
-        let i = add(&mut t, d, s(r32(e) as usize), r16(e + 4), r16(e + 6), r16(e + 8), r32(e + 12) as usize, 0);
+        let e = info.saturating_add(20 * k);
+        let Some(i) = add(&mut t, d, s(rd32(d, e, 0) as usize), rd16(d, e, 4), rd16(d, e, 6), rd16(d, e, 8), rd32(d, e, 12) as usize, 0, strings, false) else { break };
         t.top.push(i);
     }
-    t.base = mem::heap_alloc(4 * t.ks.len().max(1) as u32, true);
+    if strings {
+        t.base = mem::heap_alloc(4 * t.ks.len().max(1) as u32, true);
+    }
     t
 }
 
@@ -391,21 +423,36 @@ fn ct_defaults(_c: &mut Ctx) -> u32 {
 /// Register writes for constant `k` from values in its packed order (each element's rows by
 /// columns, members in order); (set, register, values of 4 per register).
 fn layout(t: &Table, k: usize, vals: &[f64], out: &mut Vec<(u32, u32, [f64; 4])>, used: &mut usize) {
+    // (elements visited at most: nested struct arrays whose members hold no values, 65535
+    // elements a level, would never end)
+    let mut steps = 1 << 20;
+    layout_in(t, k, vals, out, used, &mut steps);
+}
+fn layout_in(t: &Table, k: usize, vals: &[f64], out: &mut Vec<(u32, u32, [f64; 4])>, used: &mut usize, steps: &mut u32) {
     let x = &t.ks[k];
     let elems = x.elems.max(1);
     let per = regs_of(t, x);
     for e in 0..elems {
-        let base = x.reg + e * per;
+        // (nothing left to place: the rest of the elements stay as they are)
+        if *used >= vals.len() || *steps == 0 {
+            break;
+        }
+        *steps -= 1;
+        let base = x.reg.saturating_add(e.saturating_mul(per));
         if x.class == 5 {
-            let ms = if x.elements.is_empty() { x.members.clone() } else { t.ks[x.elements[e as usize]].members.clone() };
-            for m in ms {
-                layout(t, m, vals, out, used);
+            // (an element past those expanded, 256 at most, or one nested too deep for its own:
+            // the members' layout as the first element's)
+            let ms = x.elements.get(e as usize).map_or(&x.members, |&k| &t.ks[k].members);
+            for &m in ms {
+                layout_in(t, m, vals, out, used, steps);
             }
             continue;
         }
         let (r, cc) = (x.rows.max(1), x.cols.max(1));
-        let mut regs = vec![[0f64; 4]; per as usize];
-        let mut touched = vec![false; per as usize];
+        // (the registers one element writes: rows or columns, never more than its per)
+        let n = per.min(r.max(cc)) as usize;
+        let mut regs = vec![[0f64; 4]; n];
+        let mut touched = vec![false; n];
         for i in 0..r {
             for j in 0..cc {
                 let Some(&v) = vals.get(*used) else { break };
@@ -422,7 +469,7 @@ fn layout(t: &Table, k: usize, vals: &[f64], out: &mut Vec<(u32, u32, [f64; 4])>
             }
         }
         for (n, v) in regs.iter().enumerate() {
-            if touched[n] && (n as u32) < per && base + (n as u32) < x.reg + x.count.max(per) {
+            if touched[n] && (n as u32) < per && base.saturating_add(n as u32) < x.reg.saturating_add(x.count.max(per)) {
                 out.push((x.set, base + n as u32, *v));
             }
         }
@@ -445,30 +492,50 @@ fn set(c: &mut Ctx, this: u32, dev: u32, h: u32, vals: Vec<f64>) -> u32 {
     if dev == 0 {
         return INVALIDCALL;
     }
-    let p = mem::heap_alloc(16, true);
-    for (s, reg, v) in writes {
-        match s {
-            0 => {
-                w32(p, (v[0] != 0.0) as u32);
-                com_call(c, dev, if vs { 98 } else { 113 }, &[reg, p, 1]);
-            }
-            1 => {
-                for (i, x) in v.iter().enumerate() {
-                    w32(p + 4 * i as u32, *x as i32 as u32);
-                }
-                com_call(c, dev, if vs { 96 } else { 111 }, &[reg, p, 1]);
-            }
-            2 => {
-                for (i, x) in v.iter().enumerate() {
-                    w32(p + 4 * i as u32, (*x as f32).to_bits());
-                }
-                com_call(c, dev, if vs { 94 } else { 109 }, &[reg, p, 1]);
-            }
-            _ => {}
-        }
+    let runs = runs(&writes);
+    let most = runs.iter().map(|r| r.2.len()).max().unwrap_or(0);
+    if most == 0 {
+        return 0;
+    }
+    let p = mem::heap_alloc(most as u32, false);
+    if p == 0 {
+        return 0x8007000e;
+    }
+    for (s, reg, bytes) in runs {
+        mem::write(p, &bytes);
+        let n = if s == 0 { bytes.len() / 4 } else { bytes.len() / 16 } as u32;
+        let m = match s {
+            0 => if vs { 98 } else { 113 },
+            1 => if vs { 96 } else { 111 },
+            _ => if vs { 94 } else { 109 },
+        };
+        com_call(c, dev, m, &[reg, p, n]);
     }
     mem::heap_free(p);
     0
+}
+
+/// Register writes joined into runs of consecutive registers of one set, as the device takes
+/// them in one Set*ShaderConstant* call: (set, first register, the values' bytes: a BOOL per bool
+/// register, 4 ints / floats per other).
+fn runs(writes: &[(u32, u32, [f64; 4])]) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut out: Vec<(u32, u32, Vec<u8>, u32)> = Vec::new();
+    for &(s, reg, v) in writes {
+        let bytes: Vec<u8> = match s {
+            0 => ((v[0] != 0.0) as u32).to_le_bytes().to_vec(),
+            1 => v.iter().flat_map(|x| (*x as i32 as u32).to_le_bytes()).collect(),
+            2 => v.iter().flat_map(|x| (*x as f32).to_bits().to_le_bytes()).collect(),
+            _ => continue,
+        };
+        match out.last_mut() {
+            Some(l) if l.0 == s && reg.checked_sub(l.1) == Some(l.3) => {
+                l.2.extend_from_slice(&bytes);
+                l.3 += 1;
+            }
+            _ => out.push((s, reg, bytes, 1)),
+        }
+    }
+    out.into_iter().map(|(s, r, b, _)| (s, r, b)).collect()
 }
 
 fn ints(p: u32, n: u32) -> Vec<f64> {
@@ -653,11 +720,11 @@ fn D3DXCompileShaderFromFileW(c: &mut Ctx) -> u32 {
 
 fn D3DXGetShaderConstantTable(c: &mut Ctx) -> u32 {
     let (code, out) = (shader_at(c.a(0)), c.a(1));
-    get_table(&code, out)
+    get_table(code, out)
 }
 fn D3DXGetShaderConstantTableEx(c: &mut Ctx) -> u32 {
     let (code, out) = (shader_at(c.a(0)), c.a(2));
-    get_table(&code, out)
+    get_table(code, out)
 }
 fn get_table(code: &[u8], out: u32) -> u32 {
     if out == 0 {
@@ -706,12 +773,13 @@ fn D3DXGetShaderVersion(c: &mut Ctx) -> u32 {
 fn D3DXFindShaderComment(c: &mut Ctx) -> u32 {
     let (p, four, data, size) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let code = shader_at(p);
-    for (f, d) in crate::d3dx9fx::comments(&code) {
+    for (f, d) in crate::d3dx9fx::comments(code) {
         if u32::from_le_bytes(f) == four {
-            // (the body follows the fourcc in the guest's copy)
-            let off = d.as_ptr() as usize - code.as_ptr() as usize;
+            // (the body follows the fourcc in the shader itself; a body cut short by the end of
+            // the code is none)
+            let off = (d.as_ptr() as usize).checked_sub(code.as_ptr() as usize).filter(|&o| o + d.len() <= code.len());
             if data != 0 {
-                w32(data, p + off as u32);
+                w32(data, off.map_or(0, |o| p + o as u32));
             }
             if size != 0 {
                 w32(size, d.len() as u32);
@@ -725,13 +793,14 @@ fn D3DXFindShaderComment(c: &mut Ctx) -> u32 {
 fn D3DXGetShaderSamplers(c: &mut Ctx) -> u32 {
     let (names, count) = (c.a(1), c.a(2));
     let code = shader_at(c.a(0));
-    let Some((_, d)) = crate::d3dx9fx::comments(&code).into_iter().find(|(f, _)| f == b"CTAB") else {
+    let Some((_, d)) = crate::d3dx9fx::comments(code).into_iter().find(|(f, _)| f == b"CTAB") else {
         if count != 0 {
             w32(count, 0);
         }
         return 0;
     };
-    let t = parse(d, false);
+    // (only the names: no guest strings or handles made, none kept)
+    let t = parse_with(d, false, false);
     let mut n = 0;
     for &k in &t.top {
         if t.ks[k].set == 3 {
@@ -803,6 +872,23 @@ fn D3DXGetShaderInputSemantics(c: &mut Ctx) -> u32 {
 }
 fn D3DXGetShaderOutputSemantics(c: &mut Ctx) -> u32 {
     semantics(c, true)
+}
+
+/// Reads a CTAB body as ID3DXConstantTable does, without guest memory (the fuzz target): the
+/// constants it expands to, never more than MAX_CONSTANTS; then every top-level constant is laid
+/// out from a run of values, as Set*Array would.
+pub fn check_ctab(d: &[u8], vals: usize) -> usize {
+    let t = parse_with(d, false, false);
+    assert!(t.ks.len() <= MAX_CONSTANTS);
+    let v: Vec<f64> = (0..vals.min(1 << 16)).map(|i| i as f64).collect();
+    for &k in &t.top {
+        let (mut out, mut used) = (Vec::new(), 0);
+        layout(&t, k, &v, &mut out, &mut used);
+        assert!(used <= v.len());
+        let r = runs(&out);
+        assert_eq!(r.iter().map(|x| x.2.len()).sum::<usize>(), out.iter().map(|w| if w.0 == 0 { 4 } else { 16 }).sum::<usize>());
+    }
+    t.ks.len()
 }
 
 pub fn init() {
@@ -918,4 +1004,127 @@ fn ctab_names(d: &[u8]) -> Vec<(String, u32, u32, u32)> {
             (s(r32(e) as usize), r16(e + 4), r16(e + 6), r16(e + 8))
         })
         .collect()
+}
+
+/// Review b05: CTAB expansion bounded (entries by the table's bytes, MAX_CONSTANTS in all, sizes
+/// saturating), Set* on an array of structs past the 256 elements expanded falls back to the
+/// member layout, one device call per run of registers, samplers listed without guest strings,
+/// D3DXFindShaderComment's pointer inside the shader.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::test_guest::{call, enter};
+    use proptest::prelude::*;
+
+    /// A CTAB of one top-level constant: a struct array (`elems` elements of `members` float4
+    /// members, each member's type the struct itself when `cyclic`).
+    fn ctab(elems: u16, members: u16, cyclic: bool) -> Vec<u8> {
+        let mut d = vec![0u8; 128];
+        let put32 = |d: &mut Vec<u8>, o: usize, v: u32| d[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        let put16 = |d: &mut Vec<u8>, o: usize, v: u16| d[o..o + 2].copy_from_slice(&v.to_le_bytes());
+        put32(&mut d, 12, 1);
+        put32(&mut d, 16, 28);
+        // entry: name "s" at 120, float4 set at c0, type at 48
+        put32(&mut d, 28, 120);
+        put16(&mut d, 32, 2);
+        put16(&mut d, 36, 4 * members.max(1));
+        put32(&mut d, 40, 48);
+        // struct type: class 5, 1x4, elems, members at 64
+        for (o, v) in [(48, 5u16), (50, 3), (52, 1), (54, 4), (56, elems), (58, members)] {
+            put16(&mut d, o, v);
+        }
+        put32(&mut d, 60, 64);
+        // members: each name "m" at 124, type at 80 (a float4), or the struct at 48
+        for m in 0..members as usize {
+            if 64 + 8 * m + 8 > 120 {
+                break;
+            }
+            put32(&mut d, 64 + 8 * m, 124);
+            put32(&mut d, 64 + 8 * m + 4, if cyclic { 48 } else { 100 });
+        }
+        for (o, v) in [(100, 1u16), (102, 3), (104, 1), (106, 4), (108, 1), (110, 0)] {
+            put16(&mut d, o, v);
+        }
+        d[120] = b's';
+        d[124] = b'm';
+        d
+    }
+
+    /// 300 elements of a struct: the elements past the 256 expanded are laid out as members (an
+    /// index past `elements` aborted the VM)
+    #[test]
+    fn struct_arrays_past_256_lay_out() {
+        let d = ctab(300, 1, false);
+        let t = parse_with(&d, false, false);
+        let top = t.top[0];
+        assert_eq!(t.ks[top].elements.len(), 256);
+        let vals: Vec<f64> = (0..300 * 4).map(|i| i as f64).collect();
+        let (mut out, mut used) = (Vec::new(), 0);
+        layout(&t, top, &vals, &mut out, &mut used);
+        assert_eq!(used, vals.len());
+        assert_eq!(out.len(), 300);
+        assert_eq!(out[299].2, [1196.0, 1197.0, 1198.0, 1199.0]);
+    }
+
+    proptest! {
+        /// any element and member counts, cyclic or not, expand to at most MAX_CONSTANTS and lay
+        /// out without overflow
+        #[test]
+        fn expansion_is_bounded(elems in any::<u16>(), members in 0u16..8, cyclic in any::<bool>(), vals in 0usize..5000) {
+            let n = check_ctab(&ctab(elems, members, cyclic), vals);
+            prop_assert!(n <= MAX_CONSTANTS);
+        }
+
+        /// runs are the register writes in order, joined only where registers are consecutive in
+        /// one set
+        #[test]
+        fn runs_join_consecutive_registers(w in prop::collection::vec((0u32..3, 0u32..40, any::<[i8; 4]>()), 0..40)) {
+            let writes: Vec<(u32, u32, [f64; 4])> = w.iter().map(|&(s, r, v)| (s, r, v.map(|x| x as f64))).collect();
+            let r = runs(&writes);
+            let mut back = Vec::new();
+            for (s, reg, b) in &r {
+                let per = if *s == 0 { 4 } else { 16 };
+                for (k, c) in b.chunks(per).enumerate() {
+                    back.push((*s, reg + k as u32, c.to_vec()));
+                }
+            }
+            let want: Vec<(u32, u32, Vec<u8>)> = writes.iter().map(|&(s, reg, v)| (s, reg, match s {
+                0 => ((v[0] != 0.0) as u32).to_le_bytes().to_vec(),
+                1 => v.iter().flat_map(|x| (*x as i32 as u32).to_le_bytes()).collect(),
+                _ => v.iter().flat_map(|x| (*x as f32).to_bits().to_le_bytes()).collect(),
+            })).collect();
+            prop_assert_eq!(back, want);
+            for p in r.windows(2) {
+                let per = if p[0].0 == 0 { 4 } else { 16 };
+                prop_assert!(p[0].0 != p[1].0 || p[1].1 != p[0].1 + (p[0].2.len() / per) as u32);
+            }
+        }
+    }
+
+    /// a sampler listing makes no guest strings or handles
+    #[test]
+    fn sampler_parse_makes_nothing() {
+        let t = parse_with(&ctab(3, 2, false), false, false);
+        assert_eq!((t.base, t.creator), (0, 0));
+        assert!(t.ks.iter().all(|k| k.name_ptr == 0));
+    }
+
+    /// a comment whose body runs past the end token is found with no pointer (it was a pointer
+    /// worked out from an unrelated empty slice); a whole one points inside the shader
+    #[test]
+    fn find_comment_points_inside() {
+        let _g = enter();
+        // ps_2_0, comment "ABCD" of 2 dwords (fourcc + 1), end
+        let words = [0xffff_0200u32, 0x0002_fffe, u32::from_le_bytes(*b"ABCD"), 0x1234_5678, 0xffff];
+        let p = mem::heap_alloc(4 * words.len() as u32, false);
+        for (i, w) in words.iter().enumerate() {
+            w32(p + 4 * i as u32, *w);
+        }
+        let out = mem::heap_alloc(8, true);
+        assert_eq!(call(D3DXFindShaderComment, &[p, u32::from_le_bytes(*b"ABCD"), out, out + 4]), 0);
+        assert_eq!((r32(out), r32(out + 4)), (p + 12, 4));
+        assert_eq!(call(D3DXGetShaderSize, &[p]), 20);
+        mem::heap_free(p);
+        mem::heap_free(out);
+    }
 }
