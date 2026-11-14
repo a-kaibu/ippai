@@ -40,7 +40,12 @@ struct Linked {
     attribs: Vec<(String, u32)>,
     /// uniform name -> words per element
     sizes: HashMap<String, u32>,
+    /// uniform name -> elements it has (1 for one that is not an array)
+    counts: HashMap<String, u32>,
 }
+
+/// Generic vertex attributes (GL_MAX_VERTEX_ATTRIBS)
+const MAX_ATTRIBS: u32 = 16;
 
 const GL_VERTEX_SHADER: u32 = 0x8B31;
 
@@ -59,7 +64,14 @@ fn link(g: &mut Gl, p: &mut Program) -> Result<Linked, String> {
     };
     let (vs, ps) = (find(false)?, find(true)?);
     let l = glwgsl::link(&g.shaders[&vs].source, &g.shaders[&ps].source, &p.bound_attribs)?;
+    let mut counts: HashMap<String, u32> = l.sizes.keys().map(|k| (k.clone(), 1)).collect();
+    for b in [&l.vs.block, &l.ps.block].into_iter().flatten() {
+        for m in &b.members {
+            counts.insert(m.name.clone(), m.count.unwrap_or(1).max(1));
+        }
+    }
     Ok(Linked {
+        counts,
         vs: Stage { shader: shader(&l.vs.wgsl), block: l.vs.block, samplers: l.vs.samplers },
         ps: Stage { shader: shader(&l.ps.wgsl), block: l.ps.block, samplers: l.ps.samplers },
         attribs: l.attribs,
@@ -278,6 +290,10 @@ unsafe extern "C" fn glGetAttachedShaders(p: u32, max: i32, count: *mut i32, out
     }
 }
 unsafe extern "C" fn glBindAttribLocation(p: u32, idx: u32, name: *const c_char) {
+    // (an index past the generic attributes would be an input no draw has a value for)
+    if idx >= MAX_ATTRIBS {
+        return fail(GL_INVALID_VALUE);
+    }
     let n = CStr::from_ptr(name).to_string_lossy().into_owned();
     if let Some(x) = gl().as_mut().unwrap().programs.get_mut(&p) {
         x.bound_attribs.insert(n, idx);
@@ -403,7 +419,8 @@ unsafe extern "C" fn glGetUniformLocation(p: u32, name: *const c_char) -> i32 {
         Some(i) => (n[..i].to_string(), n[i + 1..].trim_end_matches(']').parse().unwrap_or(0)),
         None => (n.clone(), 0),
     };
-    if !l.sizes.contains_key(&base) {
+    // (an element past the array's end has no location, GL 2.1 section 2.15.3)
+    if l.counts.get(&base).is_none_or(|&k| elem >= k) {
         return -1;
     }
     let key = (base, elem);
@@ -430,10 +447,16 @@ fn uniform(loc: i32, n: usize, count: usize, v: &[u32]) {
     }
     with(|g, c| {
         let Some(x) = g.programs.get_mut(&c.program) else { return c.err(GL_INVALID_OPERATION) };
-        let Some((name, elem)) = x.locations.get(loc as usize).cloned() else { return };
-        let per = x.linked.as_ref().and_then(|l| l.sizes.get(&name)).copied().unwrap_or(n as u32) as usize;
-        let val = x.values.entry(name).or_default();
-        let at = elem as usize * per;
+        let Some((name, elem)) = x.locations.get(loc as usize) else { return };
+        let Some(l) = x.linked.as_ref() else { return };
+        let per = l.sizes.get(name).copied().unwrap_or(n as u32) as usize;
+        // (elements past the array's end are ignored)
+        let count = count.min(l.counts.get(name).copied().unwrap_or(1).saturating_sub(*elem) as usize);
+        let at = *elem as usize * per;
+        if !x.values.contains_key(name) {
+            x.values.insert(name.clone(), Vec::new());
+        }
+        let val = x.values.get_mut(name).unwrap();
         for k in 0..count {
             let dst = at + k * per;
             if val.len() < dst + per {
@@ -646,7 +669,7 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
                 (Src::Immediate(v, _), Some(b)) if b < 4 => v[o][b * 4..b * 4 + 4].try_into().unwrap(),
                 (Src::Immediate(_, more), Some(10)) => [more[o][24], more[o][25], more[o][26], 1.0],
                 (Src::Immediate(_, more), Some(b)) => more[o][(b - 4) * 4..(b - 3) * 4].try_into().unwrap(),
-                (Src::Immediate(..), None) => c.attrib_values[*loc as usize],
+                (Src::Immediate(..), None) => c.attrib_values.get(*loc as usize).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]),
                 (Src::Indices(ix), b) => {
                     let i = ix[o];
                     let arr = match b {
@@ -661,7 +684,7 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
                         (_, Some(1)) => c.color,
                         (_, Some(10)) => [c.normal[0], c.normal[1], c.normal[2], 1.0],
                         (_, Some(t)) if t >= 2 => c.units[t - 2].coords,
-                        _ => c.attrib_values[(*loc as usize).min(15)],
+                        _ => c.attrib_values.get(*loc as usize).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]),
                     }
                 }
             };
@@ -732,3 +755,5 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
 mod programs_tests;
 #[cfg(test)]
 mod draw_tests;
+#[cfg(test)]
+mod uniform_tests;
