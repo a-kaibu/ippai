@@ -99,13 +99,13 @@ pub fn has_feature(name: &str) -> bool {
 }
 /// Forgets object `i` (WebGPU frees it once unused).
 pub fn drop(i: Id) {
-    forget_set();
+    forget_id(i);
     unsafe { ffi::vngpu_drop(i) }
 }
 /// destroy() of a texture or buffer, then forgets it.
 pub fn destroy(i: Id) {
     if i != 0 {
-        forget_set();
+        forget_id(i);
         unsafe {
             ffi::vngpu_destroy(i);
             ffi::vngpu_drop(i);
@@ -197,6 +197,62 @@ pub unsafe extern "C" fn vnhost_gpu_pipelines(out: *mut f64) {
         s.quantile(0.95) as f64 / 1000.0,
     ];
     std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len());
+}
+
+#[cfg(test)]
+mod set_tests {
+    use super::*;
+    use crate::render::model;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Random buffers made, set as vertex and index buffers, and dropped (their indexes
+        /// then given to new ones) inside one pass: after every set, the model of WebGPU has
+        /// the buffer asked for bound (a call left out because it "was set" never leaves an old
+        /// one bound), and a drop of another object keeps the calls out.
+        #[test]
+        fn sets_left_out_are_set_already(ops in prop::collection::vec((0u8..4, 0usize..6, 0u32..3, 0u32..4), 1..80)) {
+            model::reset();
+            forget_set();
+            let tex = texture(r#"{"size":[4,4,1],"format":"rgba8unorm","usage":16}"#);
+            let view = view(tex, "");
+            begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{view},"loadOp":"clear","clearValue":[0,0,0,0],"storeOp":"store"}}]}}"#));
+            let mut bufs: Vec<Id> = (0..6).map(|_| buffer(64, usage::VERTEX | usage::INDEX)).collect();
+            let mut saved = 0;
+            for (op, k, slot, off) in ops {
+                match op {
+                    0 => {
+                        set_vertex_buffer(slot, bufs[k], off * 4);
+                        let want = model::with(|m| m.at_index(bufs[k]));
+                        prop_assert_eq!(model::with(|m| m.vbuf(slot)), Some((want, off * 4)));
+                    }
+                    1 => {
+                        set_index_buffer(bufs[k], false, off * 2);
+                        let want = model::with(|m| m.at_index(bufs[k]));
+                        prop_assert_eq!(model::with(|m| m.ibuf()), Some((want, false, off * 2)));
+                    }
+                    2 => {
+                        // (dropped, and a new one, likely at the same index)
+                        drop(bufs[k]);
+                        bufs[k] = buffer(64, usage::VERTEX | usage::INDEX);
+                    }
+                    _ => {
+                        // (another object dropped: what is set stays known)
+                        let before = STATE_CALLS_SAVED.load(std::sync::atomic::Ordering::Relaxed);
+                        let s = sampler("{}");
+                        drop(s);
+                        set_vertex_buffer(slot, bufs[k], off * 4);
+                        set_vertex_buffer(slot, bufs[k], off * 4);
+                        saved += (STATE_CALLS_SAVED.load(std::sync::atomic::Ordering::Relaxed) > before) as u32;
+                    }
+                }
+            }
+            prop_assert!(!no_set_opt() || saved == 0);
+            end_pass();
+            let errors = model::with(|m| std::mem::take(&mut m.errors));
+            prop_assert!(errors.is_empty(), "{:?}", errors);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +379,27 @@ fn no_set_opt() -> bool {
 
 fn forget_set() {
     SET.with(|s| *s.borrow_mut() = PassSet::default());
+}
+
+/// Object `i` is dropped: what was set with it is forgotten (its index may name another object
+/// next), the rest is kept. Forgetting everything made the next draw after any drop in a pass
+/// (a pass's view, a clear's group) set its pipeline, groups, buffers and the rest again.
+fn forget_id(i: Id) {
+    SET.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.pipeline == Some(i) {
+            s.pipeline = None;
+        }
+        for g in s.groups.iter_mut().filter(|g| g.is_some_and(|g| g.0 == i)) {
+            *g = None;
+        }
+        for v in s.vertex.iter_mut().filter(|v| v.is_some_and(|v| v.0 == i)) {
+            *v = None;
+        }
+        if s.index.is_some_and(|x| x.0 == i) {
+            s.index = None;
+        }
+    })
 }
 
 /// Whether the state `f` picks is to be set to `v` (it is not already)

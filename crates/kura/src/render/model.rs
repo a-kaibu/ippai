@@ -1541,6 +1541,18 @@ impl Model {
         }
     }
 
+    /// Tests: the object behind table index `i`.
+    pub fn at_index(&self, i: u32) -> usize {
+        self.table[i as usize].expect("a live object")
+    }
+    /// Tests: the open pass's vertex buffer at `slot` and its index buffer (objects, offsets).
+    pub fn vbuf(&self, slot: u32) -> Option<(usize, u32)> {
+        self.pass.as_ref()?.3.vbufs.get(slot as usize).copied().flatten()
+    }
+    pub fn ibuf(&self) -> Option<(usize, bool, u32)> {
+        self.pass.as_ref()?.3.ibuf
+    }
+
     /// The shader modules and render pipelines the page holds now (not dropped).
     pub fn live_programs(&self) -> (usize, usize) {
         let live = || self.table.iter().flatten().map(|&k| &self.objs[k]);
