@@ -1740,6 +1740,16 @@ pub fn inherit(obj: u32) {
     }
 }
 
+/// A thread `obj` that could not be made: the reference `inherit` took goes.
+pub fn forget(obj: u32) {
+    let h = {
+        let mut v = INHERIT.lock().unwrap();
+        let Some(i) = v.iter().position(|x| x.0 == obj) else { return };
+        v.remove(i).1
+    };
+    release(h);
+}
+
 /// On the new thread of `obj`: the context its creator had active, activated.
 pub fn adopt(obj: u32) {
     let h = {

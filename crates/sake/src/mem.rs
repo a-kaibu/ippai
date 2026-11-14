@@ -458,6 +458,18 @@ fn jit_prot(a: u32, n: u32, prot: u32) {
     kura::jit::pages_protected(a as usize, n as usize, p);
 }
 
+/// The pages [first, last) of an allocation of `size` bytes that [off, off + n) touches (`off`
+/// inside it), cut at its end: in 64 bits, since `n` is the guest's (VirtualProtect,
+/// NtProtectVirtualMemory, VirtualFree's size): `off + n + PAGE - 1` in u32 wrapped for n near
+/// 0xFFFFFFFF, `last` came out before `first` and `p[first..last]` panicked, the VM gone, or
+/// `(last - first) * PAGE` underflowed into the JIT's page tables (review A-13).
+pub(crate) fn page_span(off: u32, n: u32, size: u32) -> (u32, u32) {
+    let pages = size / PAGE;
+    let first = (off / PAGE).min(pages);
+    let last = (off as u64 + n as u64).div_ceil(PAGE as u64).min(pages as u64) as u32;
+    (first, last.max(first))
+}
+
 /// Commits a whole allocation.
 pub fn commit(base: u32, prot: u32) {
     let size = SPACE.lock().unwrap().get(&base).map(|r| r.size);
@@ -469,8 +481,7 @@ pub fn commit(base: u32, prot: u32) {
 /// Commits the pages of [a, a+n) (inside one allocation); false if they are not reserved.
 pub fn commit_range(a: u32, n: u32, prot: u32) -> bool {
     let Some((b, r)) = find(a) else { return false };
-    let first = (a - b) / PAGE;
-    let last = ((a - b + n.max(1) + PAGE - 1) / PAGE).min(r.size / PAGE);
+    let (first, last) = page_span(a - b, n.max(1), r.size);
     if let Some(p) = PAGES.lock().unwrap().get_mut(&b) {
         for x in &mut p[first as usize..last as usize] {
             *x = COMMITTED | prot;
@@ -487,8 +498,7 @@ pub fn commit_range(a: u32, n: u32, prot: u32) -> bool {
 /// Decommits (and zeroes) the pages of [a, a+n); n = 0: to the end of the allocation.
 pub fn decommit_range(a: u32, n: u32) -> bool {
     let Some((b, r)) = find(a) else { return false };
-    let first = (a - b) / PAGE;
-    let last = if n == 0 { r.size / PAGE } else { ((a - b + n + PAGE - 1) / PAGE).min(r.size / PAGE) };
+    let (first, last) = if n == 0 { ((a - b) / PAGE, r.size / PAGE) } else { page_span(a - b, n, r.size) };
     let mut g = PAGES.lock().unwrap();
     if let Some(p) = g.get_mut(&b) {
         for i in first..last {
@@ -549,8 +559,7 @@ pub fn protect(a: u32, n: u32, prot: u32) -> Option<u32> {
     let (b, r) = find(a)?;
     let mut g = PAGES.lock().unwrap();
     let p = g.get_mut(&b)?;
-    let first = (a - b) / PAGE;
-    let last = ((a - b + n.max(1) + PAGE - 1) / PAGE).min(r.size / PAGE);
+    let (first, last) = page_span(a - b, n.max(1), r.size);
     let old = p[first as usize] & !COMMITTED;
     for x in &mut p[first as usize..last as usize] {
         if *x & COMMITTED != 0 {
@@ -562,7 +571,7 @@ pub fn protect(a: u32, n: u32, prot: u32) -> Option<u32> {
     // writable code may be rewritten: the JIT drops what it translated there (QLIE patches its
     // code with VirtualProtect)
     if prot & 0xcc != 0 {
-        kura::jit::code_changed(a as usize, n as usize);
+        kura::jit::code_changed(a as usize, (b + last * PAGE - a) as usize);
     }
     Some(if old == 0 { r.prot } else { old })
 }
@@ -895,6 +904,48 @@ pub(crate) fn rmw32_at(p: usize, f: impl Fn(u32) -> u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{over_reserved_block, rmw32_at, GUEST_TOP};
+
+    /// Review A-13: guest sizes near 0xFFFFFFFF in VirtualProtect, VirtualFree(MEM_DECOMMIT) and
+    /// commits: the pages run to the allocation's end (the u32 sum wrapped, `p[first..last]`
+    /// panicked with last < first, `(last - first) * PAGE` underflowed into the JIT tables).
+    #[test]
+    fn huge_sizes_stop_at_the_allocation() {
+        use super::{commit_range, decommit_range, protect, query, release, reserve, PAGE};
+        let _g = crate::test_guest::enter();
+        let b = reserve(0, 16 * PAGE, 4, 0x2_0000, false).unwrap();
+        assert!(commit_range(b, 16 * PAGE, 4));
+        for n in [u32::MAX, u32::MAX - 0xfff, u32::MAX - 0x2fff, 0xffff_f001, 0x8000_0000] {
+            assert_eq!(protect(b + 3 * PAGE, n, 2), Some(4), "{n:#x}");
+            let q = query(b + 15 * PAGE).unwrap();
+            assert_eq!(q.5, 2, "{n:#x}: the last page read-only");
+            assert_eq!(query(b + 2 * PAGE).unwrap().5, 4, "{n:#x}: pages before untouched");
+            assert!(commit_range(b + 3 * PAGE, n, 4), "{n:#x}");
+            assert_eq!(query(b + 15 * PAGE).unwrap().5, 4);
+        }
+        assert!(decommit_range(b + 5 * PAGE, u32::MAX - 0x3fff));
+        assert_eq!(query(b + 15 * PAGE).unwrap().4, 0x2000, "decommitted to the end");
+        assert_eq!(query(b + 4 * PAGE).unwrap().4, 0x1000, "the page before stays");
+        assert!(release(b));
+    }
+
+    proptest::proptest! {
+        /// page_span for any offset inside, any size and any allocation: first <= last <= the
+        /// allocation's pages; the pages are the ones [off, off + n) touches when it fits.
+        #[test]
+        fn page_span_any(pages in 1u32..0x10_0000, off_page in 0u32..0x10_0000, within in 0u32..0x1000, n: u32) {
+            use super::{page_span, PAGE};
+            let size = pages * PAGE;
+            let off = (off_page % pages) * PAGE + within;
+            let (first, last) = page_span(off, n, size);
+            proptest::prop_assert!(first <= last && last <= pages);
+            proptest::prop_assert_eq!(first, off / PAGE);
+            if off as u64 + n as u64 <= size as u64 {
+                proptest::prop_assert_eq!(last as u64, (off as u64 + n as u64).div_ceil(PAGE as u64));
+            } else {
+                proptest::prop_assert_eq!(last, pages);
+            }
+        }
+    }
 
     /// Blocks standing for addresses above 4G (#62), as VirtualAlloc and the loader make them:
     /// reserved at the low half, `set_high`; every address inside widens to the high one,

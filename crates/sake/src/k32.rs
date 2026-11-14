@@ -499,6 +499,12 @@ fn _beginthread(c: &mut Ctx) -> u32 {
     let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
     let (start, arg) = crt_start(start, arg);
     let tid = crate::spawn_gated(start, arg, thread_stack(stack, 0), h, false);
+    if tid == 0 {
+        // (no thread could be made: -1 and EAGAIN, as the CRT)
+        obj::close(h);
+        crate::crt::set_errno(11);
+        return u32::MAX;
+    }
     obj::with(|t| {
         if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
             *x = tid;
@@ -836,6 +842,15 @@ fn create_thread(start: u32, param: u32, stack: u32, flags: u32, inherit: bool) 
         crate::actctx::inherit(h);
     }
     let tid = crate::spawn_gated(start, param, stack, h, suspended);
+    if tid == 0 {
+        // no TEB and stack, or no host thread: NULL and ERROR_NOT_ENOUGH_MEMORY, as Windows
+        // (review A-13: this was an abort)
+        GATE.lock().unwrap().retain(|g| g.0 != h);
+        crate::actctx::forget(h);
+        obj::close(h);
+        last_error(8);
+        return (0, 0);
+    }
     obj::with(|t| {
         if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
             *x = tid;
@@ -885,7 +900,9 @@ fn remote_thread(c: &mut Ctx, ptid: u32) -> u32 {
 /// crate::xmem's CREATE_THREAD here: the new thread's id (its end goes to the kernel)
 pub(crate) fn thread_for_other(start: u32, param: u32, stack: u32, flags: u32) -> u32 {
     let (_, tid) = create_thread(start, param, stack, flags, false);
-    crate::kern::with(|k| k.thread_started(tid));
+    if tid != 0 {
+        crate::kern::with(|k| k.thread_started(tid));
+    }
     tid
 }
 /// crate::xmem's SUSPEND / RESUME here, of thread `tid`: its count before
@@ -10377,5 +10394,56 @@ mod device_names {
                 prop_assert_eq!(got, Some(Err(2)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod thread_fail_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// Review A-13: a thread that cannot be made is CreateThread's NULL and
+    /// ERROR_NOT_ENOUGH_MEMORY (and _beginthread's -1, _beginthreadex's 0), not an abort of the
+    /// VM: (a) the host refuses another thread (a browser Worker, emscripten's pool), (b) the
+    /// guest address space has no room for a TEB and a stack (the new host thread finds out
+    /// and says so). The handle made for it is gone again.
+    #[test]
+    fn threads_that_cannot_be_made() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        let ptid = mem::heap_alloc(4, true);
+        let handles = || obj::with(|t| t.objs.values().count());
+        for case in ["no host thread", "no address space"] {
+            let mut held = Vec::new();
+            if case == "no host thread" {
+                crate::SPAWN_FAILS.store(1, Relaxed);
+            } else {
+                // every hole of the guest space taken, the largest blocks first
+                for size in [256u32 << 20, 16 << 20, 1 << 20, 0x1_0000] {
+                    while let Some(b) = mem::reserve(0, size, 4, 0x2_0000, false) {
+                        held.push(b);
+                    }
+                }
+            }
+            let before = handles();
+            mem::w32(ptid, 0xdead);
+            last_error(0);
+            assert_eq!(crate::test_guest::call(CreateThread, &[0, 0, 0x40_1000, 0, 0, ptid]), 0, "{case}");
+            assert_eq!(get_last_error(), 8, "{case}");
+            assert_eq!(mem::r32(ptid), 0, "{case}");
+            assert_eq!(handles(), before, "{case}: the thread's handle stays");
+            if case == "no host thread" {
+                crate::SPAWN_FAILS.store(1, Relaxed);
+                assert_eq!(crate::test_guest::call(_beginthreadex, &[0, 0, 0x40_1000, 0, 0, ptid]), 0);
+                crate::SPAWN_FAILS.store(1, Relaxed);
+                assert_eq!(crate::test_guest::call(_beginthread, &[0x40_1000, 0, 0]), u32::MAX);
+                assert_eq!(handles(), before);
+            }
+            assert_eq!(crate::SPAWN_FAILS.load(Relaxed), 0);
+            for b in held {
+                assert!(mem::release(b));
+            }
+        }
+        mem::heap_free(ptid);
     }
 }

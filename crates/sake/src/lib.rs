@@ -261,15 +261,20 @@ pub fn teb_tls_pointer() -> u32 {
     if mem::x64() { 0x58 } else { 0x2c }
 }
 
-/// A TEB and a stack for a new thread; returns (teb, stack top, stack base).
-fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
-    let teb = mem::reserve(0, 0x3000, 4, 0x20000, true).expect("TEB");
+/// A TEB and a stack for a new thread; returns (teb, stack top, stack base). None when the
+/// guest address space has no room for them (CreateThread fails with ERROR_NOT_ENOUGH_MEMORY
+/// as on Windows; this was an abort of the whole VM, review A-13).
+fn new_teb(tid: u32, stack: u32) -> Option<(u32, u32, u32)> {
+    let teb = mem::reserve(0, 0x3000, 4, 0x20000, true)?;
     mem::commit(teb, 4);
     // (at least Windows' usual 1 MB, and from the top: a stack near the bottom of the address
     // space, within the JIT's safety margin of GUEST_LO, makes every block that touches ESP
     // bail to the interpreter; KiriKiri's audio thread asked for 64 KB and got 0x10000)
     let size = stack.max(0x10_0000);
-    let st = mem::reserve(0, size, 4, 0x20000, true).expect("stack");
+    let Some(st) = mem::reserve(0, size, 4, 0x20000, true) else {
+        mem::release(teb);
+        return None;
+    };
     mem::commit(st, 4);
     let top = st + size;
     if mem::x64() {
@@ -282,7 +287,7 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
         mem::w64(teb + 0x60, PEB.load(Ordering::Relaxed) as u64);
         mem::w64(teb + 0x20, 0x1e00); // NT_TIB Version (FiberData until ConvertThreadToFiber)
         mem::w64(teb + 0x1478, st as u64); // DeallocationStack
-        return (teb, top, st);
+        return Some((teb, top, st));
     }
     w32(teb, 0xffff_ffff); // ExceptionList
     w32(teb + 4, top);
@@ -294,13 +299,13 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
     w32(teb + 0x30, PEB.load(Ordering::Relaxed));
     w32(teb + 0x10, 0x1e00); // NT_TIB Version (FiberData until ConvertThreadToFiber)
     w32(teb + 0xe0c, st); // DeallocationStack
-    (teb, top, st)
+    Some((teb, top, st))
 }
 
-/// Makes the calling host thread a guest thread.
-fn enter(stack: u32) -> &'static mut Thread {
+/// Makes the calling host thread a guest thread (None: no room for its TEB and stack).
+fn enter(stack: u32) -> Option<&'static mut Thread> {
     let tid = NEXT_TID.fetch_add(4, Ordering::Relaxed);
-    let (teb, top, st) = new_teb(tid, stack);
+    let (teb, top, st) = new_teb(tid, stack)?;
     let cpu = kura::cpu::create(api::TRAP_LO, api::TRAP_HI);
     unsafe {
         (*cpu).fs_base = teb;
@@ -317,7 +322,7 @@ fn enter(stack: u32) -> &'static mut Thread {
     let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st, tls: [0; 8], tp: None, api: (0, 0) }));
     adopt(t as *mut Thread);
     k32::tls_thread_init(teb);
-    t
+    Some(t)
 }
 
 /// Makes the calling host thread run guest thread `t` (a new one, or one a restored save
@@ -725,14 +730,24 @@ pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
 /// handled (as on Windows)
 pub static EXIT_CODE: AtomicU32 = AtomicU32::new(3);
 
-/// Starts a guest thread at `start(param)`; returns its tid. `gated`: it waits for
-/// ResumeThread first.
+/// Starts a guest thread at `start(param)`; returns its tid, 0 when it could not be made: no
+/// room in the guest address space for its TEB and stack, or no host thread (the browser
+/// refusing another Worker, emscripten's pthread pool empty). Those were `expect`s, an abort
+/// of the whole VM where Windows' CreateThread returns NULL (review A-13). `gated`: it waits
+/// for ResumeThread first.
 pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) -> u32 {
+    // (test hook: as when the host refuses another thread)
+    if SPAWN_FAILS.load(Ordering::Relaxed) != 0 && SPAWN_FAILS.fetch_sub(1, Ordering::Relaxed) != 0 {
+        return 0;
+    }
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    let made = std::thread::Builder::new()
         .stack_size(1 << 20)
         .spawn(move || {
-            let t = enter(stack);
+            let Some(t) = enter(stack) else {
+                let _ = tx.send(0);
+                return;
+            };
             // (the thread's own reference: the creator closing its handle doesn't end the
             // object while the thread runs; GetCurrentThread duplicates it, mono's GC does)
             t.obj = obj::dup(obj);
@@ -744,10 +759,16 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
             k32::check_terminate();
             thread_start(t, start, param);
             run(unsafe { &mut *t.cpu }, 0);
-        })
-        .expect("thread");
-    rx.recv().unwrap()
+        });
+    if made.is_err() {
+        // (the closure, never run, went with its sender)
+        return 0;
+    }
+    rx.recv().unwrap_or(0)
 }
+
+/// Tests: the next this many spawn_gated calls fail as when no host thread can be made.
+pub(crate) static SPAWN_FAILS: AtomicU32 = AtomicU32::new(0);
 
 /// A new thread's first steps: DllMain(THREAD_ATTACH), then `start(param)` set up to run.
 pub(crate) fn thread_start(t: &mut Thread, start: u32, param: u32) {
@@ -938,7 +959,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     if let Some(r) = kura::fs::read(exe).ok().as_deref().and_then(pe::stack_reserve) {
         STACK_RESERVE.store(r, Ordering::Relaxed);
     }
-    let t = enter(pe::thread_stack(STACK_RESERVE.load(Ordering::Relaxed), 0, 0));
+    let t = enter(pe::thread_stack(STACK_RESERVE.load(Ordering::Relaxed), 0, 0)).expect("the main thread's TEB and stack");
     t.obj = obj::new_thread_obj(t.tid);
     let cpu = unsafe { &mut *t.cpu };
     let wpath = files::host_to_win(exe);
