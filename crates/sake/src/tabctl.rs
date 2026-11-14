@@ -742,3 +742,27 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
         _ => def_proc(c, wide),
     }
 }
+
+#[cfg(test)]
+mod review_b09_tests {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+
+    /// review b09: TCM_SETITEMEXTRA takes up to EXTRA_MAX bytes per item and refuses more; the
+    /// control's state goes at WM_NCDESTROY and no later message brings it back
+    #[test]
+    fn extra_bytes_are_bounded_and_state_goes_with_the_window() {
+        let _g = enter();
+        guest_thread();
+        let h = 0x7fe1_0004;
+        assert_eq!(call(proc_fn, &[h, 0x130e, EXTRA_MAX + 1, 0]), 0);
+        assert_eq!(call(proc_fn, &[h, 0x130e, u32::MAX, 0]), 0);
+        assert_eq!(call(proc_fn, &[h, 0x130e, 16, 0]), 1);
+        assert_eq!(tab(h, |t| t.extra), 16);
+        assert_eq!(call(proc_fn, &[h, 0x130e, EXTRA_MAX, 0]), 1);
+        call(proc_fn, &[h, 0x82, 0, 0]);
+        assert!(!TABS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&h)), "gone at WM_NCDESTROY");
+        call(proc_fn, &[h, 0x82, 0, 0]);
+        assert!(!TABS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&h)), "not made again");
+    }
+}

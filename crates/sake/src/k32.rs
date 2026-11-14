@@ -973,7 +973,7 @@ pub(crate) fn suspend_count(tid: u32, suspend: bool) -> Result<u32, u32> {
             return Ok(old);
         }
     }
-    if suspend { SUSPENDS.suspend(tid).ok_or(298) } else { Ok(SUSPENDS.resume(tid)) }
+    if suspend { SUSPENDS.suspend(tid).ok_or(ERROR_SIGNAL_REFUSED) } else { Ok(SUSPENDS.resume(tid)) }
 }
 
 /// Blocks a new thread created suspended until ResumeThread.
@@ -1012,6 +1012,10 @@ pub(crate) fn snap_wake() {
 }
 
 /// Running threads another (or the thread itself) suspended: waits::suspend.
+/// SuspendThread past MAXIMUM_SUSPEND_COUNT: STATUS_SUSPEND_COUNT_EXCEEDED as Win32 gives it
+/// (winref suspend: "suspends until the limit: 126 err 156")
+const ERROR_SIGNAL_REFUSED: u32 = 156;
+
 pub(crate) static SUSPENDS: std::sync::LazyLock<waits::suspend::Suspends> = std::sync::LazyLock::new(Default::default);
 
 /// kura's run loop, before every slice: a suspended thread stands still here (true: it did).
@@ -1052,7 +1056,7 @@ fn nt_suspend_resume(c: &mut Ctx, suspend: bool) -> u32 {
     if n == u32::MAX {
         return match get_last_error() {
             5 => 0xC000_0022,
-            298 => 0xC000_004A, // STATUS_SUSPEND_COUNT_EXCEEDED
+            ERROR_SIGNAL_REFUSED => 0xC000_004A, // STATUS_SUSPEND_COUNT_EXCEEDED
             _ => 0xC000_0008,
         };
     }
@@ -1205,7 +1209,7 @@ fn SuspendThread(c: &mut Ctx) -> u32 {
     }
     if let Some((_, n)) = GATE.lock().unwrap().iter_mut().find(|(x, n)| *x == h && *n > 0) {
         if *n >= waits::suspend::MAX_COUNT {
-            last_error(298);
+            last_error(ERROR_SIGNAL_REFUSED);
             return u32::MAX;
         }
         *n += 1;
@@ -1220,7 +1224,7 @@ fn SuspendThread(c: &mut Ctx) -> u32 {
         return u32::MAX;
     };
     let Some(old) = SUSPENDS.suspend(tid) else {
-        last_error(298); // ERROR_SIGNAL_REFCOUNT_EXCEEDED
+        last_error(ERROR_SIGNAL_REFUSED);
         return u32::MAX;
     };
     if tid == crate::cur().tid {
