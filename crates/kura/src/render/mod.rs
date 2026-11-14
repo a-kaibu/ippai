@@ -597,24 +597,43 @@ impl Render {
         io[0] = self.serial.unwrap_or(u32::MAX);
         // (the changed rows straight from the game window's surface when only it changed)
         io[3] = self.serial.is_some() as u32;
-        let bits = unsafe { crate::display::vnhost_display_frame(io.as_mut_ptr()) };
-        if Some(io[0]) == self.serial {
-            return false;
-        }
-        let new_tex = self.tex == 0 || self.tex_size != (width, height);
-        if new_tex {
-            gpu::destroy(self.tex);
-            gpu::drop(self.tex_view);
-            self.tex = gpu::texture(&format!(r#"{{"size":[{width},{height}],"format":"bgra8unorm","usage":{}}}"#, usage::T_BINDING | usage::T_COPY_DST));
-            self.tex_view = gpu::view(self.tex, "");
-            self.tex_size = (width, height);
-            self.group_main = [0, 0];
-            if io[3] == 1 {
-                // (the texture is new: everything, from the screen)
+        let again = crate::display::frame_with(&mut io, |io, bits, e| {
+            if Some(io[0]) == self.serial {
+                return Some(false);
+            }
+            // (the screen is not the size this frame was laid out for: a window moved since
+            // the extent was taken; the next frame takes both again)
+            if (e[2] - e[0], e[3] - e[1]) != (width, height) {
+                return Some(false);
+            }
+            let new_tex = self.tex == 0 || self.tex_size != (width, height);
+            if new_tex {
+                gpu::destroy(self.tex);
+                gpu::drop(self.tex_view);
+                self.tex = gpu::texture(&format!(r#"{{"size":[{width},{height}],"format":"bgra8unorm","usage":{}}}"#, usage::T_BINDING | usage::T_COPY_DST));
+                self.tex_view = gpu::view(self.tex, "");
+                self.tex_size = (width, height);
+                self.group_main = [0, 0];
+                if io[3] == 1 {
+                    // (the texture is new: everything, from the screen)
+                    return None;
+                }
+            }
+            self.upload_rows(io, bits, new_tex);
+            Some(true)
+        });
+        match again {
+            Some(r) => r,
+            None => {
                 self.serial = None;
-                return self.upload_screen();
+                self.upload_screen()
             }
         }
+    }
+
+    /// `upload_screen`'s rows of frame `io` (the screen buffer `bits`), under the display's lock.
+    fn upload_rows(&mut self, io: &[u32; 12], bits: *const u32, new_tex: bool) {
+        let (width, height) = (self.width, self.height);
         let (mut y0, mut y1) = (io[1] as i32, io[2] as i32);
         let (mut x0, mut x1) = (io[10] as i32, (io[11] as i32).min(width));
         if new_tex {
@@ -643,7 +662,6 @@ impl Render {
         }
         self.serial = Some(io[0]);
         *FRAME.lock().unwrap_or_else(|e| e.into_inner()) = frame;
-        true
     }
 
     /// Draws the shown part of the screen, the Direct3D window and the windows above it into

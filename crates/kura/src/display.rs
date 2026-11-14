@@ -758,6 +758,19 @@ pub unsafe extern "C" fn vnhost_display_frame(io: *mut u32) -> *const u32 {
     with(|d| d.frame(io.try_into().unwrap(), direct_ok))
 }
 
+/// `vnhost_display_frame` for the drawing thread, with `f` run on the frame while the screen
+/// can't change: `f(io, the buffer, its extent)`. The extent taken before and the buffer taken
+/// after could be of two sizes (a window moved between), and the rows were read after the
+/// lock was gone: a frame of another size's rows, or of a buffer freed meanwhile.
+pub fn frame_with<R>(io: &mut [u32; 12], f: impl FnOnce(&[u32; 12], *const u32, [i32; 4]) -> R) -> R {
+    let direct_ok = io[3] == 1;
+    with(|d| {
+        let p = d.frame(io, direct_ok);
+        let e = d.ext;
+        f(io, p, [e.l, e.t, e.r, e.b])
+    })
+}
+
 impl Display {
     fn frame(&mut self, io: &mut [u32; 12], direct_ok: bool) -> *const u32 {
         let d = self;
@@ -1554,6 +1567,44 @@ mod tests {
             vnhost_window_draw_shared(7, [0, 0, 8, 6].as_ptr(), surf.as_ptr(), 8, 6);
             vnhost_window_unshare(7);
             with(|d| assert_eq!((d.wins[&7].shared, d.wins[&7].px()[0]), (0, 0xff65_4321)));
+            // (the extent taken, then window 8 moved over the edge: the frame says the new one,
+            // and its buffer holds all of it while the closure reads it)
+            let mut e0 = [0i32; 4];
+            vnhost_display_extent(e0.as_mut_ptr());
+            vnhost_window_pos(8, [60, 30, 80, 34, 60, 30, 80, 34].as_ptr(), 1, 0, 0);
+            let mut io = [u32::MAX; 12];
+            io[3] = 0;
+            let (e, black) = frame_with(&mut io, |_, p, e| {
+                let px = std::slice::from_raw_parts(p, ((e[2] - e[0]) * (e[3] - e[1])) as usize);
+                (e, px.iter().filter(|&&c| c == BLACK).count())
+            });
+            assert_ne!(e, e0, "the extent moved");
+            assert_eq!(e, [0, 0, 80, 48]);
+            assert!(black > 0);
+            // (a thread moving it back and forth while frames are taken: every frame's buffer
+            // is its extent's size, read whole under the lock)
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let s2 = stop.clone();
+            let mover = std::thread::spawn(move || {
+                let mut k = 0;
+                while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+                    let x = 50 + k % 40;
+                    vnhost_window_pos(8, [x, 30, x + 20, 34, x, 30, x + 20, 34].as_ptr(), 1, 0, 0);
+                    k += 1;
+                }
+            });
+            for _ in 0..2000 {
+                let mut io = [u32::MAX; 12];
+                io[3] = 0;
+                frame_with(&mut io, |_, p, e| {
+                    let n = ((e[2] - e[0]) * (e[3] - e[1])) as usize;
+                    let px = std::slice::from_raw_parts(p, n);
+                    assert!(px.iter().all(|&c| c == BLACK || c == 0xff12_3456 || c >> 24 == 0xff), "a frame of other bytes");
+                    assert!(e[2] >= 64 && e[3] == 48, "{e:?}");
+                });
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            mover.join().unwrap();
             vnhost_window_destroy(8);
             assert_eq!(vnhost_display_windows(list.as_mut_ptr(), 2), 1);
             vnhost_window_destroy(7);
