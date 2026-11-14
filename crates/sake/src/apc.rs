@@ -9,8 +9,9 @@ use std::sync::Mutex;
 
 pub const WAIT_IO_COMPLETION: u32 = 0xc0;
 
-/// (thread id, function, arguments, argument count), oldest first
-static QUEUE: Mutex<Vec<(u32, u32, [u32; 4], usize)>> = Mutex::new(Vec::new());
+/// (thread id, function, arguments, argument count, guest block freed once it ran or was
+/// dropped: 0 none), oldest first
+static QUEUE: Mutex<Vec<(u32, u32, [u32; 4], usize, u32)>> = Mutex::new(Vec::new());
 
 /// Queues `f(arg)` for thread `tid` and wakes it
 pub fn queue(tid: u32, f: u32, arg: u32) {
@@ -19,9 +20,15 @@ pub fn queue(tid: u32, f: u32, arg: u32) {
 
 /// Queues `f(args...)` (up to four arguments: an IO completion routine's) for thread `tid`
 pub fn queue_args(tid: u32, f: u32, args: &[u32]) {
+    queue_args_freeing(tid, f, args, 0);
+}
+
+/// queue_args, and the guest heap block `free` (an IO_STATUS_BLOCK the APC is given) freed
+/// after the APC returns, or when it never runs (its thread ended)
+pub fn queue_args_freeing(tid: u32, f: u32, args: &[u32], free: u32) {
     let mut a = [0; 4];
     a[..args.len()].copy_from_slice(args);
-    QUEUE.lock().unwrap().push((tid, f, a, args.len()));
+    QUEUE.lock().unwrap().push((tid, f, a, args.len(), free));
     obj::signal();
 }
 
@@ -31,22 +38,25 @@ pub fn pending(tid: u32) -> bool {
     QUEUE.lock().unwrap().iter().any(|&(t, ..)| t == tid)
 }
 
-fn take(tid: u32) -> Option<(u32, [u32; 4], usize)> {
+fn take(tid: u32) -> Option<(u32, [u32; 4], usize, u32)> {
     let mut q = QUEUE.lock().unwrap();
     let i = q.iter().position(|&(t, ..)| t == tid)?;
-    let (_, f, a, n) = q.remove(i);
-    Some((f, a, n))
+    let (_, f, a, n, free) = q.remove(i);
+    Some((f, a, n, free))
 }
 
 /// Runs this thread's APCs, in order (including ones they queue); whether there were any
 pub fn run(c: &mut Ctx) -> bool {
     let me = crate::cur().tid;
     let mut ran = false;
-    while let Some((f, a, n)) = take(me) {
+    while let Some((f, a, n, free)) = take(me) {
         // (NtQueueApcThread with no routine: only wakes the wait)
         if f != 0 {
             c.call(f, &a[..n]);
             ran = true;
+        }
+        if free != 0 {
+            crate::mem::heap_free(free);
         }
     }
     ran
@@ -150,5 +160,49 @@ pub fn NtTestAlert(c: &mut Ctx) -> u32 {
 
 /// Drops the APCs of a thread that ended
 pub fn forget(tid: u32) {
-    QUEUE.lock().unwrap().retain(|&(t, ..)| t != tid);
+    let mut frees = Vec::new();
+    QUEUE.lock().unwrap().retain(|&(t, .., free)| {
+        if t == tid && free != 0 {
+            frees.push(free);
+        }
+        t != tid
+    });
+    for p in frees {
+        crate::mem::heap_free(p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Every block handed to queue_args_freeing is freed exactly once, whether its APC
+        /// runs or its thread ends first (an echo's IO_STATUS_BLOCK stayed for good)
+        #[test]
+        fn freed_once_run_or_dropped(ops in proptest::collection::vec((1u32..4, any::<bool>()), 1..30)) {
+            let _g = crate::test_guest::enter();
+            // (thread ids no real test thread has)
+            let base = 0x7fff_0000u32;
+            let mut blocks = Vec::new();
+            for &(t, with_block) in &ops {
+                let b = if with_block { crate::mem::heap_alloc(16, true) } else { 0 };
+                queue_args_freeing(base + t, 0, &[1, 2, 3], b);
+                if b != 0 {
+                    blocks.push(b);
+                }
+            }
+            for &b in &blocks {
+                prop_assert!(crate::mem::heap_owns(b));
+            }
+            for t in 1..4 {
+                forget(base + t);
+            }
+            prop_assert!(!QUEUE.lock().unwrap().iter().any(|&(t, ..)| t >= base));
+            for &b in &blocks {
+                prop_assert!(!crate::mem::heap_owns(b), "{:#x} kept", b);
+            }
+        }
+    }
 }

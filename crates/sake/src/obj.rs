@@ -265,6 +265,7 @@ fn gone_object(h: u32, gone: Option<Obj>) {
     match gone {
         Some(Obj::Pipe(p)) => crate::pipe::closed(p),
         Some(Obj::Other("iocp")) => crate::iocp::gone(h),
+        Some(Obj::Other("ip change notify")) => crate::iphlp::forget(h),
         Some(Obj::Other("afd")) => {
             crate::afd::closed(h);
             crate::iocp::forget(h);

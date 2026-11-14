@@ -1,0 +1,11 @@
+notify 997
+cancel 1
+change result 0 error 995 bytes 0 before the thread ended 1
+connect 0
+accepted 1
+recv -1 pending 1
+result 1 bytes 5 data hello
+recv -1 pending 1
+result 1 bytes 5 data hello
+modes on a garbage handle 0 error 6
+modes on the socket 1

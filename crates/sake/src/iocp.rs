@@ -71,8 +71,12 @@ pub fn nt_to_win32(s: u32) -> u32 {
 
 /// Queues a packet on `port` and wakes its waiters
 pub fn post(port: u32, bytes: u32, key: u64, ov: u32, status: u32) {
-    with(|s| s.ports.entry(port).or_default().push_back((bytes, key, ov, status)));
-    obj::signal();
+    // (a completion that raced the port's close is dropped: making the queue again would
+    // keep a dead port's queue for good and tell its waiters it lives)
+    let live = with(|s| s.ports.get_mut(&port).map(|q| q.push_back((bytes, key, ov, status))).is_some());
+    if live {
+        obj::signal();
+    }
 }
 
 /// IO on handle `h` with OVERLAPPED `ov` ended (status, bytes): the OVERLAPPED gets them, the
@@ -87,13 +91,21 @@ pub fn complete(h: u32, ov: u32, status: u32, bytes: u32, sync: bool) {
     wp(ov + k, bytes);
     let ev = rp(ov + 2 * k + 8);
     let (assoc, mode) = with(|s| (s.assoc.get(&h).copied(), s.modes.get(&h).copied().unwrap_or(0)));
+    let mut told = false;
     if ev & !1 != 0 && !(sync && mode & 2 != 0) {
         crate::k32::set_event(ev & !1);
+        told = true;
     }
     if let Some((port, key)) = assoc {
         if ev & 1 == 0 && !(sync && status == 0 && mode & 1 != 0) {
             post(port, bytes, key, ov, status);
+            told = true;
         }
+    }
+    // (no event and no port: Windows signals the file handle, which GetOverlappedResult(bWait)
+    // with hEvent NULL waits on; its wait here looks at the OVERLAPPED again when woken)
+    if !told {
+        obj::signal();
     }
 }
 
@@ -530,6 +542,12 @@ pub fn init() {
         let (h, f) = (c.a(0), c.a(1));
         if f & !3 != 0 {
             last_error(87);
+            return 0;
+        }
+        // (only a handle that is one: a garbage value kept here would hand its FILE_SKIP_*
+        // flags to the next real handle of that number)
+        if obj::with(|t| t.objs.get(&h).is_none()) && !crate::ws2::is_socket(h) {
+            last_error(6);
             return 0;
         }
         with(|s| *s.modes.entry(h).or_default() |= f);

@@ -321,6 +321,9 @@ fn table2(out: u32, row: u32, n: usize, fill: impl Fn(u32, usize)) -> u32 {
         return ERROR_INVALID_PARAMETER;
     }
     let t = mem::heap_alloc(8 + row * n.max(1) as u32, true);
+    if t == 0 {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
     w32(t, n as u32);
     for i in 0..n {
         fill(t + 8 + row * i as u32, i);
@@ -648,9 +651,10 @@ fn conn_table(buf: u32, size: u32, tcp: bool, v6: bool, k: RowKind, keep: impl F
     })
 }
 
-/// Fills a table at `b` (when not 0); its size
-fn conn_fill(b: u32, tcp: bool, v6: bool, k: RowKind) -> u32 {
-    let rows = conn_rows(tcp, v6, |_| true);
+/// Fills a table of `rows` at `b` (when not 0); its size. The caller takes the rows once, for
+/// the size and the fill both: a socket made on another thread in between would otherwise be
+/// written past the block sized for the first look.
+fn conn_fill(b: u32, rows: &[crate::ws2::ConnRow], tcp: bool, v6: bool, k: RowKind) -> u32 {
     let (hdr, row) = row_layout(tcp, v6, k);
     if b != 0 {
         w32(b, rows.len() as u32);
@@ -730,6 +734,9 @@ fn alloc_from_stack(c: &mut Ctx, fill: impl Fn(u32) -> u32) -> u32 {
     }
     let size = fill(0);
     let t = mem::heap_alloc(size.max(4), true);
+    if t == 0 {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
     fill(t);
     wp(out, t);
     NO_ERROR
@@ -1640,10 +1647,14 @@ fn send_echo(c: &mut Ctx, h: u32, e: Echo) -> u32 {
     } else {
         let k = ps();
         let iosb = mem::heap_alloc(2 * k, true);
+        if iosb == 0 {
+            return fail(ERROR_NOT_ENOUGH_MEMORY);
+        }
         // STATUS_SUCCESS; an IPv6 echo with a TTL of 0 is STATUS_INVALID_PARAMETER
         wp(iosb, if e.v6 && e.ttl == Some(0) { 0xC000_000D } else { 0 });
         wp(iosb + k, hdr + size);
-        crate::apc::queue_args(crate::cur().tid, e.apc, &[e.apc_ctx, iosb, 0]);
+        // (the block goes when the APC has run: one per echo stayed for good)
+        crate::apc::queue_args_freeing(crate::cur().tid, e.apc, &[e.apc_ctx, iosb, 0], iosb);
     }
     let _ = c;
     fail(ERROR_IO_PENDING)
@@ -1742,6 +1753,12 @@ fn NotifyChange(c: &mut Ctx) -> u32 {
     crate::k32::last_error(ERROR_IO_PENDING);
     ERROR_IO_PENDING
 }
+/// The handle of a pending NotifyAddrChange / NotifyRouteChange closed: its wait goes (a later
+/// CancelIPChangeNotify would complete on whatever handle has that number by then)
+pub fn forget(h: u32) {
+    PENDING.lock().unwrap().retain(|&(_, x)| x != h);
+}
+
 /// CancelIPChangeNotify(overlapped): the pending wait ends with STATUS_CANCELLED
 fn CancelIPChangeNotify(c: &mut Ctx) -> u32 {
     let ov = c.a(0);
@@ -1909,7 +1926,12 @@ fn CreateSortedAddressPairs(c: &mut Ctx) -> u32 {
     }
     let k = ps();
     let pair = 2 * k;
-    let t = mem::heap_alloc(pair * n + 28 * 2 * n, true);
+    // (u64: a guest count of 2^26 and up wrapped the size, then the loop wrote past it)
+    let Some(size) = u32::try_from((pair as u64 + 56) * n as u64).ok().filter(|&s| s <= 1 << 28) else { return ERROR_NOT_ENOUGH_MEMORY };
+    let t = mem::heap_alloc(size, true);
+    if t == 0 {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
     for i in 0..n {
         let d = dst + 28 * i;
         let ps_ = t + pair * i;
@@ -2049,8 +2071,14 @@ pub fn init() {
     implement(d, "AllocateAndGetIpAddrTableFromStack", |c| alloc_from_stack(c, fill_addr_table));
     implement(d, "AllocateAndGetIpForwardTableFromStack", |c| alloc_from_stack(c, fill_forward_table));
     implement(d, "AllocateAndGetIpNetTableFromStack", |c| alloc_from_stack(c, fill_empty));
-    implement(d, "AllocateAndGetTcpTableFromStack", |c| alloc_from_stack(c, |b| conn_fill(b, true, false, RowKind::Basic)));
-    implement(d, "AllocateAndGetUdpTableFromStack", |c| alloc_from_stack(c, |b| conn_fill(b, false, false, RowKind::Basic)));
+    implement(d, "AllocateAndGetTcpTableFromStack", |c| {
+        let rows = conn_rows(true, false, |_| true);
+        alloc_from_stack(c, |b| conn_fill(b, &rows, true, false, RowKind::Basic))
+    });
+    implement(d, "AllocateAndGetUdpTableFromStack", |c| {
+        let rows = conn_rows(false, false, |_| true);
+        alloc_from_stack(c, |b| conn_fill(b, &rows, false, false, RowKind::Basic))
+    });
     implement(d, "AllocateAndGetTcpExTableFromStack", |c| {
         let f = c.a(4);
         if f != AF_INET && f != AF_INET6 {
@@ -2060,7 +2088,8 @@ pub fn init() {
             // (Windows has no IPv6 form of this one)
             return ERROR_NOT_SUPPORTED;
         }
-        alloc_from_stack(c, |b| conn_fill(b, true, false, RowKind::Pid))
+        let rows = conn_rows(true, false, |_| true);
+        alloc_from_stack(c, |b| conn_fill(b, &rows, true, false, RowKind::Pid))
     });
     implement(d, "GetUnicastIpAddressTable", GetUnicastIpAddressTable);
     implement(d, "GetUnicastIpAddressEntry", GetUnicastIpAddressEntry);
@@ -2257,13 +2286,13 @@ mod issue88 {
     fn empty_connection_table_still_has_its_header() {
         let _g = enter();
         for tcp in [false, true] { for v6 in [false, true] {
-            assert_eq!(conn_fill(0, tcp, v6, RowKind::Basic), 4);
-            assert_eq!(conn_fill(0, tcp, v6, RowKind::Module), 8);
+            assert_eq!(conn_fill(0, &conn_rows(tcp, v6, |_| true), tcp, v6, RowKind::Basic), 4);
+            assert_eq!(conn_fill(0, &conn_rows(tcp, v6, |_| true), tcp, v6, RowKind::Module), 8);
         }}
         crate::ws2::test_bound_udp(|| {
             let p = mem::heap_alloc(32, false);
             mem::fill(p, 32, 0xcc);
-            assert_eq!(conn_fill(p, false, false, RowKind::Basic), 28);
+            assert_eq!(conn_fill(p, &conn_rows(false, false, |_| true), false, false, RowKind::Basic), 28);
             assert_eq!(r32(p), 3);
             for i in 0..3 {
                 assert_eq!(mem::slice(p + 4 + 8 * i, 4), &[127, 0, 0, 1]);
@@ -2272,5 +2301,43 @@ mod issue88 {
             assert_eq!(r32(p + 28), 0xcccccccc);
             mem::heap_free(p);
         });
+    }
+
+    /// CreateSortedAddressPairs with a guest count whose size wraps 32 bits (2^26 pairs and
+    /// up on x86) is ERROR_NOT_ENOUGH_MEMORY, not a small block written far past its end
+    #[test]
+    fn huge_pair_counts_fail() {
+        let _g = crate::test_guest::enter();
+        let out = mem::heap_alloc(16, true);
+        let dst = mem::heap_alloc(28, true);
+        for n in [0x0400_0000, 0x0800_0000, 0x4000_0000, u32::MAX] {
+            assert_eq!(crate::test_guest::call(CreateSortedAddressPairs, &[0, 0, dst, n, 0, out, out + 8]), ERROR_NOT_ENOUGH_MEMORY, "{n:#x}");
+            assert_eq!(r32(out), 0);
+        }
+        // (one pair still works)
+        assert_eq!(crate::test_guest::call(CreateSortedAddressPairs, &[0, 0, dst, 1, 0, out, out + 8]), NO_ERROR);
+        assert_eq!(r32(out + 8), 1);
+        mem::heap_free(r32(out));
+        mem::heap_free(out);
+        mem::heap_free(dst);
+    }
+
+    /// A pending NotifyAddrChange whose handle is closed leaves nothing behind (a later
+    /// CancelIPChangeNotify then finds nothing, instead of completing on a reused number)
+    #[test]
+    fn closed_notify_handles_are_forgotten() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        let (hp, ov) = (mem::heap_alloc(8, true), mem::heap_alloc(32, true));
+        for _ in 0..50 {
+            assert_eq!(crate::test_guest::call(NotifyChange, &[hp, ov]), ERROR_IO_PENDING);
+            let h = r32(hp);
+            assert!(PENDING.lock().unwrap().iter().any(|&(_, x)| x == h));
+            assert!(crate::obj::close(h));
+            assert!(!PENDING.lock().unwrap().iter().any(|&(_, x)| x == h));
+            assert_eq!(crate::test_guest::call(CancelIPChangeNotify, &[ov]), 0);
+        }
+        mem::heap_free(hp);
+        mem::heap_free(ov);
     }
 }
