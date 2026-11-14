@@ -1,0 +1,55 @@
+# wingfx case language and output
+
+A **case file** (`cases/<suite>.txt`) is plain text, one call per line, tokens separated by
+spaces. `# ` starts a comment (and a line starting with `#` is one); `#RRGGBB` is a color.
+Numbers are decimal (`-3`), or hex with `0x`; never write a leading zero (C's `strtoul` reads
+it as octal). A case runs from `case <name>` to `end`; everything it made is released at `end`,
+so cases are independent and their order does not matter.
+
+The executor prints `wingfx <suite>`, then for each case `case <name>` and the lines its calls
+print, then `done`. A line it cannot run prints `bad line <n>` (n counts every line of the
+file from 1). Output is flushed at the end of each case: a crash keeps the finished cases and
+has no `done`.
+
+## GDI (DIB sections)
+
+Eight slots, 0..7; each holds a DIB section selected into a memory DC of its own, with that
+DC's state (a memory DC starts with black text color, white background color, OPAQUE, the
+white stock brush, brush origin 0,0, no clip region).
+
+| line | calls | prints |
+|---|---|---|
+| `dib <s> <w> <h> <bpp> [td\|bu] [565] [#c0 #c1 ...]` | CreateDIBSection (bpp 1, 4, 8, 16, 24, 32; top-down by default; `565` = BI_BITFIELDS 5-6-5 for 16 bpp, else 5-5-5) with the color table given or the default one, and the pixels zeroed | `dib failed <error>` on failure |
+| `fill <s> <seed>` | every byte of the pixel memory, in memory order, from xorshift32 (below) | |
+| `poke <s> <x> <y> <hex>` | raw bytes of one pixel (bpp >= 8) | |
+| `dump <s>` | GdiFlush, then the picture | `px <s> <w> <h> <bpp>`, then each row top to bottom as hex bytes, only the bytes that hold the row's w pixels |
+| `brush <s> solid #c` / `hatch <style> #c` / `dib <slot>` / `null` | CreateSolidBrush / CreateHatchBrush / CreateDIBPatternBrushPt of a packed BI_RGB copy of a slot's picture (DIB_RGB_COLORS) / the NULL_BRUSH stock object, selected | `brush failed` |
+| `text <s> #c`, `bk <s> #c`, `bkmode <s> <1\|2>`, `org <s> <x> <y>` | SetTextColor, SetBkColor, SetBkMode, SetBrushOrgEx | |
+| `clip <s> <x0> <y0> <x1> <y1>`, `noclip <s>` | IntersectClipRect, SelectClipRgn(NULL) | `clip <region type>` |
+| `patblt <s> <x> <y> <w> <h> <rop>` | PatBlt | `ret <0\|1>` |
+| `bitblt <d> <x> <y> <w> <h> <s> <sx> <sy> <rop>` | BitBlt | `ret <0\|1>` |
+
+Default color tables: 1 bpp black, white; 4 bpp the 16 VGA colors (000000 800000 008000
+808000 000080 800080 008080 c0c0c0 808080 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff);
+8 bpp entry i = (r, g, b) = ((i>>5&7)*255/7, (i>>2&7)*255/7, (i&3)*255/3), integer division.
+
+xorshift32: state = seed (0 becomes 0x9e3779b9); per byte `x ^= x << 13; x ^= x >> 17;
+x ^= x << 5`, the byte is the low 8 bits of x.
+
+## Direct3D 9
+
+| line | calls | prints |
+|---|---|---|
+| `device [hwvp\|swvp\|mixed]` | Direct3DCreate9 (d3d9.dll loaded when first needed), CreateDevice HAL, windowed, 64x64 X8R8G8B8, auto depth stencil D24S8 (HAL software vertex processing if the one asked is refused) | `device ok`, `device none` (no Direct3D 9), `device failed <hr>` |
+| `rs get <state>`, `tss get <stage> <type>`, `ss get <sampler> <type>` | Get{Render,TextureStage,Sampler}State | `rs <state> = <value>` (8 hex digits), or `... hr <hr>` |
+| `rs set <state> <v>`, `tss set <stage> <type> <v>`, `ss set <sampler> <type> <v>` | Set...State | `... set hr <hr>` only on failure |
+| `sb begin`, `sb end <i>`, `sb create <i> <type>`, `sb capture <i>`, `sb apply <i>`, `sb release <i>` | BeginStateBlock, EndStateBlock into block i (0..7), CreateStateBlock, Capture, Apply, Release | `sb <verb> hr <hr>` on failure; `sb <i> none` when block i does not exist |
+
+Without a device the state lines print `nodev`. (Not asked by the generators: stages past 7,
+samplers past 15 other than 256..260, sampler state types past 13: Windows reads past its arrays.)
+
+## Models
+
+`wingfx model <suite>` prints what Windows prints, case by case. A case whose behavior the
+documentation does not settle and Windows' answers have not shown yet prints
+`unmodeled <why>` instead; it is then checked against Windows' recorded answers only.

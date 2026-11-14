@@ -17,6 +17,7 @@ on:
       - 'crates/**'
       - 'host/tests/**'
       - 'tests/winref/**'
+      - 'wingfx/**'
       - 'tests/replay/**'
       - 'testdata/apitrace/**'
       - 'Cargo.lock'

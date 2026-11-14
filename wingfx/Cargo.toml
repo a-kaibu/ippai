@@ -1,0 +1,18 @@
+# wingfx: conformance tests for the Windows graphics APIs (README.md). A workspace of its own,
+# with no dependency on the repository around it, so that it can be published by itself.
+[package]
+name = "wingfx"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Conformance tests for the Windows graphics APIs: cases, executable specification models, Windows' recorded answers"
+
+[workspace]
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.12"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

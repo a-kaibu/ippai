@@ -16,3 +16,9 @@
 __pycache__/
 # sake's fonts the release makes (release.yml: tools/ci/sake-fonts.py fonts)
 /fonts/
+# wingfx/ (its own workspace) and its fuzzing
+/wingfx/target
+/wingfx/fuzz/target
+/wingfx/fuzz/corpus
+/wingfx/fuzz/artifacts
+/wingfx/fuzz/seeds

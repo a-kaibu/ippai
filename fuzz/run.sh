@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs every cargo-fuzz target in fuzz/ and crates/*/fuzz/ for SECONDS each (default 60),
+# Runs every cargo-fuzz target in fuzz/, crates/*/fuzz/ and wingfx/fuzz/ for SECONDS each (default 60),
 # from that directory's corpus/<target> (kept between CI runs) and seeds/<target> (made by its
 # seeds.py when there is one). Crash inputs land in <dir>/artifacts/<target>/; the script
 # goes on with the other targets and fails at the end if any target failed.
@@ -41,7 +41,7 @@ reap() {
 }
 
 n=0
-for dir in fuzz crates/*/fuzz; do
+for dir in fuzz crates/*/fuzz wingfx/fuzz; do
   [ -f "$dir/Cargo.toml" ] || continue
   (cd "$dir" && { [ ! -f seeds.py ] || python3 -I seeds.py; } && cargo +nightly fuzz build -O) || { failed+=("$dir (build)"); continue; }
   for t in $(cd "$dir" && cargo +nightly fuzz list); do

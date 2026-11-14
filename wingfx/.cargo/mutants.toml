@@ -1,0 +1,4 @@
+# cargo-mutants (`cargo mutants` in wingfx/): every mutant of the models must be caught by the
+# laws (tests/laws.rs) or by Windows' answers (tests/windows.rs).
+examine_globs = ["src/model/**/*.rs", "src/case.rs", "src/compare.rs"]
+exclude_re = ['\bproofs::']

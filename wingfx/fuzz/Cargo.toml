@@ -1,0 +1,22 @@
+# Coverage-guided fuzzing of wingfx (cargo-fuzz, nightly): `cargo +nightly fuzz run cases`.
+[package]
+name = "wingfx-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+wingfx = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "cases"
+path = "fuzz_targets/cases.rs"
+test = false
+doc = false
+bench = false

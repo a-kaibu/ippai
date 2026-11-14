@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/apitrace", "crates/foresee", "crates/crt", "crates/dxwgsl", "crates/vorbis", "crates/hlslc", "crates/glwgsl", "crates/kura", "crates/masu", "crates/koji", "crates/sake", "crates/msidb", "crates/tls-client", "crates/shaderconf", "crates/waits", "crates/mpeg1", "crates/asf", "crates/wmcodec", "crates/decbench"]
-exclude = ["fuzz", "vendor/ring", "vendor/naga"]
+exclude = ["fuzz", "wingfx", "vendor/ring", "vendor/naga"]
 
 [workspace.package]
 edition = "2021"

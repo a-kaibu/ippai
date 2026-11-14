@@ -60,6 +60,8 @@ x86_64-w64-mingw32-gcc -O2 -o "$OUT/host_msvcpchar-64.exe" "$ROOT/host/tests/msv
 # (an exe and two DLLs at fixed bases above 4G: the DLLs beside it, found by LoadLibrary)
 "$ROOT/host/tests/build-highmem.sh" "$OUT" && mv "$OUT/highmem.exe" "$OUT/host_highmem-64.exe" && rm -f "$OUT/libhm1.a"
 rm "$OUT"/*.res
+# the wingfx conformance suites (wingfx/: wingfx_<suite>-32/-64.exe, the GPU ones into browser.txt)
+"$ROOT/wingfx/runner/build.sh" "$OUT"
 # D3D9 traces replayed (tests/replay: replay_<trace>-32.exe)
 "$ROOT/tests/replay/build.sh" "$OUT"
 ls "$OUT" | wc -l

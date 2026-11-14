@@ -41,6 +41,10 @@ def sources(probe):
             if "// msstl" in open(cpp).read():
                 extra += [os.path.join(shim, f) for f in sorted(os.listdir(shim))]
             return [cpp] + extra
+    elif base.startswith("wingfx_"):
+        # (a wingfx suite: its case file compiled into the executor, wingfx/runner)
+        wx = os.path.join(ROOT, "wingfx")
+        return [os.path.join(wx, "cases", base[7:] + ".txt"), os.path.join(wx, "runner", "wingfx.c"), os.path.join(wx, "runner", "build.sh")]
     elif base.startswith("replay_"):
         # (a recorded D3D trace played back: tests/replay; the converter is part of it)
         rep = os.path.join(ROOT, "tests", "replay")
