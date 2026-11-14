@@ -460,6 +460,47 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
                         Instruction::with2(code, sized(r(rng), b), sized(r(rng), b)).unwrap()
                     }
                 }
+                1 if rng.below(2) == 0 => {
+                    // 8/16-bit rotates (byte swaps: rol ax, 8) and rotates by CL, every size
+                    let w = rng.pick(&[8u32, 16, 32, 64]);
+                    let cl = rng.below(2) == 0;
+                    let rol = rng.below(2) == 0;
+                    let code = match (w, cl, rol) {
+                        (8, false, true) => C::Rol_rm8_imm8,
+                        (8, false, false) => C::Ror_rm8_imm8,
+                        (16, false, true) => C::Rol_rm16_imm8,
+                        (16, false, false) => C::Ror_rm16_imm8,
+                        (32, false, true) => C::Rol_rm32_imm8,
+                        (32, false, false) => C::Ror_rm32_imm8,
+                        (64, false, true) => C::Rol_rm64_imm8,
+                        (64, false, false) => C::Ror_rm64_imm8,
+                        (8, true, true) => C::Rol_rm8_CL,
+                        (8, true, false) => C::Ror_rm8_CL,
+                        (16, true, true) => C::Rol_rm16_CL,
+                        (16, true, false) => C::Ror_rm16_CL,
+                        (32, true, true) => C::Rol_rm32_CL,
+                        (32, true, false) => C::Ror_rm32_CL,
+                        (64, true, true) => C::Rol_rm64_CL,
+                        _ => C::Ror_rm64_CL,
+                    };
+                    if cl {
+                        // (counts of 0, of the size and over it, of 32 or 64 and above)
+                        let n = rng.pick(&[0u32, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 0xff]);
+                        out.push(Instruction::with2(C::Mov_rm32_imm32, Register::ECX, n).unwrap());
+                    }
+                    let d = loop {
+                        let d = sized(r(rng), w);
+                        if !matches!(d, Register::CL | Register::CX | Register::ECX | Register::RCX) {
+                            break d;
+                        }
+                    };
+                    match (rng.below(4) == 0, cl) {
+                        (true, true) => Instruction::with2(code, m(rng), Register::CL).unwrap(),
+                        (true, false) => Instruction::with2(code, m(rng), rng.below(70) as u32).unwrap(),
+                        (false, true) => Instruction::with2(code, d, Register::CL).unwrap(),
+                        (false, false) => Instruction::with2(code, d, rng.below(70) as u32).unwrap(),
+                    }
+                }
                 1 | 2 => {
                     let code = rng.pick(&if b == 64 { [C::Rol_rm64_imm8, C::Ror_rm64_imm8, C::Rol_rm64_1, C::Ror_rm64_1] } else { [C::Rol_rm32_imm8, C::Ror_rm32_imm8, C::Rol_rm32_1, C::Ror_rm32_1] });
                     let dst = if rng.below(4) == 0 { None } else { Some(sized(r(rng), b)) };
@@ -728,6 +769,14 @@ const HASH_N: u32 = 2048;
 const RING: u32 = 0xc000;
 /// a bit per 4 KB page with translated code (Cpu::jit_code_pages; addresses below 128 MB)
 const PAGES: u32 = 0xd000;
+/// the call cache (Cpu::jit_calls, functions: koji::jit::CALL_CACHE (target, entry) pairs)
+const CALLS: u32 = 0xe000;
+
+/// Clears the hash table, the ring, the pages and the call cache.
+fn clear_tables(base: usize) {
+    unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+    unsafe { std::ptr::write_bytes((base + CALLS as usize) as *mut u8, 0, (koji::jit::CALL_CACHE * 8) as usize) };
+}
 
 /// Whether translations test their stores against the pages with translated code
 /// (koji::jit::set_watch, as kura for a main executable's W|X pages).
@@ -826,7 +875,33 @@ impl Jit {
         linker
             .func_wrap("env", "x87", |_: i32, _: i32, _: i32, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64| {})
             .unwrap();
-        unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+        // (kura's vnhost_jit_callmiss: a function's root in the hash table goes in the slot)
+        linker
+            .func_wrap("env", "callmiss", move |_cpu: i32, slot: i32, target: i32| -> i32 {
+                let target = target as u32;
+                let mut h = koji::jit::dispatch::slot(target, HASH_N - 1);
+                loop {
+                    let e = (base + (HASH + 8 * h) as usize) as *const u32;
+                    let (k, v) = unsafe { (e.read(), e.add(1).read()) };
+                    if k == 0 {
+                        return 0;
+                    }
+                    if k == target {
+                        if v & koji::jit::FN_TAG == 0 || v >> koji::jit::ENTRY_SHIFT & 0x7ff != 0 {
+                            return 0;
+                        }
+                        let s = (base + slot as u32 as usize) as *mut u32;
+                        unsafe {
+                            s.write(target);
+                            s.add(1).write(v);
+                        }
+                        return v as i32;
+                    }
+                    h = (h + 1) & (HASH_N - 1);
+                }
+            })
+            .unwrap();
+        clear_tables(base);
         unsafe { std::ptr::write_bytes((base + PAGES as usize) as *mut u8, 0, 0x1000) };
         CODE_RANGES.lock().unwrap().clear();
         CODE_WRITTEN.store(false, Relaxed);
@@ -843,6 +918,7 @@ impl Jit {
         c.jit_mask = HASH_N - 1;
         c.jit_ring = RING;
         c.jit_code_pages = PAGES;
+        c.jit_calls = CALLS;
         unsafe { put_cpu(m, &c) };
     }
 
@@ -850,7 +926,14 @@ impl Jit {
         let mut m = koji::jit::wasm::Module::default();
         let full = eip as u64 | (rip_hi as u64) << 32;
         let (lo, hi) = self.range;
-        let region = koji::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), &[full], (END, END + 16), |a, _| a != END && a >= lo && a < hi).ok_or("refused")?;
+        let fnm = koji::jit::long::FN64.load(Relaxed);
+        let region = if fnm {
+            koji::jit::long::translate_function64(&mut m, &mut Mem(base as *mut u8), full, (END, END + 16), 1000, |a, _| a != END && a >= lo && a < hi)
+        } else {
+            koji::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), &[full], (END, END + 16), |a, _| a != END && a >= lo && a < hi)
+        }
+        .ok_or("refused")?;
+        let tag = if fnm { koji::jit::FN_TAG } else { 0 };
         let bytes = m.finish();
         for &(a, n) in &region.code {
             CODE_RANGES.lock().unwrap().push((a, n));
@@ -883,7 +966,7 @@ impl Jit {
                 if key == 0 || key == a {
                     unsafe {
                         e.write(a);
-                        e.add(1).write(idx | k << koji::jit::ENTRY_SHIFT);
+                        e.add(1).write(idx | k << koji::jit::ENTRY_SHIFT | tag);
                     }
                     break;
                 }
@@ -910,7 +993,7 @@ impl Jit {
             // (as kura: translations made without the MXCSR flag checks go)
             mx_check();
             if SWITCHED.swap(false, Relaxed) {
-                unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+                clear_tables(base);
                 self.entries.clear();
             }
             if !koji::jit::sse_ok(c.mxcsr) || self.rewritten {
@@ -931,10 +1014,11 @@ impl Jit {
             self.chain(base);
             let mut params = vec![Val::I32(0); 16];
             params[0] = Val::I32(CPU as i32);
-            params[1] = Val::I32((idx | k << koji::jit::ENTRY_SHIFT) as i32);
+            params[1] = Val::I32((idx | k << koji::jit::ENTRY_SHIFT | if koji::jit::long::FN64.load(Relaxed) { koji::jit::FN_TAG } else { 0 }) as i32);
             let mut results = vec![Val::I32(0); 1];
             f.call(&mut self.store, &params, &mut results).map_err(|e| format!("trap: {e:?}"))?;
             regions += 1;
+            if std::env::var("JTRACE").is_ok() { let c = unsafe { get_cpu(m) }; eprintln!("entry {:#x} -> status {} at {:x}:{:#x} rsp {:#x} rbx {} rsi {}", params[1].unwrap_i32(), results[0].unwrap_i32(), c.rip_hi, c.eip, c.gpr(4), c.gpr(3), c.gpr(6)); }
             let mut c = unsafe { get_cpu(m) };
             if c.jit_stale != 0 {
                 // (as kura's stale_hit: the code changed since translated; the translations go,
@@ -945,7 +1029,7 @@ impl Jit {
                     return Err(format!("stale exit at {a:#x}: fresh {}, status {}, eip {:#x}", FRESH.load(Relaxed), results[0].unwrap_i32(), c.eip));
                 }
                 STALE_HITS.fetch_add(1, Relaxed);
-                unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+                clear_tables(base);
                 self.entries.clear();
             }
             if c.jit_smc != 0 {
@@ -963,7 +1047,7 @@ impl Jit {
             }
             if CODE_WRITTEN.swap(false, Relaxed) {
                 self.rewritten = true;
-                unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+                clear_tables(base);
                 self.entries.clear();
             }
             match results[0].unwrap_i32() {
@@ -1422,6 +1506,9 @@ fn main() {
         koji::jit::long::STRUCTURED.store(std::env::var("JFLAT").is_err() && t % 3 != 2, Relaxed);
         // (and of the nested ones, every other three without entries inside loops)
         koji::jit::long::DEBUG_NO_SIDE.store(t / 3 % 2 == 1, Relaxed);
+        // (every other six tests as functions (FN64; JFN: all of them): calls are wasm calls
+        // of the callee's function through the call cache)
+        koji::jit::long::FN64.store(std::env::var("JFN").is_ok() || t / 6 % 2 == 1, Relaxed);
         koji::jit::long::DEBUG_BLOCKS.store(if t % 2 == 1 { 1 + t / 2 % 3 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
         // (every other pair of tests: stores checked against the code, some into it)
         WATCH.store(t / 4 % 2 == 0, Relaxed);
@@ -1750,4 +1837,187 @@ fn pe_damaged_never_panics() {
         }
     }
     assert!(ok > 1000 && bad > 1000, "{ok} mapped, {bad} refused");
+}
+
+/// Runs `code` at CODE (rsp, rbx as given) by the interpreter alone and by the JIT with
+/// functions (FN64): both Cpus, the JIT's run-loop entries and its interpreter steps.
+fn run_both_fn(code: &[u8], rbx: u64) -> (Cpu, Cpu, usize, usize) {
+    let mut config = Config::new();
+    config.wasm_threads(true).consume_fuel(true);
+    let engine = Engine::new(&config).unwrap();
+    let pages = koji::jit::wasm::memory_min_pages();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(pages, pages)).unwrap();
+    let base = memory.data().as_ptr() as *mut u8 as usize;
+    let mut cpu = Cpu { mode64: 1, eip: CODE, jit_budget: 1 << 30, mxcsr: 0x1f80, ..Cpu::default() };
+    cpu.set_gpr(4, (STACK - 0x800) as u64);
+    cpu.set_gpr(3, rbx);
+    let mut want = cpu.clone();
+    let mut m = vec![0u8; MEM];
+    m[CODE as usize..CODE as usize + code.len()].copy_from_slice(code);
+    while want.eip != END {
+        assert_eq!(koji::step(&mut want, &mut Mem(m.as_mut_ptr())), Exit::Continue);
+    }
+    unsafe {
+        std::ptr::write_bytes((base + 0x10000) as *mut u8, 0, MEM - 0x10000);
+        std::ptr::copy_nonoverlapping(code.as_ptr(), (base + CODE as usize) as *mut u8, code.len());
+        put_cpu(base as *mut u8, &cpu);
+    }
+    koji::jit::long::FN64.store(true, Relaxed);
+    let mut jit = Jit::new(&engine, &memory, base);
+    STEPS.set(0);
+    let regions = jit.run(base).unwrap();
+    koji::jit::long::FN64.store(false, Relaxed);
+    (want, unsafe { get_cpu(base as *mut u8) }, regions, STEPS.get())
+}
+
+/// Functions (FN64) call each other as wasm calls through the call cache: a loop of 1000
+/// calls of f, which calls g, comes back to the run loop a few times only (each callee's
+/// first call leaves for it to be translated), with the interpreter's results.
+#[test]
+fn functions_call_each_other() {
+    let jmp = (END - (CODE + 19)).to_le_bytes();
+    #[rustfmt::skip]
+    let code: Vec<u8> = [
+        &[0xb9, 0xe8, 3, 0, 0][..],         // 0: mov ecx, 1000
+        &[0xe8, 9, 0, 0, 0],                // 5: call f (19)
+        &[0xff, 0xc9],                      // 10: dec ecx
+        &[0x75, 0xf7],                      // 12: jne 5
+        &[0xe9], &jmp,                      // 14: jmp END
+        &[0x48, 0x83, 0xc0, 0x01, 0xe8, 1, 0, 0, 0, 0xc3], // 19: f: add rax, 1; call g (29); ret
+        &[0x48, 0x83, 0xc2, 0x02, 0xc3],    // 29: g: add rdx, 2; ret
+    ].concat();
+    let (want, got, regions, steps) = run_both_fn(&code, 0);
+    assert_eq!((want.gpr(0), want.gpr(2), want.gpr(1)), (1000, 2000, 0));
+    for i in 0..16 {
+        assert_eq!(got.gpr(i), want.gpr(i), "register {i}");
+    }
+    assert_eq!(got.eip, END);
+    assert_eq!(steps, 0, "no instruction left to the interpreter");
+    assert!(regions < 10, "{regions} entries from the run loop");
+}
+
+/// Recursion deeper than the wasm calls may nest (jit/long.rs MAX_DEPTH): the deepest calls
+/// leave for the dispatcher, their RETs come back through it, and every level adds its one.
+#[test]
+fn deep_recursion_leaves_and_comes_back() {
+    let jmp = (END - (CODE + 10)).to_le_bytes();
+    #[rustfmt::skip]
+    let code: Vec<u8> = [
+        &[0xe8, 10, 0, 0, 0][..],           // 0: call rec (15)
+        &[0xe9], &jmp,                      // 5: jmp END
+        &[0x90; 5],                         // 10
+        &[0x48, 0xff, 0xcb],                // 15: rec: dec rbx
+        &[0x74, 9],                         // 18: jz done (29)
+        &[0xe8, 0xf6, 0xff, 0xff, 0xff],    // 20: call rec (15)
+        &[0x48, 0xff, 0xc6],                // 25: inc rsi
+        &[0x90],                            // 28
+        &[0xc3],                            // 29: done: ret
+    ].concat();
+    let (want, got, _, _) = run_both_fn(&code, 500);
+    assert_eq!(want.gpr(6), 499);
+    for i in 0..16 {
+        assert_eq!(got.gpr(i), want.gpr(i), "register {i}");
+    }
+    assert_eq!(got.eip, END);
+}
+
+/// 8/16-bit rotates (SQLite's byte swaps: rol ax, 8) and rotates by CL, counts of 0 and past
+/// the size included, are translated: the interpreter's results, nothing left to it.
+#[test]
+fn rotates_stay_translated() {
+    let jmp_at = 55u32;
+    let jmp = (END - (CODE + jmp_at + 5)).to_le_bytes();
+    #[rustfmt::skip]
+    let code: Vec<u8> = [
+        &[0x48, 0xb8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11][..], // 0: mov rax, 0x1122334455667788
+        &[0x48, 0x89, 0xc2, 0x89, 0xc6, 0x49, 0x89, 0xc0, 0x48, 0x89, 0xc7], // 10: mov rdx, rax; mov esi, eax; mov r8, rax; mov rdi, rax
+        &[0x66, 0xc1, 0xc0, 0x08],          // 21: rol ax, 8
+        &[0xc0, 0xcc, 0x03],                // 25: ror ah, 3
+        &[0xb1, 0x13],                      // 28: mov cl, 19
+        &[0x66, 0xd3, 0xc0],                // 30: rol ax, cl
+        &[0x48, 0xd3, 0xca],                // 33: ror rdx, cl
+        &[0xb1, 0x20],                      // 36: mov cl, 32 (0 for 32-bit: flags kept)
+        &[0xd3, 0xc6],                      // 38: rol esi, cl
+        &[0x41, 0xd2, 0xc0],                // 40: rol r8b, cl
+        &[0xb1, 0x41],                      // 43: mov cl, 65
+        &[0x48, 0xd3, 0xc7],                // 45: rol rdi, cl
+        &[0x40, 0xd2, 0xcf],                // 48: ror dil, cl
+        &[0x9c, 0x5d, 0x90, 0x90],          // 51: pushfq; pop rbp
+        &[0xe9], &jmp,                      // 55: jmp END
+    ].concat();
+    assert_eq!(code.len() as u32, jmp_at + 5);
+    let (want, got, _, steps) = run_both_fn(&code, 0);
+    for i in 0..16 {
+        assert_eq!(got.gpr(i), want.gpr(i), "register {i}");
+    }
+    assert_eq!(got.eip, END);
+    assert_eq!(steps, 1, "only pushfq left to the interpreter");
+}
+
+/// A call through an import thunk (`call T` with T: `jmp [rip+slot]`) goes where the slot says
+/// when the call runs (the slot changes half way), with the interpreter's results.
+#[test]
+fn calls_through_import_thunks() {
+    let mut code = vec![0x90u8; 0x80];
+    let mut put = |at: usize, b: &[u8]| code[at..at + b.len()].copy_from_slice(b);
+    let g = (CODE + 0x78) as u64;
+    put(0x00, &[0x48, 0xbd]); // mov rbp, g
+    put(0x02, &g.to_le_bytes());
+    put(0x0a, &[0xb9, 0xe8, 3, 0, 0]); // mov ecx, 1000
+    put(0x0f, &[0xe8]); // call thunk (0x60)
+    put(0x10, &(0x60i32 - 0x14).to_le_bytes());
+    put(0x14, &[0x48, 0xff, 0xc7]); // inc rdi
+    put(0x17, &[0x48, 0x81, 0xff, 0xf4, 1, 0, 0]); // cmp rdi, 500
+    put(0x1e, &[0x75, 0x07]); // jne 0x27
+    put(0x20, &[0x48, 0x89, 0x2d]); // mov [rip+..] (the slot), rbp
+    put(0x23, &(0x70i32 - 0x27).to_le_bytes());
+    put(0x27, &[0xff, 0xc9]); // dec ecx
+    put(0x29, &[0x75, (0x0fi32 - 0x2b) as u8]); // jne 0x0f
+    put(0x2b, &[0xe9]); // jmp END
+    put(0x2c, &(END as i32 - (CODE as i32 + 0x30)).to_le_bytes());
+    put(0x60, &[0xff, 0x25]); // thunk: jmp [rip+..] (the slot)
+    put(0x62, &(0x70i32 - 0x66).to_le_bytes());
+    put(0x68, &[0x48, 0xff, 0xc0, 0xc3]); // f: inc rax; ret
+    put(0x70, &((CODE + 0x68) as u64).to_le_bytes()); // the slot: f
+    put(0x78, &[0x48, 0xff, 0xc2, 0xc3]); // g: inc rdx; ret
+    let (want, got, regions, steps) = run_both_fn(&code, 0);
+    assert_eq!((want.gpr(0), want.gpr(2)), (500, 500));
+    for i in 0..16 {
+        assert_eq!(got.gpr(i), want.gpr(i), "register {i}");
+    }
+    assert_eq!(got.eip, END);
+    assert_eq!(steps, 0, "no instruction left to the interpreter");
+    assert!(regions < 12, "{regions} entries from the run loop");
+}
+
+/// Small leaves (FN64) run inline in their caller: a leaf of three blocks called twice a
+/// round, and one that moves its own return address (`add qword [rsp], 5`): its RET is not
+/// back at the call and goes out through the lookup, past the `mov edx` it skips. The
+/// interpreter's results either way.
+#[test]
+fn leaves_called_inline() {
+    let mut code = vec![0x90u8; 0x48];
+    let mut put = |at: usize, b: &[u8]| code[at..at + b.len()].copy_from_slice(b);
+    let rel = |from: usize, to: usize| (to as i32 - from as i32).to_le_bytes();
+    put(0, &[0xb9, 0xe8, 3, 0, 0]); // mov ecx, 1000
+    put(5, &[0xe8]); // call L
+    put(6, &rel(10, 40));
+    put(10, &[0xe8]); // call L
+    put(11, &rel(15, 40));
+    put(15, &[0xff, 0xc9]); // dec ecx
+    put(17, &[0x75, (5i32 - 19) as u8]); // jne 5
+    put(19, &[0xe8]); // call T
+    put(20, &rel(24, 60));
+    put(24, &[0xba, 0x99, 0, 0, 0]); // mov edx, 0x99 (skipped)
+    put(29, &[0xe9]); // jmp END
+    put(30, &(END as i32 - (CODE as i32 + 34)).to_le_bytes());
+    put(40, &[0x48, 0x83, 0xc0, 0x01, 0xa8, 0x01, 0x74, 0x04, 0x48, 0x83, 0xc2, 0x01, 0xc3]); // L: add rax, 1; test al, 1; jz 52; add rdx, 1; ret
+    put(60, &[0x48, 0x83, 0x04, 0x24, 0x05, 0xc3]); // T: add qword [rsp], 5; ret
+    let (want, got, regions, _) = run_both_fn(&code, 0);
+    assert_eq!((want.gpr(0), want.gpr(2)), (2000, 1000));
+    for i in 0..16 {
+        assert_eq!(got.gpr(i), want.gpr(i), "register {i}");
+    }
+    assert_eq!(got.eip, END);
+    assert!(regions < 12, "{regions} entries from the run loop");
 }

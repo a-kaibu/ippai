@@ -326,6 +326,11 @@ pub fn module_head(module: &mut Module, long: bool) {
         module.imports.push(Import::Func("x87", 3));
         module.imports.push(Import::Table("table"));
     }
+    // (long mode: FN64's call cache misses, see long::Gen::call_fn)
+    if long && module.types.len() == 4 {
+        module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
+        module.imports.push(Import::Func("callmiss", 4));
+    }
     // (in every 32-bit module: saved bundles merge regions and functions, which needs the same
     // types and imports)
     if !long && module.types.len() == T_FN as usize {

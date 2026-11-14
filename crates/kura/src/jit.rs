@@ -947,6 +947,10 @@ fn drop_pages(st: &mut State, pages: &[(u32, u32)]) -> bool {
         pages.iter().any(|&(lo, hi)| p0 <= hi && p1 >= lo)
     };
     st.known.retain(|&a| !hit(a, 1));
+    // (the hot jumps sampled into the code there are not taken any more: a call's miss in the
+    // ring, made a function when the window is looked at, would be built from what is there
+    // then, an unloaded DLL's zeroed pages (tlscycle in FN64))
+    forget_hot(st, &hit);
     let bad: HashSet<u32> = st.code_of.iter().filter(|(_, c)| c.iter().any(|&(a, n)| hit(a, n))).map(|(&b, _)| b).collect();
     if bad.is_empty() {
         return true;
@@ -987,6 +991,19 @@ fn drop_pages(st: &mut State, pages: &[(u32, u32)]) -> bool {
         eprintln!("vnjit: {} translations made from changed code dropped ({} entries), {} kept", bad.len(), gone.len(), st.code_of.len());
     }
     true
+}
+
+/// Takes the jumps to code on pages `hit` says out of the ring (the whole of it, as merge_hot
+/// reads it; zeros, as the ring starts) and out of the hot counts.
+fn forget_hot(st: &mut State, hit: &dyn Fn(u32, u32) -> bool) {
+    for i in 0..jit::RING_SIZE as usize {
+        if hit(st.ring[2 + 2 * i], 1) {
+            // (a jump from nowhere to nowhere: not sampled again, see merge_hot)
+            st.ring[1 + 2 * i] = 0;
+            st.ring[2 + 2 * i] = 0;
+        }
+    }
+    st.hot.retain(|&(_, to), _| !hit(to, 1));
 }
 
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
@@ -1131,6 +1148,8 @@ fn init_flags() {
         // (MASU_JIT64_STRUCT=1: a region's blocks nested (jit::long::STRUCTURED), for A/B)
         jit::long::STRUCTURED.store(num("MASU_JIT64_STRUCT") != 0, std::sync::atomic::Ordering::Relaxed);
         jit::long::DEBUG_NO_SIDE.store(num("MASU_JIT64_NO_SIDE") != 0, std::sync::atomic::Ordering::Relaxed);
+        // (MASU_JIT64_FN=1: x64 code translated a function at a time, jit::long::FN64)
+        jit::long::FN64.store(num("MASU_JIT64_FN") != 0, std::sync::atomic::Ordering::Relaxed);
         for name in std::env::var("MASU_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
             if !jit::long::debug_off_named(name) {
                 eprintln!("MASU_JIT64_OFF: no mnemonic {name}");
@@ -2135,6 +2154,9 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
 /// ring's sorted samples `jumps`) is built again with the targets it went to more than once
 /// (a switch's cases, a callee, a virtual call's methods), once it left merge_hops64 times.
 fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64], hops: u32) {
+    if jit::long::FN64.load(Ordering::Relaxed) {
+        return fn_hot64(st, cpu, jumps);
+    }
     let mut best = (0, 0u32);
     let mut i = 0;
     while i < jumps.len() {
@@ -2193,6 +2215,93 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64], hops: u32) {
     merge_long(st, cpu, roots, from, to);
 }
 
+/// merge_hot for x64 functions (jit::long::FN64): a call that found no function there makes
+/// its target one; a function left often for code that is not one is built again with the
+/// blocks that ran since (jumps: sorted (from, to) pairs, from FN_TAG for a call's miss, else
+/// the table index of the code that jumped).
+fn fn_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64]) {
+    let mut i = 0;
+    while i < jumps.len() {
+        let k = i + jumps[i..].iter().take_while(|j| **j == jumps[i]).count();
+        let (from, to) = ((jumps[i] >> 32) as u32, jumps[i] as u32);
+        let n = k - i;
+        i = k;
+        // (a call's miss: the target becomes a function; a function's jump out: built again,
+        // taking in the target when its jumps reach it, a function of its own or not)
+        if n < FN_SAMPLES || (from == jit::FN_TAG && st.fns.contains(&to)) {
+            continue;
+        }
+        let f = if from == jit::FN_TAG {
+            to
+        } else {
+            match st.roots.get(&from).and_then(|r| r.first()).copied() {
+                Some(f) if st.fns.contains(&f) => f,
+                _ => continue,
+            }
+        };
+        let w = st.hot.entry((from, to)).or_insert(0);
+        *w += 1;
+        if *w >= FN_WINDOWS && st.fn_builds.get(&f).copied().unwrap_or(0) < FN_BUILDS {
+            st.hot.remove(&(from, to));
+            if stats() {
+                eprintln!("vnjit64 fn {f:#x} ({})", if from == jit::FN_TAG { "called" } else { "built again" });
+            }
+            compile_fn64(st, cpu, &mut Linear, f);
+            return;
+        }
+    }
+}
+
+/// Translates the x64 function at `eip` (jit::long::FN64, in the 4GB alias cpu.rip_hi) and
+/// points the hash table at it (entries tagged FN_TAG: calls go to its root).
+fn compile_fn64(st: &mut State, cpu: &Cpu, mem: &mut Linear, eip: u32) -> bool {
+    if eip >= cpu.trap_lo && eip < cpu.trap_hi {
+        return false;
+    }
+    *st.fn_builds.entry(eip).or_insert(0) += 1;
+    let build = st.fn_builds[&eip];
+    let mut m = Module { name: Some(format!("x64_{:x}{eip:08x}_fn{build}", cpu.rip_hi)), ..Module::default() };
+    let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
+    let entry = eip as u64 | (cpu.rip_hi as u64) << 32;
+    if crate::env_on!("MASU_JIT_LAYOUT") {
+        jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let t0 = Instant::now();
+    let (misses, known) = (&st.misses, &st.known);
+    // (the blocks that ran, and the ones its calls come back to or its jump tables reach)
+    // (built again: twice as many instructions each time, as build_fn)
+    let base_ins = *FN_INS.get_or_init(|| std::env::var("MASU_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
+    let Some(region) = jit::long::translate_function64(&mut m, mem, entry, (lo, hi), base_ins << (build.min(4) - 1), |a, sure| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || sure || ran(misses, known, a))) else {
+        st.known.insert(eip);
+        return false;
+    };
+    if crate::env_on!("MASU_JIT_LAYOUT") {
+        eprintln!("vnjit64 fn {entry:#x} build {build}\n{}", region.layout);
+    }
+    let bytes = m.finish();
+    if let Some(dir) = std::env::var_os("MASU_JIT_DUMP") {
+        let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn64-{build}.wasm")), &bytes);
+    }
+    #[cfg(target_os = "emscripten")]
+    let base = load_module(&bytes, 1);
+    #[cfg(not(target_os = "emscripten"))]
+    let base = { let _ = &bytes; -1 };
+    st.known.insert(eip);
+    if base < 0 {
+        return false;
+    }
+    note_load(st, base, 1, bytes.len());
+    enter_fn_as(st, base as u32, eip, &region.starts, &[], &region.code, true);
+    count_compile(1, t0);
+    if build > 1 {
+        count_compile(2, t0);
+    }
+    if crate::env_on!("MASU_JIT_TIME") {
+        eprintln!("vnjit time {eip:#x}: {} ins, fn64 build {build} in {:?}", region.instructions, t0.elapsed());
+    }
+    true
+}
+
 /// merge_hot's region for long mode (jit::long): the roots' blocks and the ones that ran.
 fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
@@ -2242,7 +2351,8 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         // another thread's region from the same code goes in at once
         // (16-bit regions are neither shared nor saved: their code is decoded with a segment base)
-        if st.misses.get(&eip).is_none() && cpu.mode16 == 0 {
+        // (x64 functions are neither shared nor saved yet)
+        if st.misses.get(&eip).is_none() && cpu.mode16 == 0 && !(cpu.mode64 != 0 && jit::long::FN64.load(std::sync::atomic::Ordering::Relaxed)) {
             if jit::FN.load(std::sync::atomic::Ordering::Relaxed) {
                 crate::crashlog::phase("jit: shared fn");
                 if let Some(r) = shared(mem, &fn_key(eip)) {
@@ -2287,6 +2397,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         st.misses.remove(&eip);
         st.maps_rev += 1;
         if cpu.mode64 != 0 {
+            if jit::long::FN64.load(std::sync::atomic::Ordering::Relaxed) {
+                return compile_fn64(st, cpu, mem, eip);
+            }
             return compile_long(st, cpu, mem);
         }
         if cpu.mode16 != 0 {
@@ -2771,6 +2884,12 @@ fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sit
 
 /// Points the hash table at the function (adapter at table index `base`, itself next).
 fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)]) {
+    enter_fn_as(st, base, eip, starts, sites, code, false)
+}
+
+/// enter_fn; `by_block`: the entry's number is its start's second half (x64 functions, whose
+/// first node dispatches on the block's number), else its place in `starts`.
+fn enter_fn_as(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)], by_block: bool) {
     st.known.insert(eip);
     mark_code(code);
     for &a in sites {
@@ -2786,9 +2905,9 @@ fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &
     enter(st, base as u32, vec![eip], &[], code);
     grow(st, starts.len());
     let mut entries = Vec::new();
-    for (i, &(a, _)) in starts.iter().enumerate() {
+    for (i, &(a, k)) in starts.iter().enumerate() {
         // (which entry: 0 the root, the first start)
-        let v = base as u32 | (i as u32) << jit::ENTRY_SHIFT | jit::FN_TAG;
+        let v = base as u32 | (if by_block { k } else { i as u32 }) << jit::ENTRY_SHIFT | jit::FN_TAG;
         if insert(&mut st.hash, a, v) {
             st.used += 1;
         }
@@ -2835,6 +2954,10 @@ pub unsafe extern "C" fn vnhost_jit_callmiss(cpu: u32, slot: u32, target: u32) -
             return v;
         }
         h = (h + 1) & cpu.jit_mask;
+    }
+    // (an import's host trap: no function to build, the call goes out to it)
+    if target >= cpu.trap_lo && target < cpu.trap_hi {
+        return 0;
     }
     let ring = cpu.jit_ring as usize as *mut u32;
     let n = *ring;
@@ -3515,6 +3638,62 @@ mod invalidate_tests {
             assert!(!drop_pages(st, &[(0x500, 0x500)]));
         });
         STATE.with(|s| *s.borrow_mut() = None);
+    }
+
+    /// A call's miss sampled in the ring (FN64) into a DLL that is unloaded before the ring is
+    /// looked at is not made a function: the ring entries and hot counts into the changed
+    /// pages go (with nothing translated there yet), the others stay.
+    #[test]
+    fn a_page_changed_forgets_the_jumps_sampled_into_it() {
+        with_state(|st| {
+            let n = jit::RING_SIZE as usize;
+            for i in 0..n {
+                let to = if i % 3 == 0 { 0x1000_1390 } else { 0x40_1000 + i as u32 };
+                st.ring[1 + 2 * i] = jit::FN_TAG;
+                st.ring[2 + 2 * i] = to;
+            }
+            st.ring[0] = n as u32 + 5;
+            st.hot.insert((jit::FN_TAG, 0x1000_1390), 3);
+            st.hot.insert((jit::FN_TAG, 0x40_1004), 3);
+            assert!(drop_pages(st, &[(0x10001, 0x10001)]));
+            for i in 0..n {
+                let e = (st.ring[1 + 2 * i], st.ring[2 + 2 * i]);
+                if i % 3 == 0 {
+                    assert_eq!(e, (0, 0), "entry {i}");
+                } else {
+                    assert_eq!(e, (jit::FN_TAG, 0x40_1000 + i as u32));
+                }
+            }
+            assert!(!st.hot.contains_key(&(jit::FN_TAG, 0x1000_1390)));
+            assert!(st.hot.contains_key(&(jit::FN_TAG, 0x40_1004)));
+        });
+        STATE.with(|s| *s.borrow_mut() = None);
+    }
+
+    proptest::proptest! {
+        /// After drop_pages no ring entry or hot count goes into a changed page, and every
+        /// other one is as it was.
+        #[test]
+        fn forget_hot_property(tos in proptest::collection::vec(0u32..0x40_0000, jit::RING_SIZE as usize), pages in proptest::collection::vec((0u32..0x400, 0u32..4), 1..4)) {
+            let pages: Vec<(u32, u32)> = pages.iter().map(|&(lo, n)| (lo, lo + n)).collect();
+            let inside = |a: u32| pages.iter().any(|&(lo, hi)| a >> 12 >= lo && a >> 12 <= hi);
+            with_state(|st| {
+                st.hot.clear();
+                for (i, &to) in tos.iter().enumerate() {
+                    st.ring[1 + 2 * i] = 7;
+                    st.ring[2 + 2 * i] = to;
+                    st.hot.insert((7, to), 1);
+                }
+                drop_pages(st, &pages);
+                for (i, &to) in tos.iter().enumerate() {
+                    let e = (st.ring[1 + 2 * i], st.ring[2 + 2 * i]);
+                    proptest::prop_assert_eq!(e, if inside(to) { (0, 0) } else { (7, to) });
+                    proptest::prop_assert_eq!(st.hot.contains_key(&(7, to)), !inside(to));
+                }
+                Ok(())
+            })?;
+            STATE.with(|s| *s.borrow_mut() = None);
+        }
     }
 
     #[test]

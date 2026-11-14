@@ -301,6 +301,32 @@
       ループ外のヘッダ、ループ内の入口はヘッダの横ディスパッチ、ジャンプテーブルは完全ハッシュ)。
       表・fib・文字列・SQLite は速く、sort/oop は merge_hot64 がほぼ効かなくなり遅いので既定オフ
       (MASU_JIT64_STRUCT=1 で有効、jit64test と fuzz は両方を回す)。本命は x64 の FN モード。
+    - x64 の FN モード (MASU_JIT64_FN=1、まだ既定オフ): 関数を 1 つの wasm 関数に訳す (構造化
+      レイアウト)。状態は呼び出しの境目で Cpu に置き、直接・間接 call は呼び出しキャッシュ
+      (Cpu::jit_calls、外れたら callmiss import) から call_indirect、深さ (L_DEPTH) 128 まで。
+      戻ってきて EIP が戻り先と違えば status のまま外へ。RET は深さ 0 なら exit の引き直し。
+      kura は ring の (FN_TAG, 先) で呼ばれた先を関数にし、よく出ていく関数は命令数を倍にして
+      作り直す (fn_hot64 / compile_fn64、同期、共有・保存はまだ)。ほかに: 小さな葉関数 (6 ブロック・
+      40 命令まで、call も間接ジャンプもない) は呼び出し元にインライン (RET は戻り先と比べる)、
+      import thunk (`jmp [rip+slot]`) への call はスロットをその場で読む、ジャンプテーブルは自分で
+      付けた上限 (movzx byte → 256、cmp imm) と関数が 1 度だけ置いた `lea r,[rip+X]` (Lua 5.4 の
+      r13) から読み、同じ表は 1 つのディスパッチにまとめる。ROL/ROR は全サイズ・imm/CL で訳す。
+      バグ: callmiss が import のホスト trap 番地を ring に入れ、trap ページ (0 バイト =
+      `add [rax],al`) を関数に訳して走らせていた (printf の 1 文字目が化ける、host テスト 8 件)。
+      trap 範囲からは関数もリージョンも作らない (koji `nothing_translated_at_a_host_trap`)。
+      もう 1 つ: ring に残った呼び出し先の標本を、DLL を FreeLibrary した後に関数にして、0 埋めの
+      ページ (`add [rax],al` × 120) を訳していた (host/tests/tlscycle.c: ロード・アンロード 3000 回)。
+      drop_pages が変わったページへの ring の標本と hot の数も捨てる (kura `forget_hot`、
+      invalidate_tests の a_page_changed_forgets_the_jumps_sampled_into_it と forget_hot_property)。
+      数字 (ノイズの多いマシン、x64 リージョン / FN / x86): flatbench 6.6〜7.4 / 5.6〜5.9 / 2.4〜2.8 秒、
+      bench.exe calls 146 / 86 / 48 ms、lz 298 / 158 / 517、cpu.exe unfilter 765 / 516 / 551、
+      compose 7.3 / 3.8 / 3.7。遅くなるもの: cpu.exe script 225 / 440 / 128、cxx vector 396 / 681 / 270、
+      virtual 96 / 179、exceptions 385 / 600、bench sort 576 / 726。仮想呼び出しと間接 call が
+      レジスタを全部 Cpu (lo/hi 分割) に書いて読み直すのが重い。次: レジスタを call の引数・戻り値で
+      渡す (x86 の T_FN と同じ形)、Cpu のレジスタを 64 ビット 1 本に。テスト: jit64test
+      (JFN または seed の 1/2 で FN、functions_call_each_other、deep_recursion_leaves_and_comes_back、
+      rotates_stay_translated、calls_through_import_thunks、leaves_called_inline)、host テスト全部を
+      MASU_JIT64_FN=1 でも通す。
   - 翻訳の無効化 (review P1-6): コードページへの書き込みは、そのページから作った翻訳だけを落とす
     (kura jit.rs の CHANGES 履歴 1024 件 + code_of、ほかのスレッドは check_generation で差分だけ
     drop_pages)。履歴が切れたら従来どおり全部捨てる。共有キャッシュ (P1-5) は 48 MiB・キーあたり

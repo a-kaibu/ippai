@@ -35,16 +35,26 @@ use iced_x86::{ConditionCode, Decoder, DecoderOptions, FlowControl, Instruction,
 const F_STEP: u32 = 0;
 const F_EFLAGS: u32 = 1;
 const F_STATUS: u32 = 2;
+/// (cpu, call cache slot, target) -> hash table entry of a function's root, or 0 (kura's
+/// vnhost_jit_callmiss)
+const F_CALLMISS: u32 = 4;
+/// Guest calls nested as wasm calls at most (deeper ones leave for the dispatcher)
+const MAX_DEPTH: u32 = 128;
 
 const MAX_INS: usize = 120;
 const MAX_BLOCKS: usize = 256;
 /// Instructions in a region at most (V8's optimizing compiler takes superlinear time on big
 /// functions; jit/mod.rs's MAX_REGION_INS)
 const MAX_REGION_INS: usize = 1000;
+/// Blocks in a function at most (FN64; its entries' numbers must stay below 0x7ff)
+const MAX_FN_BLOCKS: usize = 2000;
 /// Entries of a jump table at most
 const MAX_TABLE: u64 = 512;
 /// A RET compares its target with this many of the region's return addresses at most
 const MAX_RETURNS: usize = 8;
+/// FN64: the biggest leaf called inline (blocks, instructions).
+const LEAF_BLOCKS: usize = 6;
+const LEAF_INS: usize = 40;
 
 /// Debugging a miscompile: instructions per block and blocks per region at most (0: the
 /// defaults), and mnemonics (by their `Mnemonic` number) left to the interpreter.
@@ -81,6 +91,9 @@ fn limit(v: &AtomicUsize, default: usize) -> usize {
 // locals (after the N_PARAMS i32 parameters: 0 cpu, 1 entry)
 const L_CPU: u32 = 0;
 const L_ARG: u32 = 1;
+/// functions (FN64): how many guest calls deep this one is (0 from the dispatcher; the
+/// dispatcher passes 0 in this parameter, as the region type's lazy-flag operand)
+const L_DEPTH: u32 = 11;
 const L_R: u32 = N_PARAMS; // 16 i64: rax..r15
 const L_FA: u32 = L_R + 16; // i64: the flag operation's operands and result
 const L_FB: u32 = L_FA + 1;
@@ -232,6 +245,13 @@ struct Gen<'a> {
     table_node: BTreeMap<usize, usize>,
     /// loop headers' side dispatches: (entry inside the loop, next node, the last hop)
     side: BTreeMap<usize, Vec<(usize, usize, bool)>>,
+    /// a function (FN64): CALL is a wasm call of the callee's function, RET returns
+    fnm: bool,
+    /// direct calls' targets that are `jmp [rip+slot]` (import thunks): (target, slot), the
+    /// call going where the slot says
+    thunks: &'a BTreeMap<u64, u64>,
+    /// (debugging, MASU_JIT_LAYOUT) jumps the layout has no way for: (from, to)
+    unlaid: Vec<(u64, u64)>,
 }
 
 impl super::structure::Nest for Gen<'_> {
@@ -968,6 +988,9 @@ impl<'a> Gen<'a> {
                 // (not a way the layout has: out, and back in through the exit's lookup if
                 // the target is one of the region's entries)
                 (None, None) => {
+                    if super::LAYOUT.load(Relaxed) {
+                        self.unlaid.push((self.ins.ip(), target));
+                    }
                     self.exit_to(target, 0);
                     return;
                 }
@@ -1028,7 +1051,7 @@ impl<'a> Gen<'a> {
         c.get(L_E).load32(4).set(L_DBG);
         c.get(L_DBG).u32c(mask).and().get(L_ARG).u32c(mask).and().eq();
         c.get(L_NT).i64c(32).x(I64_SHR_U).x(I32_WRAP).u32c(hi).eq().and().if_(); // loop 6
-        c.get(L_DBG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK).br(6);
+        c.get(L_DBG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().set(L_BLK).br(6);
         c.end();
         // (into the ring the host reads to merge regions that jump to each other a lot:
         // ring[0] counts, then RING_SIZE (from, to) pairs)
@@ -1042,8 +1065,13 @@ impl<'a> Gen<'a> {
         c.get(L_CPU).get(L_NT).x(I32_WRAP).store32(cpu_off!(eip));
         c.get(L_CPU).get(L_NT).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(cpu_off!(rip_hi));
         c.get(L_CPU).get(L_DBG);
-        for _ in 2..N_PARAMS {
-            c.i32c(0);
+        for i in 2..N_PARAMS {
+            // (a function's tail jump: as deep as this one, its RET goes back to our caller)
+            if i == L_DEPTH {
+                c.get(L_DEPTH);
+            } else {
+                c.i32c(0);
+            }
         }
         c.get(L_DBG).u32c(mask).and();
         c.op(0x13).op(2).op(0); // return_call_indirect (the region type), table 0
@@ -1054,6 +1082,56 @@ impl<'a> Gen<'a> {
         c.end(); // miss
         c.end();
         c.end();
+    }
+
+    /// A function's CALL (FN64) of the target in i64 local `t`, its return address pushed: a
+    /// wasm call of the callee's function (the call cache's, else the host's answer, a
+    /// function's root only), the state in the Cpu around it. Back at `next` with status 0 it
+    /// goes on there; returned anywhere else, or with another status, the state is in the Cpu
+    /// and this function leaves the same way (longjmp, SEH, a callee that left for the
+    /// dispatcher). No function there, too deep or the budget spent: out to the target.
+    fn call_fn(&mut self, t: u32, next: u64) {
+        let site = self.ins.ip() as u32;
+        let (h, v) = (L_H, L_E);
+        let f = self.flags;
+        self.flags_to_cpu();
+        self.flags = f;
+        self.store_regs();
+        let b = cpu_off!(jit_budget);
+        self.c.block(); // out
+        self.depth += 1;
+        self.c.get(L_CPU).get(L_CPU).load32(b).i32c(1).sub().store32(b);
+        self.c.get(L_CPU).load32(b).i32c(0).le_s();
+        self.c.get(L_DEPTH).u32c(MAX_DEPTH).ge_u().or();
+        self.c.get(t).i64c(32).x(I64_SHR_U).x(I32_WRAP).u32c((self.ins.ip() >> 32) as u32).ne().or();
+        self.c.br_if(0);
+        // the call cache: this site's slot holds (target, hash table entry) of the function
+        // it called last
+        let slot = (site.wrapping_mul(0x9e37_79b1) >> 20) & (super::CALL_CACHE - 1);
+        self.c.get(L_CPU).load32(cpu_off!(jit_calls)).u32c(slot * 8).add().tee(h).load32(0).get(t).x(I32_WRAP).eq();
+        self.c.if_i32().get(h).load32(4).else_().get(L_CPU).get(h).get(t).x(I32_WRAP).call(F_CALLMISS).end().tee(v).eqz().br_if(0);
+        self.c.get(L_CPU).get(v);
+        for i in 2..N_PARAMS {
+            if i == L_DEPTH {
+                self.c.get(L_DEPTH).i32c(1).add();
+            } else {
+                self.c.i32c(0);
+            }
+        }
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().call_indirect(2, 0).tee(h);
+        self.c.get(L_CPU).load32(cpu_off!(eip)).u32c(next as u32).ne().or();
+        self.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((next >> 32) as u32).ne().or();
+        self.c.if_().get(h).ret().end();
+        self.load_regs();
+        self.flags = Flags::Cpu;
+        self.mx_checked = None;
+        self.mx_seen = [[None; 2]; 16];
+        self.goto(next);
+        self.depth -= 1;
+        self.c.end(); // out
+        self.flags = Flags::Cpu;
+        self.c.get(t);
+        self.exit_dyn(0);
     }
 
     /// Runs the current instruction through the `step` import; with `ends`, leaves after it at
@@ -1671,32 +1749,75 @@ impl<'a> Gen<'a> {
 
     /// ROL/ROR r/m32 or r/m64 by an immediate: CF and OF only (the others stay); a count of 0
     /// (masked) changes nothing (a 32-bit register still zero-extended).
+    /// ROL/ROR by an immediate or CL, any size (the count masked to 5 bits, 6 for 64-bit
+    /// operands; 8/16-bit ones rotate by it modulo their size; a count of 0 changes no flag).
     fn rotate(&mut self) -> bool {
         let bits = self.op_bits(0);
-        if bits < 32 {
+        let ins = self.ins;
+        let cmask: u32 = if bits == 64 { 0x3f } else { 0x1f };
+        let by_cl = ins.op_kind(1) == OpKind::Register;
+        if by_cl && ins.op_register(1) != Register::CL {
             return false;
         }
-        let ins = self.ins;
-        let count = (ins.immediate8() as u32) & (bits - 1);
         if self.has_mem() && !self.addr(bits / 8) {
             return false;
         }
         let (v, r) = (self.temp(), self.temp());
         self.read_op(0, bits);
         self.c.set(v);
-        if count == 0 {
-            self.write_op(0, bits, v);
+        let rol = ins.mnemonic() == Mnemonic::Rol;
+        if !by_cl {
+            let count = (ins.immediate8() as u32) & cmask;
+            if count == 0 {
+                self.write_op(0, bits, v);
+                return true;
+            }
+            let eff = count % bits;
+            if eff == 0 {
+                self.c.get(v).set(r);
+            } else if bits == 64 {
+                self.c.get(v).i64c(eff as i64).x(if rol { I64_ROTL } else { I64_ROTR }).set(r);
+            } else {
+                let (k, j) = if rol { (eff, bits - eff) } else { (bits - eff, eff) };
+                self.c.get(v).i64c(k as i64).x(I64_SHL).get(v).i64c(j as i64).x(I64_SHR_U).x(I64_OR).i64c(mask(bits)).x(I64_AND).set(r);
+            }
+            self.flags_to_eflags();
+            self.rotate_flags(r, bits, rol);
+            self.write_op(0, bits, r);
             return true;
         }
-        let rol = ins.mnemonic() == Mnemonic::Rol;
-        if bits == 64 {
-            self.c.get(v).i64c(count as i64).x(if rol { I64_ROTL } else { I64_ROTR }).set(r);
-        } else {
-            let (k, j) = if rol { (count, 32 - count) } else { (32 - count, count) };
-            self.c.get(v).i64c(k as i64).x(I64_SHL).get(v).i64c(j as i64).x(I64_SHR_U).x(I64_OR).i64c(0xffff_ffff).x(I64_AND).set(r);
-        }
+        // (by CL; the flags into EFLAGS on both ways, a count of 0 keeping them)
         self.flags_to_eflags();
-        // CF: ROL the low bit, ROR the top; OF: ROL top ^ CF, ROR top ^ the bit below it
+        let n = self.temp();
+        self.get_reg(Register::CL);
+        self.c.i64c(cmask as i64).x(I64_AND).set(n);
+        self.c.get(n).x(I64_EQZ).if_();
+        self.depth += 1;
+        // (nothing changes; a 32-bit register is still zero-extended)
+        self.write_op(0, bits, v);
+        self.c.else_();
+        if bits == 64 {
+            self.c.get(v).get(n).x(if rol { I64_ROTL } else { I64_ROTR }).set(r);
+        } else {
+            // e = count % bits; (v << k | v >> j) & mask with k + j = bits (e 0: v)
+            self.c.get(n).i64c(bits as i64).x(I64_REM_U).set(n);
+            if rol {
+                self.c.get(v).get(n).x(I64_SHL).get(v).i64c(bits as i64).get(n).x(I64_SUB).x(I64_SHR_U);
+            } else {
+                self.c.get(v).get(n).x(I64_SHR_U).get(v).i64c(bits as i64).get(n).x(I64_SUB).x(I64_SHL);
+            }
+            self.c.x(I64_OR).i64c(mask(bits)).x(I64_AND).set(r);
+        }
+        self.rotate_flags(r, bits, rol);
+        self.write_op(0, bits, r);
+        self.depth -= 1;
+        self.c.end();
+        true
+    }
+
+    /// A rotate's CF and OF from its result in local `r` (into the Cpu's EFLAGS): ROL the low
+    /// bit and top ^ CF, ROR the top and top ^ the bit below it.
+    fn rotate_flags(&mut self, r: u32, bits: u32, rol: bool) {
         let ef = cpu_off!(eflags);
         self.c.get(L_CPU);
         self.c.get(L_CPU).load32(ef).u32c(!(CF | OF)).and();
@@ -1708,8 +1829,6 @@ impl<'a> Gen<'a> {
             self.c.get(r).i64c(bits as i64 - 1).x(I64_SHR_U).get(r).i64c(bits as i64 - 2).x(I64_SHR_U).x(I64_XOR).x(I32_WRAP).i32c(1).and().i32c(11).shl().or().or();
         }
         self.c.store32(ef);
-        self.write_op(0, bits, r);
-        true
     }
 
     /// The instruction if it is one this handles (else nothing emitted).
@@ -1928,7 +2047,7 @@ impl<'a> Gen<'a> {
             Mul | Imul if n == 1 => self.mul1(),
             Div | Idiv => self.div1(),
             Tzcnt | Lzcnt | Popcnt => self.count_bits(),
-            Rol | Ror if ins.op_kind(1) == OpKind::Immediate8 => self.rotate(),
+            Rol | Ror if ins.op_count() == 2 && matches!(ins.op_kind(1), OpKind::Immediate8 | OpKind::Register) => self.rotate(),
             Bswap if self.op_bits(0) >= 32 => {
                 let bits = self.op_bits(0);
                 let (v, r) = (self.temp(), self.temp());
@@ -2072,13 +2191,51 @@ impl<'a> Gen<'a> {
                 }
                 self.read_op(0, 64);
                 // (a jump table's targets in the region: its dispatch node)
-                if let Some(p) = self.table_node.get(&self.cur).and_then(|&t| self.fwd[t]) {
+                // (its node may be a loop's header, as the node of the table every opcode of
+                // an interpreter ends with: a back edge, counting down the budget)
+                if let Some((p, back)) = self.table_node.get(&self.cur).and_then(|&t| self.back[t].map(|p| (p, true)).or(self.fwd[t].map(|p| (p, false)))) {
                     self.c.set(L_NT);
                     self.flags_to_cpu();
+                    if back {
+                        let b = cpu_off!(jit_budget);
+                        self.c.get(L_CPU).get(L_CPU).load32(b).i32c(1).sub().store32(b);
+                        self.c.get(L_CPU).load32(b).i32c(0).le_s().if_();
+                        self.depth += 1;
+                        self.c.get(L_NT);
+                        self.exit_dyn(0);
+                        self.depth -= 1;
+                        self.c.end();
+                    }
                     self.c.br(self.depth - p);
                     return true;
                 }
                 self.exit_dyn(0);
+                true
+            }
+            // (a leaf's call, inline: as a region's)
+            Call if ins.op0_kind() == OpKind::NearBranch64 && self.fnm && self.returns.contains(&ins.next_ip()) && self.index.contains_key(&ins.near_branch64()) => {
+                let t = self.temp();
+                self.c.i64c(ins.next_ip() as i64).set(t);
+                self.push64(t);
+                self.goto(ins.near_branch64());
+                true
+            }
+            Call if ins.op0_kind() == OpKind::NearBranch64 && self.fnm => {
+                let (t, r) = (self.temp(), self.temp());
+                match self.thunks.get(&ins.near_branch64()) {
+                    // (through an import thunk: where its slot says, as the thunk would)
+                    Some(&slot) => {
+                        self.c.u32c(slot as u32).set(L_A);
+                        self.load(64);
+                        self.c.set(t);
+                    }
+                    None => {
+                        self.c.i64c(ins.near_branch64() as i64).set(t);
+                    }
+                }
+                self.c.i64c(ins.next_ip() as i64).set(r);
+                self.push64(r);
+                self.call_fn(t, ins.next_ip());
                 true
             }
             Call if ins.op0_kind() == OpKind::NearBranch64 => {
@@ -2097,6 +2254,10 @@ impl<'a> Gen<'a> {
                 self.c.set(t);
                 self.c.i64c(ins.next_ip() as i64).set(r);
                 self.push64(r);
+                if self.fnm {
+                    self.call_fn(t, ins.next_ip());
+                    return true;
+                }
                 self.c.get(t);
                 self.exit_dyn(0);
                 true
@@ -2105,7 +2266,8 @@ impl<'a> Gen<'a> {
                 let extra = if ins.op_count() == 1 { ins.immediate16() as u32 } else { 0 };
                 let t = self.temp();
                 self.pop64(t, extra);
-                // back to a call of the region: straight there (else through the exit's lookup)
+                // back to a call of the region, or an inline one of the function's: straight
+                // there (else through the exit's lookup, or back to the calling function)
                 for &r in self.returns {
                     self.c.get(t).i64c(r as i64).x(I64_EQ).if_();
                     self.depth += 1;
@@ -2114,6 +2276,24 @@ impl<'a> Gen<'a> {
                     self.flags = f;
                     self.depth -= 1;
                     self.c.end();
+                }
+                if self.fnm {
+                    // called by a function: back to it (it goes on if this is its return
+                    // address); from the dispatcher, on through the exit's lookup
+                    self.c.get(L_DEPTH).if_();
+                    self.depth += 1;
+                    let f = self.flags;
+                    self.flags_to_cpu();
+                    self.flags = f;
+                    self.store_regs();
+                    self.c.get(L_CPU).get(t).x(I32_WRAP).store32(cpu_off!(eip));
+                    self.c.get(L_CPU).get(t).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(cpu_off!(rip_hi));
+                    self.c.i32c(0).ret();
+                    self.depth -= 1;
+                    self.c.end();
+                    self.c.get(t);
+                    self.exit_dyn(0);
+                    return true;
                 }
                 self.c.get(t);
                 self.exit_dyn(0);
@@ -2264,9 +2444,29 @@ fn bound(ins: &[Instruction]) -> Option<(u64, Register, u64)> {
 /// (MinGW: `lea rB,[T]; movsxd rX,[rB+rI*4]; add rX,rB; jmp rX`; MSVC: `lea rB,[ImageBase];
 /// mov eX,[rB+rI*4+T]; add rX,rB; jmp rX`; or `jmp [rB+rI*8]` of absolute addresses). Only for
 /// finding blocks: the jump itself goes wherever the register says (Gen::chain).
+#[cfg(test)]
 fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, u64)>) -> Vec<u64> {
+    jump_table_in(mem, ins, n, &BTreeMap::new())
+}
+
+/// jump_table, with `outer`: what registers the block does not set hold (`lea r, [rip+X]`
+/// elsewhere in the function, the only one for r: Lua 5.4's `jmp [r13+rax*8]` at the end of
+/// every opcode, r13 the dispatch table set once at its entry). Only for finding blocks: the
+/// jump goes wherever the register says.
+fn jump_table_in<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, u64)>, outer: &BTreeMap<Register, Option<u64>>) -> Vec<u64> {
     use Mnemonic::*;
+    // (no bound checked by the jump here: one the block itself sets, `movzx rI, byte [..]` or
+    // `and rI, imm` (SQLite's `cmp byte [rdx+1], 9; ja ..` checks the byte it loads again),
+    // its entries read until one goes far)
+    let (n, def) = match n {
+        Some(n) => (Some(n), None),
+        None => match index_bound(ins) {
+            Some((r, k, at)) => (Some((r, k)), Some(at)),
+            None => (None, None),
+        },
+    };
     let Some((ireg, n)) = n else { return Vec::new() };
+    let near = |t: u64| t.abs_diff(ins.last().unwrap().ip()) <= 0x10_0000;
     #[derive(Clone, Copy)]
     enum V {
         Const(u64),
@@ -2285,15 +2485,17 @@ fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, 
         }
         let base = match i.memory_base() {
             Register::None => 0,
-            b => match get(vals, b)? {
-                V::Const(c) => c,
+            b => match get(vals, b) {
+                Some(V::Const(c)) => c,
+                // (not set in the block: the function's one value for it, if it has one)
+                None if !ins.iter().any(|x| x.op_count() > 0 && x.op0_kind() == OpKind::Register && x.op0_register().full_register() == b.full_register()) => (*outer.get(&b.full_register())?)?,
                 _ => return None,
             },
         };
         Some(base.wrapping_add(i.memory_displacement64()))
     };
     let mut targets = Vec::new();
-    for i in ins {
+    for (at_k, i) in ins.iter().enumerate() {
         let dst = if i.op_count() > 0 && i.op0_kind() == OpKind::Register { Some(i.op0_register()) } else { None };
         let v = match i.mnemonic() {
             Lea if i.memory_base() == Register::RIP && i.memory_index() == Register::None => Some(V::Const(i.memory_displacement64())),
@@ -2314,6 +2516,9 @@ fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, 
                             for k in 0..n {
                                 let Some(e) = at(mem, t + 4 * k, 4) else { break };
                                 let e = if signed { e as u32 as i32 as i64 as u64 } else { e };
+                                if def.is_some() && !near(b.wrapping_add(e)) {
+                                    break;
+                                }
                                 targets.push(b.wrapping_add(e));
                             }
                         }
@@ -2322,6 +2527,9 @@ fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, 
                         if let Some(t) = table(&vals, i, 8) {
                             for k in 0..n {
                                 let Some(e) = at(mem, t + 8 * k, 8) else { break };
+                                if def.is_some() && !near(e) {
+                                    break;
+                                }
                                 targets.push(e);
                             }
                         }
@@ -2336,7 +2544,7 @@ fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, 
         // until the table is read)
         let reads_only = matches!(i.mnemonic(), Cmp | Test | Push | Jmp | Bt);
         if let Some(r) = dst.filter(|_| !reads_only).map(|r| r.full_register()) {
-            if r == ireg && !matches!(v, Some(V::Entry(..))) && !vals.iter().any(|x| matches!(x.1, V::Entry(..))) {
+            if r == ireg && !matches!(v, Some(V::Entry(..))) && !vals.iter().any(|x| matches!(x.1, V::Entry(..))) && def.is_none_or(|d| at_k > d) {
                 return Vec::new();
             }
             vals.retain(|x| x.0 != r);
@@ -2348,6 +2556,59 @@ fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, 
     targets.sort_unstable();
     targets.dedup();
     targets
+}
+
+/// The bound a block sets on a table index itself: the last `movzx rI, byte [..]` (256
+/// entries) or `and rI, imm` (imm + 1) before its jump, and where it is.
+fn index_bound(ins: &[Instruction]) -> Option<(Register, u64, usize)> {
+    let [.., j] = ins else { return None };
+    // (the register the jump's table is indexed by, and the instruction reading the table)
+    let (p, idx) = match ins.iter().rposition(|i| i.op_count() > 1 && i.op1_kind() == OpKind::Memory && i.memory_index() != Register::None) {
+        Some(p) => (p, ins[p].memory_index().full_register()),
+        None if j.op0_kind() == OpKind::Memory && j.memory_index() != Register::None => (ins.len() - 1, j.memory_index().full_register()),
+        None => return None,
+    };
+    for (k, i) in ins[..p].iter().enumerate().rev() {
+        if i.op_count() == 0 || i.op0_kind() != OpKind::Register || i.op0_register().full_register() != idx {
+            continue;
+        }
+        return match i.mnemonic() {
+            Mnemonic::Movzx if i.memory_size().size() == 1 || (i.op1_kind() == OpKind::Register && i.op1_register().size() == 1) => Some((idx, 256, k)),
+            Mnemonic::And if matches!(i.op1_kind(), OpKind::Immediate8to32 | OpKind::Immediate32 | OpKind::Immediate8to64 | OpKind::Immediate32to64) && (i.immediate(1) as i64) >= 0 => Some((idx, (i.immediate(1) + 1).min(MAX_TABLE), k)),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// Whether the function at `f` is a small leaf (FN64 calls it inline): a few blocks of direct
+/// jumps only, no call, indirect jump or anything else that leaves, ending in RETs.
+fn leaf64<M: Memory>(mem: &mut M, f: u64, trap: (u32, u32)) -> bool {
+    let (mut seen, mut todo, mut n, mut rets) = (Vec::new(), alloc::vec![f], 0, 0);
+    while let Some(a) = todo.pop() {
+        if seen.contains(&a) {
+            continue;
+        }
+        if seen.len() >= LEAF_BLOCKS || (a as u32) >= trap.0 && (a as u32) < trap.1 {
+            return false;
+        }
+        seen.push(a);
+        let ins = decode(mem, a, trap);
+        let Some(last) = ins.last() else { return false };
+        n += ins.len();
+        if n > LEAF_INS {
+            return false;
+        }
+        let near = last.op0_kind() == OpKind::NearBranch64;
+        match last.flow_control() {
+            FlowControl::Return => rets += 1,
+            FlowControl::Next => todo.push(last.next_ip()),
+            FlowControl::UnconditionalBranch if near => todo.push(last.near_branch64()),
+            FlowControl::ConditionalBranch if near => todo.extend([last.near_branch64(), last.next_ip()]),
+            _ => return false,
+        }
+    }
+    rets > 0
 }
 
 fn decode<M: Memory>(mem: &mut M, ip: u64, trap: (u32, u32)) -> Vec<Instruction> {
@@ -2392,11 +2653,11 @@ pub static DEBUG_NO_SIDE: core::sync::atomic::AtomicBool = core::sync::atomic::A
 /// per jump table, and one before them all going to the entries) and its entries, the first
 /// block first: the roots, the return addresses of calls and loop headers that are in no loop
 /// but as its header (into the middle of a loop is not a structured way in).
-fn structure64(blocks: &[Block], index: &BTreeMap<u64, usize>, returns: &[u64], tables: &BTreeMap<usize, Vec<u64>>, roots: &[u64]) -> Option<(super::structure::Layout, Vec<usize>, BTreeMap<usize, Vec<(usize, usize, bool)>>)> {
+fn structure64(blocks: &[Block], index: &BTreeMap<u64, usize>, returns: &[u64], (group_of, groups): (&BTreeMap<usize, usize>, &[Vec<u64>]), roots: &[u64], fnm: bool) -> Option<(super::structure::Layout, Vec<usize>, BTreeMap<usize, Vec<(usize, usize, bool)>>)> {
     let n = blocks.len();
     let find = |a: u64| index.get(&a).copied();
-    let mut succ: Vec<Vec<usize>> = alloc::vec![Vec::new(); n + tables.len() + 1];
-    let tnode: BTreeMap<usize, usize> = tables.keys().enumerate().map(|(i, &k)| (k, n + i)).collect();
+    let mut succ: Vec<Vec<usize>> = alloc::vec![Vec::new(); n + groups.len() + 1];
+    let tnode: BTreeMap<usize, usize> = group_of.iter().map(|(&k, &g)| (k, n + g)).collect();
     for (k, b) in blocks.iter().enumerate() {
         let last = b.ins.last().unwrap();
         let near = last.op0_kind() == OpKind::NearBranch64;
@@ -2408,6 +2669,9 @@ fn structure64(blocks: &[Block], index: &BTreeMap<u64, usize>, returns: &[u64], 
                 s.extend(find(last.near_branch64()));
                 s.extend(find(last.next_ip()));
             }
+            // (a function's calls come back: the return address follows; a leaf's inline)
+            FlowControl::Call if fnm && near && returns.contains(&last.next_ip()) => s.extend(find(last.near_branch64())),
+            FlowControl::Call | FlowControl::IndirectCall if fnm => s.extend(find(last.next_ip())),
             FlowControl::Call if near => s.extend(find(last.near_branch64())),
             FlowControl::Return => s.extend(returns.iter().filter_map(|&r| find(r))),
             FlowControl::IndirectBranch => s.extend(tnode.get(&k).copied()),
@@ -2417,7 +2681,7 @@ fn structure64(blocks: &[Block], index: &BTreeMap<u64, usize>, returns: &[u64], 
         s.dedup();
         succ[k] = s;
     }
-    for (i, t) in tables.values().enumerate() {
+    for (i, t) in groups.iter().enumerate() {
         let mut s: Vec<usize> = t.iter().filter_map(|&a| find(a)).collect();
         s.sort_unstable();
         s.dedup();
@@ -2431,9 +2695,12 @@ fn structure64(blocks: &[Block], index: &BTreeMap<u64, usize>, returns: &[u64], 
         .filter_map(|l| find(l.next_ip()))
         .collect();
     let rooted: Vec<usize> = roots.iter().filter_map(|&r| find(r)).collect();
-    let wanted = |k: usize| k != 0 && (rooted.contains(&k) || rets.contains(&k) || l0.header(k));
+    // (a function's jump tables' targets too: an interpreter's opcodes, where it is left
+    // when the budget runs out at its dispatch, or when the dispatcher comes back to one)
+    let cases: Vec<usize> = if fnm { groups.iter().flatten().filter_map(|&a| find(a)).collect() } else { Vec::new() };
+    let wanted = |k: usize| k != 0 && (rooted.contains(&k) || rets.contains(&k) || l0.header(k) || cases.contains(&k));
     let reached: Vec<bool> = {
-        let mut r = alloc::vec![false; n + tables.len() + 1];
+        let mut r = alloc::vec![false; n + groups.len() + 1];
         for &v in l0.order_iter() {
             r[v] = true;
         }
@@ -2595,7 +2862,8 @@ fn emit_block64<M: Memory>(g: &mut Gen<'_>, mem: &mut M, k: usize, count: &mut u
         g.goto(next);
     }
     if super::LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
-        layout.push_str(&alloc::format!("{:#x} {}\n", blocks[k].start, list.len()));
+        let l = list.last().unwrap();
+        layout.push_str(&alloc::format!("{:#x} {} {:?} {:#x}\n", blocks[k].start, list.len(), l.mnemonic(), if l.op0_kind() == OpKind::NearBranch64 { l.near_branch64() } else { 0 }));
     }
 }
 
@@ -2674,10 +2942,35 @@ fn emit_entries64(g: &mut Gen<'_>, entries: &[usize]) {
 pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
     // (each page read once: the instructions decoded, the bytes blocks check on entry and the
     // region's text agree although other threads may rewrite the code meanwhile)
-    translate_seen64(module, &mut super::Snapshot::new(mem), roots, trap, accept)
+    translate_seen64(module, &mut super::Snapshot::new(mem), roots, trap, accept, None)
 }
 
-fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), mut accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
+/// x64 functions (`MASU_JIT64_FN`): off by default for now.
+pub static FN64: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The function at `entry` (FN64) as one wasm function of the region type: its blocks are
+/// the ones its own jumps reach (accept(a, false)), its calls' return addresses and jump
+/// tables' targets (accept(a, true)), never a call's target. A CALL is a wasm call of the
+/// callee's function (Gen::call_fn) and a RET returns to its caller (status 0, the state in
+/// the Cpu, which goes on when that is its return address). Entered at any of `starts` (the
+/// hash table's entries, tagged FN_TAG by the host: what calls go to).
+/// `max_ins`: instructions it takes at most (a function built again takes more: big
+/// interpreters' loops, whose cases are its blocks).
+pub fn translate_function64<M: Memory>(module: &mut Module, mem: &mut M, entry: u64, trap: (u32, u32), max_ins: usize, accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
+    translate_seen64(module, &mut super::Snapshot::new(mem), &[entry], trap, accept, Some(max_ins))
+}
+
+fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), mut accept: impl FnMut(u32, bool) -> bool, fn_ins: Option<usize>) -> Option<Region> {
+    let fnm = fn_ins.is_some();
+    // (a host trap's address is no code: a function or region never starts there, a call
+    // cache miss on an import's slot names one)
+    if roots.iter().any(|&r| (r as u32) >= trap.0 && (r as u32) < trap.1) {
+        return None;
+    }
+    let (max_blocks, max_ins) = match fn_ins {
+        Some(n) => (MAX_FN_BLOCKS, n),
+        None => (MAX_BLOCKS, MAX_REGION_INS),
+    };
     let exact = super::mx_exact();
     let entry = roots[0];
     // blocks: the entry and what its direct jumps reach (accept(a, false)), and what may run
@@ -2691,9 +2984,14 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     let mut bounds: Vec<(u64, Register, u64)> = Vec::new();
     // (block -> the targets of the jump table it ends with)
     let mut tables: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+    let mut thunks: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut leas: BTreeMap<Register, Option<u64>> = BTreeMap::new();
+    let mut thunk_code: Vec<(u32, u32)> = Vec::new();
+    // (fnm: the return addresses of the calls of leaves, inline)
+    let mut inline: Vec<u64> = Vec::new();
     let mut total = 0;
     while let Some((a, sure)) = todo.pop() {
-        if index.contains_key(&a) || blocks.len() >= limit(&DEBUG_BLOCKS, MAX_BLOCKS) || total >= MAX_REGION_INS {
+        if index.contains_key(&a) || blocks.len() >= limit(&DEBUG_BLOCKS, max_blocks) || total >= max_ins {
             continue;
         }
         if !roots.contains(&a) && !accept(a as u32, sure) {
@@ -2707,6 +3005,28 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
             continue;
         }
         total += ins.len();
+        if fnm {
+            // (registers set to an address in the function: the only value each takes in it,
+            // or None)
+            for i in &ins {
+                let reads_only = matches!(i.mnemonic(), Mnemonic::Cmp | Mnemonic::Test | Mnemonic::Push | Mnemonic::Jmp | Mnemonic::Call | Mnemonic::Bt);
+                if i.op_count() > 0 && i.op0_kind() == OpKind::Register && !reads_only {
+                    let r = i.op0_register().full_register();
+                    let v = (i.mnemonic() == Mnemonic::Lea && i.memory_base() == Register::RIP && i.memory_index() == Register::None && i.op0_register().is_gpr64()).then(|| i.memory_displacement64());
+                    match v {
+                        Some(v) => {
+                            let e = leas.entry(r).or_insert(Some(v));
+                            if *e != Some(v) {
+                                *e = None;
+                            }
+                        }
+                        None => {
+                            leas.insert(r, None);
+                        }
+                    }
+                }
+            }
+        }
         let last = *ins.last().unwrap();
         match last.flow_control() {
             FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch if last.op0_kind() == OpKind::NearBranch64 => {
@@ -2718,6 +3038,27 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
                     }
                 }
             }
+            FlowControl::Call if fnm => {
+                todo.push((last.next_ip(), true));
+                // (a small leaf callee goes inline: its RET goes on at the return address when
+                // that is where it returns to, see Gen's Ret)
+                if last.op0_kind() == OpKind::NearBranch64 && leaf64(mem, last.near_branch64(), trap) {
+                    inline.push(last.next_ip());
+                    todo.insert(0, (last.near_branch64(), true));
+                }
+                // (an import thunk, `jmp [rip+slot]`: the call reads the slot itself)
+                if last.op0_kind() == OpKind::NearBranch64 {
+                    let f = last.near_branch64();
+                    if let Some(j) = decode(mem, f, trap).first().filter(|j| j.mnemonic() == Mnemonic::Jmp && j.op0_kind() == OpKind::Memory && j.memory_base() == Register::RIP && j.memory_size().size() == 8) {
+                        let slot = j.memory_displacement64();
+                        if !super::fresh_at(f as u32) && (slot >> 32) == (f >> 32) && (GUEST_LO as u64..GUEST_HI as u64 - 8).contains(&(slot & 0xffff_ffff)) {
+                            if thunks.insert(f, slot).is_none() {
+                                thunk_code.push((f as u32, j.len() as u32));
+                            }
+                        }
+                    }
+                }
+            }
             FlowControl::Call if last.op0_kind() == OpKind::NearBranch64 => {
                 // (the callee after the caller's own code)
                 todo.insert(0, (last.near_branch64(), true));
@@ -2726,7 +3067,7 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
             FlowControl::Call | FlowControl::IndirectCall => todo.push((last.next_ip(), true)),
             FlowControl::IndirectBranch => {
                 let n = bounds.iter().find(|b| b.0 == a).map(|b| (b.1, b.2));
-                let t = jump_table(mem, &ins, n);
+                let t = jump_table_in(mem, &ins, n, &leas);
                 for &t in t.iter().rev() {
                     todo.push((t, true));
                 }
@@ -2765,22 +3106,39 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     let mut returns: Vec<u64> = blocks
         .iter()
         .filter_map(|b| b.ins.last())
+        .filter(|l| !fnm || inline.contains(&l.next_ip()))
         .filter(|l| l.flow_control() == FlowControl::Call && l.op0_kind() == OpKind::NearBranch64 && index.contains_key(&l.near_branch64()) && index.contains_key(&l.next_ip()))
         .map(|l| l.next_ip())
         .collect();
     returns.sort_unstable();
     returns.dedup();
     returns.truncate(MAX_RETURNS);
-    let lay = if !STRUCTURED.load(Relaxed) { None } else { structure64(&blocks, &index, &returns, &tables, roots) };
-    let nodes = blocks.len() + tables.len() + 1;
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, fresh: None, watch_store: false, fell_back: false, bad: false, info: iced_x86::InstructionInfoFactory::new(), structured: lay.is_some(), fwd: alloc::vec![None; nodes], back: alloc::vec![None; nodes], cur: 0, table_node: BTreeMap::new(), side: BTreeMap::new() };
+    // (one dispatch node per table: blocks jumping through the same one share it, as every
+    // opcode's end in an interpreter whose dispatch is duplicated (Lua 5.4): with a node each,
+    // the opcodes' loop had several ways in and left the layout)
+    let mut groups: Vec<Vec<u64>> = Vec::new();
+    let mut group_of: BTreeMap<usize, usize> = BTreeMap::new();
+    for (&k, t) in &tables {
+        let g = match groups.iter().position(|x| x == t) {
+            Some(g) => g,
+            None => {
+                groups.push(t.clone());
+                groups.len() - 1
+            }
+        };
+        group_of.insert(k, g);
+    }
+    let lay = if !STRUCTURED.load(Relaxed) && !fnm { None } else { structure64(&blocks, &index, &returns, (&group_of, &groups), roots, fnm) };
+    let nodes = blocks.len() + groups.len() + 1;
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, fresh: None, watch_store: false, fell_back: false, bad: false, info: iced_x86::InstructionInfoFactory::new(), structured: lay.is_some(), fwd: alloc::vec![None; nodes], back: alloc::vec![None; nodes], cur: 0, table_node: BTreeMap::new(), side: BTreeMap::new(), fnm, thunks: &thunks, unlaid: Vec::new() };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
     g.c.end();
     g.c.i32c(0).set(L_FC);
     g.load_regs();
-    g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
+    // (a function's entries are tagged FN_TAG, bit 31)
+    g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().set(L_BLK);
     let mut count = 0;
     let mut layout = String::new();
     let hi = (entry >> 32) as u32;
@@ -2793,15 +3151,19 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
         g.c.loop_();
         g.c.block();
         let nb = blocks.len();
-        let tnodes: Vec<(usize, &Vec<u64>)> = tables.iter().map(|(&k, t)| (k, t)).collect();
-        for (i, &(k, _)) in tnodes.iter().enumerate() {
+        for (&k, &i) in &group_of {
             g.table_node.insert(k, nb + i);
         }
         super::structure::emit(&mut g, l, |g, k| {
             if k < nb {
                 emit_block64(g, mem, k, &mut count, &mut layout);
-            } else if k < nb + tnodes.len() {
-                emit_table64(g, tnodes[k - nb].1, hi);
+            } else if k < nb + groups.len() {
+                // (a loop's header may be a table's node: its side dispatch first, as a block's)
+                if let Some(side) = g.side.get(&k).cloned() {
+                    g.flags = Flags::Cpu;
+                    emit_side64(g, &side);
+                }
+                emit_table64(g, &groups[k - nb], hi);
             } else {
                 emit_entries64(g, &entries);
             }
@@ -2850,13 +3212,22 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     locals.extend_from_slice(&[I32; N_I32 as usize]);
     locals.extend_from_slice(&[V128; 2]);
     locals.push(V128);
+    for (f, t) in &g.unlaid {
+        layout.push_str(&alloc::format!("out of the layout: {f:#x} -> {t:#x}\n"));
+    }
+    if super::LAYOUT.load(Relaxed) {
+        layout.push_str(&alloc::format!("entries {:x?}\ntables {:x?}\n", entries.iter().map(|&k| blocks[k].start).collect::<Vec<_>>(), tables.iter().map(|(&k, t)| (blocks[k].start, t.len())).collect::<Vec<_>>()));
+    }
     let code = splice_regs(core::mem::take(&mut g.c), &g.marks, DEBUG_ALL_REGS.load(Relaxed));
     module.funcs.push(Func { ty: 2, locals, code });
     let starts = entries.iter().map(|&k| (blocks[k].start as u32, k as u32)).collect();
     let code: Vec<(u32, u32)> = blocks.iter().map(|b| {
         let end = b.ins.last().unwrap().next_ip();
         (b.start as u32, (end - b.start) as u32)
-    }).collect();
+    })
+    // (the thunks' own bytes: the calls depend on them too, for page checks)
+    .chain(thunk_code.iter().copied())
+    .collect();
     // (the bytes translated, as this translation read them)
     let text = super::code_text(mem, &code);
     Some(Region { starts, instructions: count, code, text, layout, profile: Vec::new(), sites: Vec::new(), exact })
@@ -2873,6 +3244,128 @@ mod tests {
         }
         fn write8(&mut self, a: u32, _: u8) -> Result<(), crate::Fault> {
             Err(crate::Fault { addr: a, write: true })
+        }
+    }
+
+    /// A table whose index the block loads itself (SQLite's vdbeRecordCompareInt:
+    /// `cmp byte [rdx+1], 9; ja` in the block before, then `movzx ecx, byte [rdx+1]; lea r9,
+    /// [rip+T]; movsxd rcx, [r9+rcx*4]; add rcx, r9; jmp rcx`): its entries up to the first that
+    /// goes far, and with `and ecx, 3` the first four only.
+    #[test]
+    fn jump_table_bounded_by_its_own_block() {
+        struct Img(Vec<u8>);
+        impl Memory for Img {
+            fn read8(&mut self, a: u32) -> Result<u8, crate::Fault> {
+                a.checked_sub(0x1000).and_then(|o| self.0.get(o as usize).copied()).ok_or(crate::Fault { addr: a, write: false })
+            }
+            fn write8(&mut self, a: u32, _: u8) -> Result<(), crate::Fault> {
+                Err(crate::Fault { addr: a, write: true })
+            }
+        }
+        let decode = |code: &[u8]| -> Vec<Instruction> { Decoder::with_ip(64, code, 0x1000, DecoderOptions::NONE).into_iter().collect() };
+        // the table at 0x1100: offsets of 0x1040 0x1050 0x1060 0x1070 0x1080, then one 16 MB away
+        let mut img = alloc::vec![0u8; 0x200];
+        for (k, t) in [0x40i32, 0x50, 0x60, 0x70, 0x80, 0x100_0000].iter().enumerate() {
+            let e = t - 0x100;
+            img[0x100 + 4 * k..0x104 + 4 * k].copy_from_slice(&e.to_le_bytes());
+        }
+        #[rustfmt::skip]
+        let code: &[u8] = &[
+            0x0f, 0xb6, 0x4a, 0x01,                   // movzx ecx, byte [rdx+1]
+            0x4c, 0x8d, 0x0d, 0xf5, 0x00, 0x00, 0x00, // lea r9, [rip+0xf5] (0x1100)
+            0x49, 0x63, 0x0c, 0x89,                   // movsxd rcx, [r9+rcx*4]
+            0x4c, 0x01, 0xc9,                         // add rcx, r9
+            0xff, 0xe1,                               // jmp rcx
+        ];
+        img[..code.len()].copy_from_slice(code);
+        let ins = decode(code);
+        assert_eq!(index_bound(&ins), Some((Register::RCX, 256, 0)));
+        assert_eq!(jump_table(&mut Img(img.clone()), &ins, None), alloc::vec![0x1040, 0x1050, 0x1060, 0x1070, 0x1080]);
+        // and ecx, 3 after it: four
+        #[rustfmt::skip]
+        let code2: &[u8] = &[
+            0x0f, 0xb6, 0x4a, 0x01, 0x83, 0xe1, 0x03, // movzx ecx, byte [rdx+1]; and ecx, 3
+            0x4c, 0x8d, 0x0d, 0xf2, 0x00, 0x00, 0x00, // lea r9, [rip+0xf2] (0x1100)
+            0x49, 0x63, 0x0c, 0x89, 0x4c, 0x01, 0xc9, 0xff, 0xe1,
+        ];
+        let mut img2 = img.clone();
+        img2[..code2.len()].copy_from_slice(code2);
+        let ins2 = decode(code2);
+        assert_eq!(index_bound(&ins2), Some((Register::RCX, 4, 1)));
+        assert_eq!(jump_table(&mut Img(img2), &ins2, None), alloc::vec![0x1040, 0x1050, 0x1060, 0x1070]);
+        // the index changed after its bound: no table
+        #[rustfmt::skip]
+        let code3: &[u8] = &[
+            0x0f, 0xb6, 0x4a, 0x01, 0xff, 0xc1,       // movzx ecx, byte [rdx+1]; inc ecx
+            0x4c, 0x8d, 0x0d, 0xf3, 0x00, 0x00, 0x00, // lea r9, [rip+0xf3] (0x1100)
+            0x49, 0x63, 0x0c, 0x89, 0x4c, 0x01, 0xc9, 0xff, 0xe1,
+        ];
+        let mut img3 = img;
+        img3[..code3.len()].copy_from_slice(code3);
+        let ins3 = decode(code3);
+        assert!(jump_table(&mut Img(img3), &ins3, None).is_empty());
+    }
+
+    /// Lua 5.4's dispatch at the end of every opcode, `mov eax, ebx; and eax, 0x7f;
+    /// jmp [r13+rax*8]`, r13 the table the function set once (`outer`): the table's entries
+    /// up to the first that goes far; none when the block sets r13 itself to something else
+    /// or the function's value for it is not known.
+    #[test]
+    fn jump_table_through_a_register_the_function_set() {
+        struct Img(Vec<u8>);
+        impl Memory for Img {
+            fn read8(&mut self, a: u32) -> Result<u8, crate::Fault> {
+                a.checked_sub(0x1000).and_then(|o| self.0.get(o as usize).copied()).ok_or(crate::Fault { addr: a, write: false })
+            }
+            fn write8(&mut self, a: u32, _: u8) -> Result<(), crate::Fault> {
+                Err(crate::Fault { addr: a, write: true })
+            }
+        }
+        let mut img = alloc::vec![0u8; 0x200];
+        for (k, t) in [0x1040u64, 0x1050, 0x1060, 0x900_0000].iter().enumerate() {
+            img[0x100 + 8 * k..0x108 + 8 * k].copy_from_slice(&t.to_le_bytes());
+        }
+        let decode = |code: &[u8]| -> Vec<Instruction> { Decoder::with_ip(64, code, 0x1000, DecoderOptions::NONE).into_iter().collect() };
+        // mov eax, ebx; and eax, 0x7f; jmp [r13+rax*8]
+        let ins = decode(&[0x89, 0xd8, 0x83, 0xe0, 0x7f, 0x41, 0xff, 0x64, 0xc5, 0x00]);
+        assert_eq!(index_bound(&ins), Some((Register::RAX, 128, 1)));
+        let mut outer = BTreeMap::new();
+        outer.insert(Register::R13, Some(0x1100u64));
+        assert_eq!(jump_table_in(&mut Img(img.clone()), &ins, None, &outer), alloc::vec![0x1040, 0x1050, 0x1060]);
+        assert!(jump_table_in(&mut Img(img.clone()), &ins, None, &BTreeMap::new()).is_empty());
+        outer.insert(Register::R13, None);
+        assert!(jump_table_in(&mut Img(img.clone()), &ins, None, &outer).is_empty());
+        // (r13 set in the block: its own value counts, unknown here)
+        outer.insert(Register::R13, Some(0x1100u64));
+        let ins2 = decode(&[0x4d, 0x89, 0xe5, 0x89, 0xd8, 0x83, 0xe0, 0x7f, 0x41, 0xff, 0x64, 0xc5, 0x00]); // mov r13, r12; ...
+        assert!(jump_table_in(&mut Img(img), &ins2, None, &outer).is_empty());
+    }
+
+    /// A host trap's address is no code: a call through an import's slot misses the call
+    /// cache at the trap, and a function built there would run the trap page's bytes (zeros:
+    /// `add [rax], al`, a byte of the guest's memory changed: printf's first character, the
+    /// FN64 host tests). Neither a function nor a region starts in the trap range, at any of
+    /// its addresses; the same bytes outside it are translated.
+    #[test]
+    fn nothing_translated_at_a_host_trap() {
+        struct Zeros;
+        impl Memory for Zeros {
+            fn read8(&mut self, _: u32) -> Result<u8, crate::Fault> {
+                Ok(0)
+            }
+            fn write8(&mut self, a: u32, _: u8) -> Result<(), crate::Fault> {
+                Err(crate::Fault { addr: a, write: true })
+            }
+        }
+        let trap = (0xfe00_0000u32, 0xfe01_0000u32);
+        // (the trap range is by the low 32 bits, in any 4GB alias)
+        for full in [trap.0 as u64, trap.0 as u64 + 0x78, trap.1 as u64 - 1, 0x1_fe00_0078] {
+            let a = full;
+            assert!(translate_function64(&mut Module::default(), &mut Zeros, full, trap, 1000, |_, _| true).is_none(), "function at {a:#x}");
+            assert!(translate_region64(&mut Module::default(), &mut Zeros, &[full], trap, |_, _| true).is_none(), "region at {a:#x}");
+        }
+        for a in [trap.0 - 0x10, trap.1] {
+            assert!(translate_function64(&mut Module::default(), &mut Zeros, a as u64, trap, 1000, |_, _| true).is_some(), "function at {a:#x}");
         }
     }
 
