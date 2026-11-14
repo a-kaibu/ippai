@@ -739,6 +739,12 @@ pub extern "C" fn vnhost_crashlog_snapshot() -> u32 {
     w.n as u32
 }
 
+/// Every guest thread's state as text (SAKE_THREADS_STACKS in node, where no page reads SNAP).
+pub fn snapshot_text() -> String {
+    let n = vnhost_crashlog_snapshot() as usize;
+    String::from_utf8_lossy(unsafe { &(&*SNAP.0.get())[..n] }).into_owned()
+}
+
 struct SnapWriter {
     n: usize,
 }
@@ -750,5 +756,17 @@ impl Write for SnapWriter {
         b[self.n..self.n + k].copy_from_slice(&s.as_bytes()[..k]);
         self.n += k;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    #[test]
+    fn snapshot_text_lists_the_threads() {
+        let t = super::snapshot_text();
+        assert!(t.contains("threads now: "), "{t}");
+        // (again: the snapshot is rewritten, not appended to)
+        let u = super::snapshot_text();
+        assert_eq!(u.matches("threads now: ").count(), 1, "{u}");
     }
 }

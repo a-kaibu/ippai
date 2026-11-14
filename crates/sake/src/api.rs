@@ -441,7 +441,7 @@ fn stats_on() -> bool {
 
 /// SAKE_THREADS=<seconds>: every so often, each guest thread's last API calls (name, first
 /// arguments, caller, ms), to see what a stalled game's threads wait for without the cost of
-/// formatting a trace line per call.
+/// formatting a trace line per call. SAKE_THREADS_STACKS=1 adds each thread's registers and stack.
 // (lock-free: relaxed stores into a slot per thread, so watching barely changes the timing)
 const RECENT_N: usize = 8;
 const RECENT_THREADS: usize = 128;
@@ -478,6 +478,10 @@ fn threads_on() -> bool {
                 }
             }
             eprintln!("{out}");
+            // SAKE_THREADS_STACKS=1: also each thread's registers and the code on its stack
+            if std::env::var_os("SAKE_THREADS_STACKS").is_some() {
+                eprintln!("{}", kura::crashlog::snapshot_text());
+            }
         });
         true
     })
