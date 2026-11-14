@@ -141,6 +141,29 @@ test('BLAKE3 chunk names as the blake3 crate makes them', () => {
   const masuBlake3 = new Function(`${source}; return masuBlake3;`)();
   for (const [kind, n, h] of vectors) assert.equal(masuBlake3(input(kind, +n)), h, `${kind} ${n}`);
 });
+test('BLAKE3 both ways (wasm SIMD and plain JS) as the crate, and equal for random inputs', () => {
+  const { js, simd } = new Function(`${source}; return { js: masuBlake3Js, simd: masuBlake3Simd };`)();
+  const fast = simd();
+  assert.ok(fast, 'node has wasm SIMD');
+  for (const [kind, n, h] of vectors) {
+    assert.equal(js(input(kind, +n)), h, `js ${kind} ${n}`);
+    assert.equal(fast(input(kind, +n)), h, `simd ${kind} ${n}`);
+  }
+  // (seeded: lengths around 1 KiB chunks, groups of 4, the 256-chunk window)
+  let x = 12345;
+  const rnd = () => ((x = (Math.imul(x, 1664525) + 1013904223) >>> 0), x);
+  for (let k = 0; k < 60; k++) {
+    const n = [rnd() % 9000, 256 * 1024 + (rnd() % 8192) - 4096, 4 * 1024 * 1024 + (rnd() % 3000)][k % 3];
+    const d = Uint8Array.from({ length: n }, () => rnd() & 255);
+    assert.equal(fast(d), js(d), `length ${n}`);
+  }
+});
+test('the network worker has the SIMD BLAKE3 too (its source is the functions, by name)', () => {
+  const src = new Function(`${source}; return masuFetchWorkerSource('');`)();
+  const { b3 } = new Function(`${src}; return { b3: masuBlake3 };`)();
+  const [, n, h] = vectors.find((v) => v[0] === 'r' && v[1] === '250000');
+  assert.equal(b3(input('r', +n)), h);
+});
 test('a chunk is checked against its name: fetched again when damaged, a failure when it never matches', async () => {
   const name = (n) => vectors.find((v) => v[0] === 'p' && +v[1] === n)[2];
   const good = await request(`https://s/store/chunks/ab/${name(200000)}`);

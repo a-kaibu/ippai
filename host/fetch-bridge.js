@@ -31,6 +31,14 @@ function masuIsChunk(url) {
  * network worker gets it as source.
  */
 function masuBlake3(data) {
+  // (wasm SIMD where there is: ~6-10x masuBlake3Js's speed; that was the network worker's
+  // busiest code while a game loads)
+  const fast = data.length > 1024 && masuBlake3Simd();
+  return fast ? fast(data) : masuBlake3Js(data);
+}
+
+/** masuBlake3 in plain JavaScript (where there is no wasm SIMD, and small inputs). */
+function masuBlake3Js(data) {
   const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
   const PERM = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
   const S = [];
@@ -129,6 +137,229 @@ function masuBlake3(data) {
   let hex = '';
   for (let k = 0; k < 16; k++) hex += ((cv[k >> 2] >>> ((k & 3) * 8)) & 255).toString(16).padStart(2, '0');
   return hex;
+}
+
+/**
+ * BLAKE3 with wasm SIMD (masuBlake3's fast path): a module made here, byte by byte, whose
+ * `h(in, stride, n, blocks, counter, step, flags, start, end, lastLen, out)` hashes `n` (1-4)
+ * inputs at once, one per i32x4 lane (input l at in + l*stride: `blocks` 64-byte blocks, the
+ * last `lastLen` bytes long, zero-padded; counter + l*step; `flags` on every block, `start` on
+ * the first, `end` on the last), and stores each one's chaining value (8 words) at out + l*32.
+ * Whole chunks go four at a time, then the tree's parents four at a time, level by level.
+ * Returns hash(data) -> the first 16 bytes as hex, or null where wasm SIMD is missing.
+ */
+function masuBlake3Simd() {
+  if (masuBlake3Simd.made) return masuBlake3Simd.hash;
+  masuBlake3Simd.made = true;
+  const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const PERM = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+  const leb = (v) => {
+    const o = [];
+    for (;;) {
+      const b = v & 0x7f;
+      v >>= 7;
+      if ((v === 0 && !(b & 0x40)) || (v === -1 && b & 0x40)) return o.push(b), o;
+      o.push(b | 0x80);
+    }
+  };
+  const uleb = (v) => {
+    const o = [];
+    do {
+      let b = v & 0x7f;
+      v >>>= 7;
+      if (v) b |= 0x80;
+      o.push(b);
+    } while (v);
+    return o;
+  };
+  const c = [];
+  // params 0-10 (i32): in stride n blocks counter step flags start end lastLen out
+  const [IN, STRIDE, N, BLOCKS, COUNTER, STEP, FLAGS, START, END, LASTLEN, OUT] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  // i32 locals 11-16: a0-a3 (each lane's address), b (block), f (this block's flags)
+  const A = 11, B = 15, F = 16;
+  // v128 locals from 17: h0-7, v0-15, m0-15, ctr
+  const H = 17, V = 25, M = 41, CTR = 57;
+  const lget = (i) => c.push(0x20, ...uleb(i));
+  const lset = (i) => c.push(0x21, ...uleb(i));
+  const i32 = (v) => c.push(0x41, ...leb(v | 0));
+  const simd = (op, ...imm) => c.push(0xfd, ...uleb(op), ...imm);
+  const splatConst = (v) => (i32(v), simd(0x11));
+  const add = () => simd(0xae), xor = () => simd(0x51), or = () => simd(0x50);
+  const shuffle = (lanes) => simd(0x0d, ...lanes);
+  const ROT16 = [], ROT8 = [];
+  for (let i = 0; i < 4; i++) ROT16.push(4 * i + 2, 4 * i + 3, 4 * i, 4 * i + 1), ROT8.push(4 * i + 1, 4 * i + 2, 4 * i + 3, 4 * i);
+  // x = rotr(x, r) on the stack
+  const rot = (r, tmp) => {
+    if (r === 16 || r === 8) {
+      lset(tmp);
+      lget(tmp);
+      lget(tmp);
+      shuffle(r === 16 ? ROT16 : ROT8);
+      return;
+    }
+    lset(tmp);
+    lget(tmp);
+    i32(r);
+    simd(0xad); // shr_u
+    lget(tmp);
+    i32(32 - r);
+    simd(0xab); // shl
+    or();
+  };
+  const T = CTR + 1; // a scratch v128
+  const g = (a, b, cc, d, x, y) => {
+    const v = (k) => V + k;
+    // a = a + b + x; d = rotr(d ^ a, 16); c = c + d; b = rotr(b ^ c, 12)
+    lget(v(a)), lget(v(b)), add(), lget(M + x), add(), lset(v(a));
+    lget(v(d)), lget(v(a)), xor(), rot(16, T), lset(v(d));
+    lget(v(cc)), lget(v(d)), add(), lset(v(cc));
+    lget(v(b)), lget(v(cc)), xor(), rot(12, T), lset(v(b));
+    lget(v(a)), lget(v(b)), add(), lget(M + y), add(), lset(v(a));
+    lget(v(d)), lget(v(a)), xor(), rot(8, T), lset(v(d));
+    lget(v(cc)), lget(v(d)), add(), lset(v(cc));
+    lget(v(b)), lget(v(cc)), xor(), rot(7, T), lset(v(b));
+  };
+  // lane addresses: in + min(l, n - 1) * stride
+  for (let l = 0; l < 4; l++) {
+    lget(IN);
+    i32(l);
+    lget(N);
+    i32(1);
+    c.push(0x6b); // i32.sub
+    i32(l);
+    lget(N);
+    i32(1);
+    c.push(0x6b);
+    c.push(0x48); // i32.lt_s: l < n - 1 ? l : n - 1
+    c.push(0x1b); // select
+    lget(STRIDE);
+    c.push(0x6c); // i32.mul
+    c.push(0x6a); // i32.add
+    lset(A + l);
+  }
+  // counters: counter + l * step
+  lget(COUNTER), simd(0x11);
+  lget(STEP), simd(0x11);
+  simd(0x0c, ...[0, 1, 2, 3].flatMap((k) => [k, 0, 0, 0]));
+  simd(0xb5); // i32x4.mul
+  add();
+  lset(CTR);
+  for (let k = 0; k < 8; k++) splatConst(IV[k]), lset(H + k);
+  i32(0), lset(B);
+  // loop over the blocks
+  c.push(0x02, 0x40, 0x03, 0x40); // block, loop
+  {
+    // f = flags | (b == 0 ? start : 0) | (b == blocks - 1 ? end : 0)
+    lget(FLAGS);
+    lget(START), i32(0), lget(B), c.push(0x45, 0x1b); // b == 0 (i32.eqz) ? start : 0
+    c.push(0x72); // i32.or
+    lget(END), i32(0), lget(B), lget(BLOCKS), i32(1), c.push(0x6b, 0x46, 0x1b); // b == blocks-1
+    c.push(0x72);
+    lset(F);
+    // m_w: word w of each lane's block (all loaded before anything is stored)
+    for (let w = 0; w < 16; w++) {
+      simd(0x0c, ...new Array(16).fill(0));
+      for (let l = 0; l < 4; l++) {
+        lset(T);
+        lget(A + l);
+        lget(B), i32(6), c.push(0x74), c.push(0x6a); // + (b << 6)
+        lget(T);
+        simd(0x56, 2, ...uleb(4 * w), l); // v128.load32_lane align=2 offset=4w lane l
+      }
+      lset(M + w);
+    }
+    for (let k = 0; k < 8; k++) lget(H + k), lset(V + k);
+    for (let k = 0; k < 4; k++) splatConst(IV[k]), lset(V + 8 + k);
+    lget(CTR), lset(V + 12);
+    simd(0x0c, ...new Array(16).fill(0)), lset(V + 13);
+    // len: lastLen on the last block, else 64
+    lget(LASTLEN), i32(64), lget(B), lget(BLOCKS), i32(1), c.push(0x6b, 0x46, 0x1b);
+    simd(0x11), lset(V + 14);
+    lget(F), simd(0x11), lset(V + 15);
+    let s = [...Array(16).keys()];
+    for (let r = 0; r < 7; r++) {
+      g(0, 4, 8, 12, s[0], s[1]);
+      g(1, 5, 9, 13, s[2], s[3]);
+      g(2, 6, 10, 14, s[4], s[5]);
+      g(3, 7, 11, 15, s[6], s[7]);
+      g(0, 5, 10, 15, s[8], s[9]);
+      g(1, 6, 11, 12, s[10], s[11]);
+      g(2, 7, 8, 13, s[12], s[13]);
+      g(3, 4, 9, 14, s[14], s[15]);
+      s = PERM.map((p) => s[p]);
+    }
+    for (let k = 0; k < 8; k++) lget(V + k), lget(V + 8 + k), xor(), lset(H + k);
+    // b++, again while b < blocks
+    lget(B), i32(1), c.push(0x6a), lset(B);
+    lget(B), lget(BLOCKS), c.push(0x48, 0x0d, 0x00); // i32.lt_s, br_if 0 (the loop)
+  }
+  c.push(0x0b, 0x0b); // end loop, end block
+  // stores: lane l (l < n) to out + l*32
+  for (let l = 0; l < 4; l++) {
+    if (l) lget(N), i32(l), c.push(0x4a, 0x04, 0x40); // n > l: if
+    for (let k = 0; k < 8; k++) {
+      lget(OUT);
+      lget(H + k);
+      simd(0x5a, 2, ...uleb(l * 32 + 4 * k), l); // v128.store32_lane
+    }
+    if (l) c.push(0x0b);
+  }
+  c.push(0x0b); // end function
+  const locals = [0x02, 6, 0x7f, 42, 0x7b]; // 6 i32, 42 v128 (h, v, m, ctr, scratch)
+  const body = [...locals, ...c];
+  const sec = (id, bytes) => [id, ...uleb(bytes.length), ...bytes];
+  const name = (s) => [s.length, ...[...s].map((ch) => ch.charCodeAt(0))];
+  const bytes = new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...sec(1, [1, 0x60, 11, ...new Array(11).fill(0x7f), 0]),
+    ...sec(3, [1, 0]),
+    ...sec(5, [1, 0, 1]),
+    ...sec(7, [2, ...name('h'), 0, 0, ...name('m'), 2, 0]),
+    ...sec(10, [1, ...uleb(body.length), ...body]),
+  ]);
+  let inst;
+  try {
+    inst = new WebAssembly.Instance(new WebAssembly.Module(bytes));
+  } catch (_) {
+    return (masuBlake3Simd.hash = null);
+  }
+  const h = inst.exports.h, mem = inst.exports.m;
+  const hash = (data) => {
+    const len = data.length;
+    const n = Math.max(1, Math.ceil(len / 1024));
+    // memory: the chunks' chaining values (2 MiB for a 64 MiB chunk), then a window of the
+    // input that whole chunks are copied into 256 at a time (not all of it: the memory stays)
+    const cvBytes = Math.ceil((n * 32) / 64) * 64;
+    const WIN = 256;
+    const need = cvBytes + WIN * 1024 + 64;
+    if (mem.buffer.byteLength < need) mem.grow(Math.ceil((need - mem.buffer.byteLength) / 65536));
+    const u8 = new Uint8Array(mem.buffer);
+    const full = n - 1;
+    for (let w = 0; w < full; w += WIN) {
+      const k = Math.min(WIN, full - w);
+      u8.set(data.subarray(w * 1024, (w + k) * 1024), cvBytes);
+      for (let i = 0; i < k; i += 4) h(cvBytes + i * 1024, 1024, Math.min(4, k - i), 16, w + i, 1, 0, 1, 2, 64, (w + i) * 32);
+    }
+    // the last chunk (the root, when it is the only one), zero-padded
+    const rest = len - full * 1024;
+    const blocks = Math.max(1, Math.ceil(rest / 64));
+    u8.set(data.subarray(full * 1024), cvBytes);
+    u8.fill(0, cvBytes + rest, cvBytes + blocks * 64);
+    h(cvBytes, 1024, 1, blocks, full, 0, 0, 1, n === 1 ? 10 : 2, rest - (blocks - 1) * 64, full * 32);
+    // parents, level by level (an odd one out goes up as it is: BLAKE3's tree)
+    let count = n;
+    while (count > 2) {
+      const pairs = count >> 1;
+      for (let k = 0; k < pairs; k += 4) h(k * 64, 64, Math.min(4, pairs - k), 1, 0, 0, 4, 0, 0, 64, k * 32);
+      if (count & 1) u8.copyWithin(pairs * 32, (count - 1) * 32, count * 32);
+      count = pairs + (count & 1);
+    }
+    if (count === 2) h(0, 64, 1, 1, 0, 0, 12, 0, 0, 64, 0);
+    let hex = '';
+    for (let k = 0; k < 16; k++) hex += u8[k].toString(16).padStart(2, '0');
+    return hex;
+  };
+  return (masuBlake3Simd.hash = hash);
 }
 
 /** Whether `data` is store chunk `url`'s content (true for anything not a chunk). */
@@ -1264,7 +1495,7 @@ function masuFetchWorker(event) {
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function masuFetchWorkerSource(main, more = []) {
   const vars = { MASU_CHUNKS, MASU_STALL_MS, MASU_GIVE_UP_MS, MASU_RETRY_STATUS, MASU_BAD_CHUNK, MASU_CHECKED, MASU_CACHE_MS, MASU_BRIDGE_HEADER, MASU_BRIDGE_BYTES, MASU_RECENT_BYTES, MASU_DIRECT_KEEP_MS, MASU_DIRECT_ASK_MS, MASU_DIRECT_MANY, MASU_CLASS, MASU_RATE, MASU_BURST, MASU_RESERVE, MASU_HINT_WIDTH, MASU_HINT_MAX, MASU_PACK_SPAN, MASU_PACK_MAX, MASU_CHUNK_DIR, MASU_HANDLE_MS, MASU_HANDLES, MASU_BUDGET_BYTES, MASU_BUDGET_SPIN, MASU_SAVING_BYTES, MASU_LOCK_WAIT_MS, MASU_FOLLOW, MASU_PUT_MS };
-  const fns = [masuIsChunk, masuBlake3, masuChunkOk, masuBackoff, masuPause, masuFetchOnce, masuNetReport, masuCacheStep, masuCache, masuChunkFile, masuOpfsStore, masuRange, masuKeepRecent, masuKeep, masuHeld, masuBlockKey, masuBudgetInit, masuBudgetWith, masuBudgetShare, masuTake, masuDrain, masuGate, masuWhole, masuRobustOnce, masuStartWhole, masuHint, masuHintPump, masuNextAdd, masuFollow, masuReadStart, masuReadEnd, masuDirectFresh, masuDirectValid, masuDirectMany, masuPackValid, masuPackNote, masuPackRun, masuDirect, masuHex, masuOpen, masuZstdSize, masuUnzstd, masuFetchPart, masuFetchRobust, masuWarmRun, masuFetchWorker];
+  const fns = [masuIsChunk, masuBlake3, masuBlake3Js, masuBlake3Simd, masuChunkOk, masuBackoff, masuPause, masuFetchOnce, masuNetReport, masuCacheStep, masuCache, masuChunkFile, masuOpfsStore, masuRange, masuKeepRecent, masuKeep, masuHeld, masuBlockKey, masuBudgetInit, masuBudgetWith, masuBudgetShare, masuTake, masuDrain, masuGate, masuWhole, masuRobustOnce, masuStartWhole, masuHint, masuHintPump, masuNextAdd, masuFollow, masuReadStart, masuReadEnd, masuDirectFresh, masuDirectValid, masuDirectMany, masuPackValid, masuPackNote, masuPackRun, masuDirect, masuHex, masuOpen, masuZstdSize, masuUnzstd, masuFetchPart, masuFetchRobust, masuWarmRun, masuFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var masuNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
