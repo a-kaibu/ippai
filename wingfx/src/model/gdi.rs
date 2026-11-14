@@ -120,18 +120,18 @@ impl Surf {
     /// GetDIBits in tests/winref of masu)
     pub fn from_rgb(&self, c: u32) -> u32 {
         let (r, g, b) = (c >> 16 & 255, c >> 8 & 255, c & 255);
-        hit(if self.bpp <= 8 { "GDI.FMT.NEAREST" } else { "GDI.FMT.NARROW" });
+        hit(if self.bpp <= 8 { "GDI.FMT.EXACT" } else { "GDI.FMT.NARROW" });
         match self.bpp {
             1 | 4 | 8 => {
-                let mut best = (u32::MAX, 0);
-                for (i, &e) in self.pal.iter().enumerate() {
-                    let d = |a: u32, b: u32| (a as i32 - b as i32).pow(2) as u32;
-                    let dist = d(r, e >> 16 & 255) + d(g, e >> 8 & 255) + d(b, e & 255);
-                    if dist <= best.0 {
-                        best = (dist, i as u32);
+                // a color the table holds: its entry (the last one of that color); any other
+                // color: open (GDI.FMT.NEAREST, checked once the operation is done)
+                match self.pal.iter().rposition(|&e| e & 0xff_ffff == c & 0xff_ffff) {
+                    Some(i) => i as u32,
+                    None => {
+                        INEXACT.with(|i| i.set(true));
+                        0
                     }
                 }
-                best.1
             }
             16 if self.f565 => (r >> 3) << 11 | (g >> 2) << 5 | b >> 3,
             16 => (r >> 3) << 10 | (g >> 3) << 5 | b >> 3,
@@ -142,6 +142,11 @@ impl Surf {
     pub fn same_format(&self, o: &Surf) -> bool {
         self.bpp == o.bpp && (self.bpp > 8 || self.pal == o.pal) && (self.bpp != 16 || self.f565 == o.f565)
     }
+}
+
+thread_local! {
+    /// a color was written into a color table format that holds no entry of that color
+    static INEXACT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +194,16 @@ impl Gdi {
 
     /// runs one op; Ok(true) when it was a GDI op
     pub fn op(&mut self, op: &Op, out: &mut Vec<String>) -> Res<bool> {
+        INEXACT.with(|i| i.set(false));
+        let r = self.op_inner(op, out)?;
+        if INEXACT.with(|i| i.get()) {
+            // MEASURED: not the nearest entry by RGB distance (Windows' answers differ there)
+            return Err(Fail::Unmodeled("GDI.FMT.NEAREST"));
+        }
+        Ok(r)
+    }
+
+    fn op_inner(&mut self, op: &Op, out: &mut Vec<String>) -> Res<bool> {
         let t0 = op.tok[0].as_str();
         match t0 {
             "dib" => {
@@ -282,11 +297,14 @@ impl Gdi {
                 let sl = self.slot(op, 1)?;
                 let c = match sl.clip {
                     None => r,
-                    Some(o) => (o.0.max(r.0), o.1.max(r.1), o.2.min(r.2), o.3.min(r.3)),
+                    // (what it returns on a DC with a clip region already: not measured yet)
+                    Some(_) => return Err(Fail::Unmodeled("GDI.CLIP.AGAIN")),
                 };
                 sl.clip = Some(c);
-                // NULLREGION 1, SIMPLEREGION 2
-                out.push(format!("clip {}", if c.0 >= c.2 || c.1 >= c.3 { 1 } else { 2 }));
+                // MEASURED: COMPLEXREGION (3) on a memory DC without a clip region, whatever
+                // the rectangle (the documentation lists NULLREGION / SIMPLEREGION / COMPLEXREGION)
+                hit("GDI.CLIP.RESULT");
+                out.push("clip 3".into());
             }
             "noclip" => self.slot(op, 1)?.clip = None,
             "mode" => self.slot(op, 1)?.mode = n(op, 2)?,
@@ -296,6 +314,10 @@ impl Gdi {
                 self.slot(op, 1)?;
                 self.slot(op, 6)?;
                 let (x, y, w, h, sx, sy, sw, sh, rop) = (v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8] as u32);
+                if self.slots[k].as_ref().unwrap().mode == 4 {
+                    // MEASURED: HALFTONE differs from BitBlt even unscaled, between formats
+                    return Err(Fail::Unmodeled("GDI.STRETCH.HALFTONE"));
+                }
                 if w == sw && h == sh {
                     // (an unscaled StretchBlt is BitBlt)
                     hit("GDI.STRETCH.SAME");
@@ -331,6 +353,14 @@ impl Gdi {
                 let seed = if t0 == "setdibits" { n(op, if f565 { 4 } else { 3 })? as u32 } else { 0 };
                 let sl = self.slot(op, 1)?;
                 let (w, h) = (sl.s.w, sl.s.h);
+                // MEASURED: GetDIBits to 16 bpp gives the bitmap's own 16 bpp format, else 5-5-5,
+                // whatever masks BI_BITFIELDS asks for (pixel golden)
+                let f565 = if t0 == "getdibits" && bpp == 16 && f565 {
+                    hit("GDI.DIBITS.GET16");
+                    sl.s.bpp == 16 && sl.s.f565
+                } else {
+                    f565
+                };
                 let mut o = Surf::new(w, h, bpp, f565, true, default_palette(bpp));
                 if bpp <= 8 && t0 == "getdibits" {
                     return Err(Fail::Unmodeled("GDI.DIBITS.GETPAL"));
@@ -402,6 +432,10 @@ impl Gdi {
             return Err(Fail::Unmodeled("GDI.DIB.PARAMS"));
         }
         let mode = self.slots[k].as_ref().unwrap().mode;
+        if mode == 4 {
+            // MEASURED: HALFTONE filters when enlarging too (stretch golden)
+            return Err(Fail::Unmodeled("GDI.STRETCH.HALFTONE"));
+        }
         if (sw > w || sh > h) && mode != 3 {
             return Err(Fail::Unmodeled("GDI.STRETCH.COMBINE"));
         }

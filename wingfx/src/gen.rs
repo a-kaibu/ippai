@@ -204,6 +204,7 @@ pub fn gdi() -> String {
         writeln!(s, "case edge-patblt-{i}\ndib 0 6 3 32\nfill 0 {}\nbrush 0 solid #12ab34\npatblt 0 1 0 4 3 {op:#x}\ndump 0\nend", 77 + i).unwrap();
     }
     // IntersectClipRect with a rectangle not ordered; CreateDIBSection of a bit count GDI lacks
+    writeln!(s, "case edge-clip-twice\ndib 0 6 4 32\nfill 0 5\nclip 0 1 1 5 3\nclip 0 2 0 4 4\nclip 0 0 0 1 1\nclip 0 0 0 6 4\nbrush 0 solid #00ff00\npatblt 0 0 0 6 4 0xf00021\ndump 0\nend").unwrap();
     writeln!(s, "case edge-clip-unordered\ndib 0 6 4 32\nfill 0 5\nclip 0 5 3 1 1\nbrush 0 solid #00ff00\npatblt 0 0 0 6 4 0xf00021\ndump 0\nend").unwrap();
     writeln!(s, "case edge-dib-2bpp\ndib 0 4 2 2\nend").unwrap();
     // negative extents (mirroring or normalizing?)
@@ -219,9 +220,10 @@ pub fn stretch() -> String {
     // every enlargement and reduction of a row and of a column, 1..12 to 1..12, COLORONCOLOR
     for (dir, (a, b)) in [("x", (12, 1)), ("y", (1, 12))].iter().enumerate().map(|(i, d)| (i, d.1)) {
         let axis = if dir == 0 { "x" } else { "y" };
-        writeln!(s, "case scale-{axis}\ndib 1 {a} {b} 32\nfill 1 {}\nmode 0 3", r.next()).unwrap();
+        writeln!(s, "case scale-{axis}\ndib 1 {a} {b} 32\nfill 1 {}", r.next()).unwrap();
         for dn in 1..=12 {
-            writeln!(s, "dib 0 {a} {b} 32\nfill 0 7").unwrap();
+            // (a new DIB in the slot: a new DC, BLACKONWHITE again)
+            writeln!(s, "dib 0 {a} {b} 32\nfill 0 7\nmode 0 3").unwrap();
             for sn in 1..=12 {
                 let (dw, dh, sw, sh) = if dir == 0 { (dn, 1, sn, 1) } else { (1, dn, 1, sn) };
                 writeln!(s, "stretchblt 0 0 0 {dw} {dh} 1 0 0 {sw} {sh} 0xcc0020").unwrap();

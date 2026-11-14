@@ -8767,6 +8767,17 @@ brush 0 solid #12ab34
 patblt 0 1 0 4 3 0x405a0049
 dump 0
 end
+case edge-clip-twice
+dib 0 6 4 32
+fill 0 5
+clip 0 1 1 5 3
+clip 0 2 0 4 4
+clip 0 0 0 1 1
+clip 0 0 0 6 4
+brush 0 solid #00ff00
+patblt 0 0 0 6 4 0xf00021
+dump 0
+end
 case edge-clip-unordered
 dib 0 6 4 32
 fill 0 5

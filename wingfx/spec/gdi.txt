@@ -10,7 +10,8 @@ GDI.FMT.LAYOUT doc | BITMAPINFOHEADER, Bitmap Storage | pixel layout: 1/4 bpp MS
 GDI.FMT.RAW assumed | BitBlt | between surfaces of the same format the operation works on the pixel values (palette indices, all 32 bits)
 GDI.FMT.EXPAND assumed | (none) | 5 and 6 bit channels widen by bit replication (c<<3|c>>2, c<<2|c>>4)
 GDI.FMT.NARROW assumed | (none) | 8 bit channels narrow to 5 / 6 bits by truncation; 32 bpp written from a color has x = 0
-GDI.FMT.NEAREST assumed | (none) | a color into a color table format: the nearest entry by squared RGB distance, a tie to the later entry
+GDI.FMT.EXACT assumed | (none) | a color into a color table format that holds that color: its entry (the last one if several)
+GDI.FMT.NEAREST open | (none) | a color into a color table format that does not hold it (MEASURED: not the nearest entry by squared RGB distance in every case, gdi golden)
 GDI.BLT.CONVERT doc | BitBlt | "If the color formats of the source and destination device contexts do not match, the BitBlt function converts the source color format to match the destination format"
 GDI.BLT.MONO open | BitBlt, Bitmaps: monochrome to color | monochrome <-> color: 1 bits to the background color, 0 bits to the text color; color pixels equal to the background color to 1 (how a DIB section's color table takes part is not said)
 GDI.BLT.CLIP doc | BitBlt, Clipping | only pixels in the destination bitmap and in the clipping region change
@@ -26,17 +27,21 @@ GDI.BRUSH.DIBPATTERN doc | CreateDIBPatternBrushPt | the pattern is the packed D
 GDI.BRUSH.MONOPATTERN open | CreateDIBPatternBrushPt | a 1 bpp pattern (text / background colors or its table?)
 GDI.BRUSH.HATCH open | CreateHatchBrush | hatch patterns: which pixels, and the background
 GDI.BRUSH.NULL open | GetStockObject(NULL_BRUSH) | what an operation that uses the pattern does with the null brush
-GDI.CLIP.INTERSECT doc | IntersectClipRect | the clip region becomes its intersection with the rectangle; returns NULLREGION (1) / SIMPLEREGION (2) / COMPLEXREGION (3)
+GDI.CLIP.INTERSECT doc | IntersectClipRect | the clip region becomes its intersection with the rectangle
+GDI.CLIP.RESULT measured | IntersectClipRect (says NULLREGION / SIMPLEREGION / COMPLEXREGION) | on a memory DC without a clip region it returns COMPLEXREGION (3), whatever the rectangle, even an empty one (gdi golden)
+GDI.CLIP.AGAIN open | IntersectClipRect | what it returns on a DC that has a clip region already
 GDI.CLIP.UNORDERED open | IntersectClipRect | a rectangle with left > right or top > bottom
 GDI.DIB.PARAMS open | CreateDIBSection | other bit counts and sizes
 GDI.STRETCH.SAME doc | StretchBlt | equal extents: BitBlt
 GDI.STRETCH.SAMPLE assumed | StretchBlt, SetStretchBltMode (COLORONCOLOR) | stretching / COLORONCOLOR deleting: the source pixel under each destination pixel's center
 GDI.STRETCH.COMBINE open | SetStretchBltMode (BLACKONWHITE, WHITEONBLACK, HALFTONE) | shrinking ANDs / ORs / averages the eliminated pixels (the exact rule is not said)
+GDI.STRETCH.HALFTONE open | SetStretchBltMode (HALFTONE) | HALFTONE averages source pixels also when enlarging (MEASURED, stretch golden); the filter is not said
 GDI.STRETCH.MIRROR open | StretchBlt | "StretchBlt creates a mirror image of a bitmap if the signs of the nSrcWidth and nWidthDest parameters or ... differ"
 GDI.STRETCH.SRCOUT open | (none) | scaled from outside the source bitmap
 GDI.PIXEL.GET doc | GetPixel | the RGB value of the pixel; CLR_INVALID outside the clipping region
 GDI.PIXEL.SET doc | SetPixel | sets the pixel to the closest approximation of the color, returns the color it set; -1 when it fails
 GDI.PIXEL.SETMONO open | SetPixel | SetPixel on a 1 bpp DIB section
 GDI.DIBITS.GET doc | GetDIBits | the bitmap's pixels converted into the requested format; returns the scan lines copied
+GDI.DIBITS.GET16 measured | GetDIBits (BI_BITFIELDS: the masks are written) | to 16 bpp with BI_BITFIELDS 5-6-5 asked: a 16 bpp bitmap's own format (raw), any other 5-5-5 (pixel golden)
 GDI.DIBITS.GETPAL open | GetDIBits | the color table it writes for a 1/4/8 bpp request, and the mapping into it
 GDI.DIBITS.SET doc | SetDIBits | the DIB's pixels converted into the bitmap's format; returns the scan lines copied
