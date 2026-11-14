@@ -5,6 +5,7 @@
 pub mod d3d11;
 pub mod d3d9;
 pub mod gdi;
+pub mod wic;
 
 use crate::case::Case;
 
@@ -40,6 +41,9 @@ fn run_ops(case: &Case) -> Res<Vec<String>> {
             continue;
         }
         if d11.op(op, &mut out)? {
+            continue;
+        }
+        if wic::op(op, &mut out)? {
             continue;
         }
         return Err(Fail::Bad);

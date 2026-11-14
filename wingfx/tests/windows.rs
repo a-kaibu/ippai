@@ -191,3 +191,44 @@ fn d3d8_defaults_match_the_d3d8state_probe() {
     }
     assert_eq!(n, 2 * (256 + 60));
 }
+
+/// the WIC model against masu's wicconv probe: its conversions of 8x4 bitmaps (bytes from its
+/// own formula), each one as Windows printed it; the pairs the model leaves open are skipped
+#[test]
+fn wic_matches_the_wicconv_probe() {
+    let Ok(g) = std::fs::read_to_string(root().join("../tests/winref/golden/wicconv-32/stdout.txt")) else { return };
+    use wingfx::model::wic::{convert, format, stride, FORMATS};
+    const LONG: [&str; 23] = ["BlackWhite", "2bppGray", "4bppGray", "8bppGray", "16bppGray", "16bppBGR555", "16bppBGR565", "24bppBGR", "24bppRGB", "32bppBGR", "32bppBGRA", "32bppPBGRA", "32bppRGB", "32bppRGBA", "32bppPRGBA", "48bppRGB", "64bppRGBA", "32bppCMYK", "8bppAlpha", "1bppIndexed", "2bppIndexed", "4bppIndexed", "8bppIndexed"];
+    assert_eq!(LONG.len(), FORMATS.len());
+    let bytes = |f: usize, seed: u32| -> Vec<u8> { (0..stride(f, 8) * 4).map(|i| ((i as u32 * 73 + seed * 29 + 41) ^ (i as u32 >> 3) * 151) as u8).collect() };
+    let mut jobs: Vec<(usize, usize, u32)> = (0..23).map(|f| (f, 10, f as u32)).collect();
+    for seed in 0..2 {
+        jobs.extend((0..23).map(|f| (10, f, 100 + seed)));
+    }
+    for (i, (a, b)) in [(7, 11), (3, 11), (11, 10), (14, 11), (16, 11), (15, 7), (4, 3), (6, 7), (13, 7), (22, 11)].into_iter().enumerate() {
+        jobs.push((a, b, 200 + i as u32));
+    }
+    let (mut n, mut open, mut bad) = (0, 0, Vec::new());
+    let mut seen = std::collections::HashMap::new();
+    for (from, to, seed) in jobs {
+        let label = format!("{}>{}: can 1 ", LONG[from], LONG[to]);
+        // (the probe prints the same label for both 32bppBGRA seeds: take them in order)
+        let k = seen.entry(label.clone()).or_insert(0);
+        let Some(line) = g.lines().filter(|l| l.starts_with(&label)).nth(*k) else { panic!("no {label}") };
+        *k += 1;
+        let want = &line[label.len()..];
+        match convert(from, to, 8, 4, &bytes(from, seed)) {
+            Ok(o) => {
+                let got: String = o.iter().map(|b| format!("{b:02x}")).collect();
+                if got != want {
+                    bad.push(format!("{label}\n  want {want}\n  got  {got}"));
+                }
+                n += 1;
+            }
+            Err(_) => open += 1,
+        }
+    }
+    let _ = format;
+    assert!(bad.is_empty(), "{} of {n} differ:\n{}", bad.len(), bad.join("\n"));
+    assert!(n > 50, "{n} {open}");
+}

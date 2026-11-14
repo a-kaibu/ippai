@@ -9,7 +9,7 @@ use crate::model::gdi::default_palette;
 use crate::rng::XorShift32;
 use std::fmt::Write;
 
-pub const SUITES: &[&str] = &["gdi", "stretch", "pixel", "d3d8", "d3d9", "d3d11"];
+pub const SUITES: &[&str] = &["gdi", "stretch", "pixel", "d3d8", "d3d9", "d3d11", "wic"];
 
 pub fn suite(name: &str) -> Option<String> {
     match name {
@@ -19,6 +19,7 @@ pub fn suite(name: &str) -> Option<String> {
         "d3d8" => Some(d3d8()),
         "d3d9" => Some(d3d9()),
         "d3d11" => Some(d3d11()),
+        "wic" => Some(wic()),
         _ => None,
     }
 }
@@ -608,6 +609,39 @@ pub fn d3d11() -> String {
         d[at] = 0x8000_0000;
         d3d11_line(&mut s, k, &d, false);
         writeln!(s, "end").unwrap();
+    }
+    s
+}
+
+pub fn wic() -> String {
+    use crate::model::wic::{bits, FORMATS};
+    let mut s = String::from("# wingfx suite wic: WIC pixel format conversion (SPEC.md). Made by `wingfx gen wic`.\n");
+    let names: Vec<&str> = FORMATS.iter().map(|f| f.0).collect();
+    // every pair, an 8x4 picture of random bytes
+    let mut seed = 1u32;
+    for from in &names {
+        for to in &names {
+            writeln!(s, "case pair-{from}-{to}\nconvert {from} 8 4 {seed} {to}\nend").unwrap();
+            seed += 1;
+        }
+    }
+    // every byte value of each format to 32bppBGRA and back (byte i = i mod 256)
+    for (f, from) in names.iter().enumerate() {
+        let w = (256 * 8 / bits(f)).clamp(1, 256);
+        writeln!(s, "case ramp-{from}\nconvert {from} {w} 1 ramp bgra\nconvert bgra 64 1 ramp {from}\nend").unwrap();
+    }
+    // straight and premultiplied alpha over many (color, alpha) pairs
+    for (i, f) in ["pbgra", "prgba", "bgra"].iter().enumerate() {
+        for k in 0..4 {
+            writeln!(s, "case alpha-{f}-{k}\nconvert {f} 256 64 {} bgra\nconvert bgra 256 64 {} {f}\nend", 7000 + i * 10 + k, 7100 + i * 10 + k).unwrap();
+        }
+    }
+    // odd sizes: rows that end inside a byte, one-pixel pictures
+    let mut r = XorShift32::new(0x0057_1c00);
+    for i in 0..300 {
+        let (from, to) = (*r.pick(&names), *r.pick(&names));
+        let (w, h) = (r.range(1, 13), r.range(1, 4));
+        writeln!(s, "case odd-{i}\nconvert {from} {w} {h} {} {to}\nend", r.next()).unwrap();
     }
     s
 }

@@ -1,7 +1,7 @@
 # wingfx
 
 Conformance tests for the Windows graphics APIs: GDI, Direct3D 9 and 11 first, then the rest
-(GDI+, DirectDraw, Direct3D 8, Direct2D, DirectWrite, WIC). Written to check any
+(GDI+, DirectDraw, Direct2D, DirectWrite; Direct3D 8 and WIC are in). Written to check any
 implementation of them (Wine, an emulator, a translation layer) against real Windows, and to
 be usable without a Windows machine.
 
@@ -74,6 +74,8 @@ sake `node sake.js` (tests/winref/run.sh) and its browser runner for the GPU sui
   state), state blocks (D3DSBT_ALL / PIXELSTATE / VERTEXSTATE, recording, Capture, Apply).
 * `d3d8`: the same for Direct3D 8 (its own states, sampler states as stage states, state block
   tokens), on software, hardware and mixed vertex processing devices.
+* `wic`: IWICFormatConverter between all 23 native pixel formats (every pair, every byte value
+  to and from 32bppBGRA, premultiplied alpha, rows ending inside a byte).
 * `d3d11`: Direct3D 11 blend, depth stencil, rasterizer and sampler state objects: every word of
   each description through its values of interest (every filter value below 0x400), with the
   parts that switch others off on and off; which descriptions are refused, what GetDesc gives

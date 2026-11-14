@@ -17,7 +17,7 @@ for cases in "$HERE"/../cases/*.txt; do
   { echo "static const char wingfx_cases[] = {"; od -An -v -tx1 "$cases" | sed 's/ \([0-9a-f][0-9a-f]\)/0x\1,/g'; echo "0};"; } > "$TMP/cases_$suite.h"
   for arch in 32 64; do
     cc=i686-w64-mingw32-gcc; [ "$arch" = 64 ] && cc=x86_64-w64-mingw32-gcc
-    $cc -O2 -Wall -Wno-format -Wno-unused -I"$TMP" -DWINGFX_CASES="\"cases_$suite.h\"" -DWINGFX_SUITE="\"$suite\"" -o "$OUT/wingfx_$suite-$arch.exe" "$HERE/wingfx.c" -lgdi32 -luser32
+    $cc -O2 -Wall -Wno-format -Wno-unused -I"$TMP" -DWINGFX_CASES="\"cases_$suite.h\"" -DWINGFX_SUITE="\"$suite\"" -o "$OUT/wingfx_$suite-$arch.exe" "$HERE/wingfx.c" -lgdi32 -luser32 -lole32 -lwindowscodecs -luuid
   done
   if head -1 "$cases" | grep -q '^# gpu'; then
     echo "wingfx_$suite-32" >> "$OUT/browser.txt"

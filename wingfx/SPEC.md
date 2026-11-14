@@ -63,6 +63,16 @@ samplers past 15 other than 256..260, sampler state types past 13: Windows reads
 
 Without a device these lines print `nodev`. A case holds at most 64 state lines.
 
+## WIC
+
+| line | calls | prints |
+|---|---|---|
+| `convert <from> <w> <h> <seed\|ramp> <to>` | CreateBitmapFromMemory of format `from` (w 1..256, h 1..64, rows of (w * bits + 7) / 8 bytes from xorshift32, or byte i = i mod 256 for `ramp`; indexed formats get the palette below), CreateFormatConverter, CanConvert, Initialize to `to` (WICBitmapDitherTypeNone; the palette for indexed targets), CopyPixels of the whole picture | `conv <w> <h> can <0\|1>` and each row's bytes as hex (the bits after the row's last pixel 0); `conv can <0\|1> init hr <hr>` / `copy hr <hr>`, `conv bitmap hr <hr>`, `conv none` (no WIC) |
+
+Formats: `bw gray2 gray4 gray8 gray16 bgr555 bgr565 bgr24 rgb24 bgr32 bgra pbgra rgb32 rgba prgba rgb48
+rgba64 cmyk alpha8 idx1 idx2 idx4 idx8` (GUID_WICPixelFormat...). The palette: 16 colors, entry i =
+ARGB (i == 5 ? 0x40 : 0xff, i * 17, 255 - i * 13, i * 71 mod 256).
+
 ## Models
 
 `wingfx model <suite>` prints what Windows prints, case by case. A case whose behavior the

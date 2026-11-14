@@ -1,0 +1,2628 @@
+# wingfx suite wic: WIC pixel format conversion (SPEC.md). Made by `wingfx gen wic`.
+case pair-bw-bw
+convert bw 8 4 1 bw
+end
+case pair-bw-gray2
+convert bw 8 4 2 gray2
+end
+case pair-bw-gray4
+convert bw 8 4 3 gray4
+end
+case pair-bw-gray8
+convert bw 8 4 4 gray8
+end
+case pair-bw-gray16
+convert bw 8 4 5 gray16
+end
+case pair-bw-bgr555
+convert bw 8 4 6 bgr555
+end
+case pair-bw-bgr565
+convert bw 8 4 7 bgr565
+end
+case pair-bw-bgr24
+convert bw 8 4 8 bgr24
+end
+case pair-bw-rgb24
+convert bw 8 4 9 rgb24
+end
+case pair-bw-bgr32
+convert bw 8 4 10 bgr32
+end
+case pair-bw-bgra
+convert bw 8 4 11 bgra
+end
+case pair-bw-pbgra
+convert bw 8 4 12 pbgra
+end
+case pair-bw-rgb32
+convert bw 8 4 13 rgb32
+end
+case pair-bw-rgba
+convert bw 8 4 14 rgba
+end
+case pair-bw-prgba
+convert bw 8 4 15 prgba
+end
+case pair-bw-rgb48
+convert bw 8 4 16 rgb48
+end
+case pair-bw-rgba64
+convert bw 8 4 17 rgba64
+end
+case pair-bw-cmyk
+convert bw 8 4 18 cmyk
+end
+case pair-bw-alpha8
+convert bw 8 4 19 alpha8
+end
+case pair-bw-idx1
+convert bw 8 4 20 idx1
+end
+case pair-bw-idx2
+convert bw 8 4 21 idx2
+end
+case pair-bw-idx4
+convert bw 8 4 22 idx4
+end
+case pair-bw-idx8
+convert bw 8 4 23 idx8
+end
+case pair-gray2-bw
+convert gray2 8 4 24 bw
+end
+case pair-gray2-gray2
+convert gray2 8 4 25 gray2
+end
+case pair-gray2-gray4
+convert gray2 8 4 26 gray4
+end
+case pair-gray2-gray8
+convert gray2 8 4 27 gray8
+end
+case pair-gray2-gray16
+convert gray2 8 4 28 gray16
+end
+case pair-gray2-bgr555
+convert gray2 8 4 29 bgr555
+end
+case pair-gray2-bgr565
+convert gray2 8 4 30 bgr565
+end
+case pair-gray2-bgr24
+convert gray2 8 4 31 bgr24
+end
+case pair-gray2-rgb24
+convert gray2 8 4 32 rgb24
+end
+case pair-gray2-bgr32
+convert gray2 8 4 33 bgr32
+end
+case pair-gray2-bgra
+convert gray2 8 4 34 bgra
+end
+case pair-gray2-pbgra
+convert gray2 8 4 35 pbgra
+end
+case pair-gray2-rgb32
+convert gray2 8 4 36 rgb32
+end
+case pair-gray2-rgba
+convert gray2 8 4 37 rgba
+end
+case pair-gray2-prgba
+convert gray2 8 4 38 prgba
+end
+case pair-gray2-rgb48
+convert gray2 8 4 39 rgb48
+end
+case pair-gray2-rgba64
+convert gray2 8 4 40 rgba64
+end
+case pair-gray2-cmyk
+convert gray2 8 4 41 cmyk
+end
+case pair-gray2-alpha8
+convert gray2 8 4 42 alpha8
+end
+case pair-gray2-idx1
+convert gray2 8 4 43 idx1
+end
+case pair-gray2-idx2
+convert gray2 8 4 44 idx2
+end
+case pair-gray2-idx4
+convert gray2 8 4 45 idx4
+end
+case pair-gray2-idx8
+convert gray2 8 4 46 idx8
+end
+case pair-gray4-bw
+convert gray4 8 4 47 bw
+end
+case pair-gray4-gray2
+convert gray4 8 4 48 gray2
+end
+case pair-gray4-gray4
+convert gray4 8 4 49 gray4
+end
+case pair-gray4-gray8
+convert gray4 8 4 50 gray8
+end
+case pair-gray4-gray16
+convert gray4 8 4 51 gray16
+end
+case pair-gray4-bgr555
+convert gray4 8 4 52 bgr555
+end
+case pair-gray4-bgr565
+convert gray4 8 4 53 bgr565
+end
+case pair-gray4-bgr24
+convert gray4 8 4 54 bgr24
+end
+case pair-gray4-rgb24
+convert gray4 8 4 55 rgb24
+end
+case pair-gray4-bgr32
+convert gray4 8 4 56 bgr32
+end
+case pair-gray4-bgra
+convert gray4 8 4 57 bgra
+end
+case pair-gray4-pbgra
+convert gray4 8 4 58 pbgra
+end
+case pair-gray4-rgb32
+convert gray4 8 4 59 rgb32
+end
+case pair-gray4-rgba
+convert gray4 8 4 60 rgba
+end
+case pair-gray4-prgba
+convert gray4 8 4 61 prgba
+end
+case pair-gray4-rgb48
+convert gray4 8 4 62 rgb48
+end
+case pair-gray4-rgba64
+convert gray4 8 4 63 rgba64
+end
+case pair-gray4-cmyk
+convert gray4 8 4 64 cmyk
+end
+case pair-gray4-alpha8
+convert gray4 8 4 65 alpha8
+end
+case pair-gray4-idx1
+convert gray4 8 4 66 idx1
+end
+case pair-gray4-idx2
+convert gray4 8 4 67 idx2
+end
+case pair-gray4-idx4
+convert gray4 8 4 68 idx4
+end
+case pair-gray4-idx8
+convert gray4 8 4 69 idx8
+end
+case pair-gray8-bw
+convert gray8 8 4 70 bw
+end
+case pair-gray8-gray2
+convert gray8 8 4 71 gray2
+end
+case pair-gray8-gray4
+convert gray8 8 4 72 gray4
+end
+case pair-gray8-gray8
+convert gray8 8 4 73 gray8
+end
+case pair-gray8-gray16
+convert gray8 8 4 74 gray16
+end
+case pair-gray8-bgr555
+convert gray8 8 4 75 bgr555
+end
+case pair-gray8-bgr565
+convert gray8 8 4 76 bgr565
+end
+case pair-gray8-bgr24
+convert gray8 8 4 77 bgr24
+end
+case pair-gray8-rgb24
+convert gray8 8 4 78 rgb24
+end
+case pair-gray8-bgr32
+convert gray8 8 4 79 bgr32
+end
+case pair-gray8-bgra
+convert gray8 8 4 80 bgra
+end
+case pair-gray8-pbgra
+convert gray8 8 4 81 pbgra
+end
+case pair-gray8-rgb32
+convert gray8 8 4 82 rgb32
+end
+case pair-gray8-rgba
+convert gray8 8 4 83 rgba
+end
+case pair-gray8-prgba
+convert gray8 8 4 84 prgba
+end
+case pair-gray8-rgb48
+convert gray8 8 4 85 rgb48
+end
+case pair-gray8-rgba64
+convert gray8 8 4 86 rgba64
+end
+case pair-gray8-cmyk
+convert gray8 8 4 87 cmyk
+end
+case pair-gray8-alpha8
+convert gray8 8 4 88 alpha8
+end
+case pair-gray8-idx1
+convert gray8 8 4 89 idx1
+end
+case pair-gray8-idx2
+convert gray8 8 4 90 idx2
+end
+case pair-gray8-idx4
+convert gray8 8 4 91 idx4
+end
+case pair-gray8-idx8
+convert gray8 8 4 92 idx8
+end
+case pair-gray16-bw
+convert gray16 8 4 93 bw
+end
+case pair-gray16-gray2
+convert gray16 8 4 94 gray2
+end
+case pair-gray16-gray4
+convert gray16 8 4 95 gray4
+end
+case pair-gray16-gray8
+convert gray16 8 4 96 gray8
+end
+case pair-gray16-gray16
+convert gray16 8 4 97 gray16
+end
+case pair-gray16-bgr555
+convert gray16 8 4 98 bgr555
+end
+case pair-gray16-bgr565
+convert gray16 8 4 99 bgr565
+end
+case pair-gray16-bgr24
+convert gray16 8 4 100 bgr24
+end
+case pair-gray16-rgb24
+convert gray16 8 4 101 rgb24
+end
+case pair-gray16-bgr32
+convert gray16 8 4 102 bgr32
+end
+case pair-gray16-bgra
+convert gray16 8 4 103 bgra
+end
+case pair-gray16-pbgra
+convert gray16 8 4 104 pbgra
+end
+case pair-gray16-rgb32
+convert gray16 8 4 105 rgb32
+end
+case pair-gray16-rgba
+convert gray16 8 4 106 rgba
+end
+case pair-gray16-prgba
+convert gray16 8 4 107 prgba
+end
+case pair-gray16-rgb48
+convert gray16 8 4 108 rgb48
+end
+case pair-gray16-rgba64
+convert gray16 8 4 109 rgba64
+end
+case pair-gray16-cmyk
+convert gray16 8 4 110 cmyk
+end
+case pair-gray16-alpha8
+convert gray16 8 4 111 alpha8
+end
+case pair-gray16-idx1
+convert gray16 8 4 112 idx1
+end
+case pair-gray16-idx2
+convert gray16 8 4 113 idx2
+end
+case pair-gray16-idx4
+convert gray16 8 4 114 idx4
+end
+case pair-gray16-idx8
+convert gray16 8 4 115 idx8
+end
+case pair-bgr555-bw
+convert bgr555 8 4 116 bw
+end
+case pair-bgr555-gray2
+convert bgr555 8 4 117 gray2
+end
+case pair-bgr555-gray4
+convert bgr555 8 4 118 gray4
+end
+case pair-bgr555-gray8
+convert bgr555 8 4 119 gray8
+end
+case pair-bgr555-gray16
+convert bgr555 8 4 120 gray16
+end
+case pair-bgr555-bgr555
+convert bgr555 8 4 121 bgr555
+end
+case pair-bgr555-bgr565
+convert bgr555 8 4 122 bgr565
+end
+case pair-bgr555-bgr24
+convert bgr555 8 4 123 bgr24
+end
+case pair-bgr555-rgb24
+convert bgr555 8 4 124 rgb24
+end
+case pair-bgr555-bgr32
+convert bgr555 8 4 125 bgr32
+end
+case pair-bgr555-bgra
+convert bgr555 8 4 126 bgra
+end
+case pair-bgr555-pbgra
+convert bgr555 8 4 127 pbgra
+end
+case pair-bgr555-rgb32
+convert bgr555 8 4 128 rgb32
+end
+case pair-bgr555-rgba
+convert bgr555 8 4 129 rgba
+end
+case pair-bgr555-prgba
+convert bgr555 8 4 130 prgba
+end
+case pair-bgr555-rgb48
+convert bgr555 8 4 131 rgb48
+end
+case pair-bgr555-rgba64
+convert bgr555 8 4 132 rgba64
+end
+case pair-bgr555-cmyk
+convert bgr555 8 4 133 cmyk
+end
+case pair-bgr555-alpha8
+convert bgr555 8 4 134 alpha8
+end
+case pair-bgr555-idx1
+convert bgr555 8 4 135 idx1
+end
+case pair-bgr555-idx2
+convert bgr555 8 4 136 idx2
+end
+case pair-bgr555-idx4
+convert bgr555 8 4 137 idx4
+end
+case pair-bgr555-idx8
+convert bgr555 8 4 138 idx8
+end
+case pair-bgr565-bw
+convert bgr565 8 4 139 bw
+end
+case pair-bgr565-gray2
+convert bgr565 8 4 140 gray2
+end
+case pair-bgr565-gray4
+convert bgr565 8 4 141 gray4
+end
+case pair-bgr565-gray8
+convert bgr565 8 4 142 gray8
+end
+case pair-bgr565-gray16
+convert bgr565 8 4 143 gray16
+end
+case pair-bgr565-bgr555
+convert bgr565 8 4 144 bgr555
+end
+case pair-bgr565-bgr565
+convert bgr565 8 4 145 bgr565
+end
+case pair-bgr565-bgr24
+convert bgr565 8 4 146 bgr24
+end
+case pair-bgr565-rgb24
+convert bgr565 8 4 147 rgb24
+end
+case pair-bgr565-bgr32
+convert bgr565 8 4 148 bgr32
+end
+case pair-bgr565-bgra
+convert bgr565 8 4 149 bgra
+end
+case pair-bgr565-pbgra
+convert bgr565 8 4 150 pbgra
+end
+case pair-bgr565-rgb32
+convert bgr565 8 4 151 rgb32
+end
+case pair-bgr565-rgba
+convert bgr565 8 4 152 rgba
+end
+case pair-bgr565-prgba
+convert bgr565 8 4 153 prgba
+end
+case pair-bgr565-rgb48
+convert bgr565 8 4 154 rgb48
+end
+case pair-bgr565-rgba64
+convert bgr565 8 4 155 rgba64
+end
+case pair-bgr565-cmyk
+convert bgr565 8 4 156 cmyk
+end
+case pair-bgr565-alpha8
+convert bgr565 8 4 157 alpha8
+end
+case pair-bgr565-idx1
+convert bgr565 8 4 158 idx1
+end
+case pair-bgr565-idx2
+convert bgr565 8 4 159 idx2
+end
+case pair-bgr565-idx4
+convert bgr565 8 4 160 idx4
+end
+case pair-bgr565-idx8
+convert bgr565 8 4 161 idx8
+end
+case pair-bgr24-bw
+convert bgr24 8 4 162 bw
+end
+case pair-bgr24-gray2
+convert bgr24 8 4 163 gray2
+end
+case pair-bgr24-gray4
+convert bgr24 8 4 164 gray4
+end
+case pair-bgr24-gray8
+convert bgr24 8 4 165 gray8
+end
+case pair-bgr24-gray16
+convert bgr24 8 4 166 gray16
+end
+case pair-bgr24-bgr555
+convert bgr24 8 4 167 bgr555
+end
+case pair-bgr24-bgr565
+convert bgr24 8 4 168 bgr565
+end
+case pair-bgr24-bgr24
+convert bgr24 8 4 169 bgr24
+end
+case pair-bgr24-rgb24
+convert bgr24 8 4 170 rgb24
+end
+case pair-bgr24-bgr32
+convert bgr24 8 4 171 bgr32
+end
+case pair-bgr24-bgra
+convert bgr24 8 4 172 bgra
+end
+case pair-bgr24-pbgra
+convert bgr24 8 4 173 pbgra
+end
+case pair-bgr24-rgb32
+convert bgr24 8 4 174 rgb32
+end
+case pair-bgr24-rgba
+convert bgr24 8 4 175 rgba
+end
+case pair-bgr24-prgba
+convert bgr24 8 4 176 prgba
+end
+case pair-bgr24-rgb48
+convert bgr24 8 4 177 rgb48
+end
+case pair-bgr24-rgba64
+convert bgr24 8 4 178 rgba64
+end
+case pair-bgr24-cmyk
+convert bgr24 8 4 179 cmyk
+end
+case pair-bgr24-alpha8
+convert bgr24 8 4 180 alpha8
+end
+case pair-bgr24-idx1
+convert bgr24 8 4 181 idx1
+end
+case pair-bgr24-idx2
+convert bgr24 8 4 182 idx2
+end
+case pair-bgr24-idx4
+convert bgr24 8 4 183 idx4
+end
+case pair-bgr24-idx8
+convert bgr24 8 4 184 idx8
+end
+case pair-rgb24-bw
+convert rgb24 8 4 185 bw
+end
+case pair-rgb24-gray2
+convert rgb24 8 4 186 gray2
+end
+case pair-rgb24-gray4
+convert rgb24 8 4 187 gray4
+end
+case pair-rgb24-gray8
+convert rgb24 8 4 188 gray8
+end
+case pair-rgb24-gray16
+convert rgb24 8 4 189 gray16
+end
+case pair-rgb24-bgr555
+convert rgb24 8 4 190 bgr555
+end
+case pair-rgb24-bgr565
+convert rgb24 8 4 191 bgr565
+end
+case pair-rgb24-bgr24
+convert rgb24 8 4 192 bgr24
+end
+case pair-rgb24-rgb24
+convert rgb24 8 4 193 rgb24
+end
+case pair-rgb24-bgr32
+convert rgb24 8 4 194 bgr32
+end
+case pair-rgb24-bgra
+convert rgb24 8 4 195 bgra
+end
+case pair-rgb24-pbgra
+convert rgb24 8 4 196 pbgra
+end
+case pair-rgb24-rgb32
+convert rgb24 8 4 197 rgb32
+end
+case pair-rgb24-rgba
+convert rgb24 8 4 198 rgba
+end
+case pair-rgb24-prgba
+convert rgb24 8 4 199 prgba
+end
+case pair-rgb24-rgb48
+convert rgb24 8 4 200 rgb48
+end
+case pair-rgb24-rgba64
+convert rgb24 8 4 201 rgba64
+end
+case pair-rgb24-cmyk
+convert rgb24 8 4 202 cmyk
+end
+case pair-rgb24-alpha8
+convert rgb24 8 4 203 alpha8
+end
+case pair-rgb24-idx1
+convert rgb24 8 4 204 idx1
+end
+case pair-rgb24-idx2
+convert rgb24 8 4 205 idx2
+end
+case pair-rgb24-idx4
+convert rgb24 8 4 206 idx4
+end
+case pair-rgb24-idx8
+convert rgb24 8 4 207 idx8
+end
+case pair-bgr32-bw
+convert bgr32 8 4 208 bw
+end
+case pair-bgr32-gray2
+convert bgr32 8 4 209 gray2
+end
+case pair-bgr32-gray4
+convert bgr32 8 4 210 gray4
+end
+case pair-bgr32-gray8
+convert bgr32 8 4 211 gray8
+end
+case pair-bgr32-gray16
+convert bgr32 8 4 212 gray16
+end
+case pair-bgr32-bgr555
+convert bgr32 8 4 213 bgr555
+end
+case pair-bgr32-bgr565
+convert bgr32 8 4 214 bgr565
+end
+case pair-bgr32-bgr24
+convert bgr32 8 4 215 bgr24
+end
+case pair-bgr32-rgb24
+convert bgr32 8 4 216 rgb24
+end
+case pair-bgr32-bgr32
+convert bgr32 8 4 217 bgr32
+end
+case pair-bgr32-bgra
+convert bgr32 8 4 218 bgra
+end
+case pair-bgr32-pbgra
+convert bgr32 8 4 219 pbgra
+end
+case pair-bgr32-rgb32
+convert bgr32 8 4 220 rgb32
+end
+case pair-bgr32-rgba
+convert bgr32 8 4 221 rgba
+end
+case pair-bgr32-prgba
+convert bgr32 8 4 222 prgba
+end
+case pair-bgr32-rgb48
+convert bgr32 8 4 223 rgb48
+end
+case pair-bgr32-rgba64
+convert bgr32 8 4 224 rgba64
+end
+case pair-bgr32-cmyk
+convert bgr32 8 4 225 cmyk
+end
+case pair-bgr32-alpha8
+convert bgr32 8 4 226 alpha8
+end
+case pair-bgr32-idx1
+convert bgr32 8 4 227 idx1
+end
+case pair-bgr32-idx2
+convert bgr32 8 4 228 idx2
+end
+case pair-bgr32-idx4
+convert bgr32 8 4 229 idx4
+end
+case pair-bgr32-idx8
+convert bgr32 8 4 230 idx8
+end
+case pair-bgra-bw
+convert bgra 8 4 231 bw
+end
+case pair-bgra-gray2
+convert bgra 8 4 232 gray2
+end
+case pair-bgra-gray4
+convert bgra 8 4 233 gray4
+end
+case pair-bgra-gray8
+convert bgra 8 4 234 gray8
+end
+case pair-bgra-gray16
+convert bgra 8 4 235 gray16
+end
+case pair-bgra-bgr555
+convert bgra 8 4 236 bgr555
+end
+case pair-bgra-bgr565
+convert bgra 8 4 237 bgr565
+end
+case pair-bgra-bgr24
+convert bgra 8 4 238 bgr24
+end
+case pair-bgra-rgb24
+convert bgra 8 4 239 rgb24
+end
+case pair-bgra-bgr32
+convert bgra 8 4 240 bgr32
+end
+case pair-bgra-bgra
+convert bgra 8 4 241 bgra
+end
+case pair-bgra-pbgra
+convert bgra 8 4 242 pbgra
+end
+case pair-bgra-rgb32
+convert bgra 8 4 243 rgb32
+end
+case pair-bgra-rgba
+convert bgra 8 4 244 rgba
+end
+case pair-bgra-prgba
+convert bgra 8 4 245 prgba
+end
+case pair-bgra-rgb48
+convert bgra 8 4 246 rgb48
+end
+case pair-bgra-rgba64
+convert bgra 8 4 247 rgba64
+end
+case pair-bgra-cmyk
+convert bgra 8 4 248 cmyk
+end
+case pair-bgra-alpha8
+convert bgra 8 4 249 alpha8
+end
+case pair-bgra-idx1
+convert bgra 8 4 250 idx1
+end
+case pair-bgra-idx2
+convert bgra 8 4 251 idx2
+end
+case pair-bgra-idx4
+convert bgra 8 4 252 idx4
+end
+case pair-bgra-idx8
+convert bgra 8 4 253 idx8
+end
+case pair-pbgra-bw
+convert pbgra 8 4 254 bw
+end
+case pair-pbgra-gray2
+convert pbgra 8 4 255 gray2
+end
+case pair-pbgra-gray4
+convert pbgra 8 4 256 gray4
+end
+case pair-pbgra-gray8
+convert pbgra 8 4 257 gray8
+end
+case pair-pbgra-gray16
+convert pbgra 8 4 258 gray16
+end
+case pair-pbgra-bgr555
+convert pbgra 8 4 259 bgr555
+end
+case pair-pbgra-bgr565
+convert pbgra 8 4 260 bgr565
+end
+case pair-pbgra-bgr24
+convert pbgra 8 4 261 bgr24
+end
+case pair-pbgra-rgb24
+convert pbgra 8 4 262 rgb24
+end
+case pair-pbgra-bgr32
+convert pbgra 8 4 263 bgr32
+end
+case pair-pbgra-bgra
+convert pbgra 8 4 264 bgra
+end
+case pair-pbgra-pbgra
+convert pbgra 8 4 265 pbgra
+end
+case pair-pbgra-rgb32
+convert pbgra 8 4 266 rgb32
+end
+case pair-pbgra-rgba
+convert pbgra 8 4 267 rgba
+end
+case pair-pbgra-prgba
+convert pbgra 8 4 268 prgba
+end
+case pair-pbgra-rgb48
+convert pbgra 8 4 269 rgb48
+end
+case pair-pbgra-rgba64
+convert pbgra 8 4 270 rgba64
+end
+case pair-pbgra-cmyk
+convert pbgra 8 4 271 cmyk
+end
+case pair-pbgra-alpha8
+convert pbgra 8 4 272 alpha8
+end
+case pair-pbgra-idx1
+convert pbgra 8 4 273 idx1
+end
+case pair-pbgra-idx2
+convert pbgra 8 4 274 idx2
+end
+case pair-pbgra-idx4
+convert pbgra 8 4 275 idx4
+end
+case pair-pbgra-idx8
+convert pbgra 8 4 276 idx8
+end
+case pair-rgb32-bw
+convert rgb32 8 4 277 bw
+end
+case pair-rgb32-gray2
+convert rgb32 8 4 278 gray2
+end
+case pair-rgb32-gray4
+convert rgb32 8 4 279 gray4
+end
+case pair-rgb32-gray8
+convert rgb32 8 4 280 gray8
+end
+case pair-rgb32-gray16
+convert rgb32 8 4 281 gray16
+end
+case pair-rgb32-bgr555
+convert rgb32 8 4 282 bgr555
+end
+case pair-rgb32-bgr565
+convert rgb32 8 4 283 bgr565
+end
+case pair-rgb32-bgr24
+convert rgb32 8 4 284 bgr24
+end
+case pair-rgb32-rgb24
+convert rgb32 8 4 285 rgb24
+end
+case pair-rgb32-bgr32
+convert rgb32 8 4 286 bgr32
+end
+case pair-rgb32-bgra
+convert rgb32 8 4 287 bgra
+end
+case pair-rgb32-pbgra
+convert rgb32 8 4 288 pbgra
+end
+case pair-rgb32-rgb32
+convert rgb32 8 4 289 rgb32
+end
+case pair-rgb32-rgba
+convert rgb32 8 4 290 rgba
+end
+case pair-rgb32-prgba
+convert rgb32 8 4 291 prgba
+end
+case pair-rgb32-rgb48
+convert rgb32 8 4 292 rgb48
+end
+case pair-rgb32-rgba64
+convert rgb32 8 4 293 rgba64
+end
+case pair-rgb32-cmyk
+convert rgb32 8 4 294 cmyk
+end
+case pair-rgb32-alpha8
+convert rgb32 8 4 295 alpha8
+end
+case pair-rgb32-idx1
+convert rgb32 8 4 296 idx1
+end
+case pair-rgb32-idx2
+convert rgb32 8 4 297 idx2
+end
+case pair-rgb32-idx4
+convert rgb32 8 4 298 idx4
+end
+case pair-rgb32-idx8
+convert rgb32 8 4 299 idx8
+end
+case pair-rgba-bw
+convert rgba 8 4 300 bw
+end
+case pair-rgba-gray2
+convert rgba 8 4 301 gray2
+end
+case pair-rgba-gray4
+convert rgba 8 4 302 gray4
+end
+case pair-rgba-gray8
+convert rgba 8 4 303 gray8
+end
+case pair-rgba-gray16
+convert rgba 8 4 304 gray16
+end
+case pair-rgba-bgr555
+convert rgba 8 4 305 bgr555
+end
+case pair-rgba-bgr565
+convert rgba 8 4 306 bgr565
+end
+case pair-rgba-bgr24
+convert rgba 8 4 307 bgr24
+end
+case pair-rgba-rgb24
+convert rgba 8 4 308 rgb24
+end
+case pair-rgba-bgr32
+convert rgba 8 4 309 bgr32
+end
+case pair-rgba-bgra
+convert rgba 8 4 310 bgra
+end
+case pair-rgba-pbgra
+convert rgba 8 4 311 pbgra
+end
+case pair-rgba-rgb32
+convert rgba 8 4 312 rgb32
+end
+case pair-rgba-rgba
+convert rgba 8 4 313 rgba
+end
+case pair-rgba-prgba
+convert rgba 8 4 314 prgba
+end
+case pair-rgba-rgb48
+convert rgba 8 4 315 rgb48
+end
+case pair-rgba-rgba64
+convert rgba 8 4 316 rgba64
+end
+case pair-rgba-cmyk
+convert rgba 8 4 317 cmyk
+end
+case pair-rgba-alpha8
+convert rgba 8 4 318 alpha8
+end
+case pair-rgba-idx1
+convert rgba 8 4 319 idx1
+end
+case pair-rgba-idx2
+convert rgba 8 4 320 idx2
+end
+case pair-rgba-idx4
+convert rgba 8 4 321 idx4
+end
+case pair-rgba-idx8
+convert rgba 8 4 322 idx8
+end
+case pair-prgba-bw
+convert prgba 8 4 323 bw
+end
+case pair-prgba-gray2
+convert prgba 8 4 324 gray2
+end
+case pair-prgba-gray4
+convert prgba 8 4 325 gray4
+end
+case pair-prgba-gray8
+convert prgba 8 4 326 gray8
+end
+case pair-prgba-gray16
+convert prgba 8 4 327 gray16
+end
+case pair-prgba-bgr555
+convert prgba 8 4 328 bgr555
+end
+case pair-prgba-bgr565
+convert prgba 8 4 329 bgr565
+end
+case pair-prgba-bgr24
+convert prgba 8 4 330 bgr24
+end
+case pair-prgba-rgb24
+convert prgba 8 4 331 rgb24
+end
+case pair-prgba-bgr32
+convert prgba 8 4 332 bgr32
+end
+case pair-prgba-bgra
+convert prgba 8 4 333 bgra
+end
+case pair-prgba-pbgra
+convert prgba 8 4 334 pbgra
+end
+case pair-prgba-rgb32
+convert prgba 8 4 335 rgb32
+end
+case pair-prgba-rgba
+convert prgba 8 4 336 rgba
+end
+case pair-prgba-prgba
+convert prgba 8 4 337 prgba
+end
+case pair-prgba-rgb48
+convert prgba 8 4 338 rgb48
+end
+case pair-prgba-rgba64
+convert prgba 8 4 339 rgba64
+end
+case pair-prgba-cmyk
+convert prgba 8 4 340 cmyk
+end
+case pair-prgba-alpha8
+convert prgba 8 4 341 alpha8
+end
+case pair-prgba-idx1
+convert prgba 8 4 342 idx1
+end
+case pair-prgba-idx2
+convert prgba 8 4 343 idx2
+end
+case pair-prgba-idx4
+convert prgba 8 4 344 idx4
+end
+case pair-prgba-idx8
+convert prgba 8 4 345 idx8
+end
+case pair-rgb48-bw
+convert rgb48 8 4 346 bw
+end
+case pair-rgb48-gray2
+convert rgb48 8 4 347 gray2
+end
+case pair-rgb48-gray4
+convert rgb48 8 4 348 gray4
+end
+case pair-rgb48-gray8
+convert rgb48 8 4 349 gray8
+end
+case pair-rgb48-gray16
+convert rgb48 8 4 350 gray16
+end
+case pair-rgb48-bgr555
+convert rgb48 8 4 351 bgr555
+end
+case pair-rgb48-bgr565
+convert rgb48 8 4 352 bgr565
+end
+case pair-rgb48-bgr24
+convert rgb48 8 4 353 bgr24
+end
+case pair-rgb48-rgb24
+convert rgb48 8 4 354 rgb24
+end
+case pair-rgb48-bgr32
+convert rgb48 8 4 355 bgr32
+end
+case pair-rgb48-bgra
+convert rgb48 8 4 356 bgra
+end
+case pair-rgb48-pbgra
+convert rgb48 8 4 357 pbgra
+end
+case pair-rgb48-rgb32
+convert rgb48 8 4 358 rgb32
+end
+case pair-rgb48-rgba
+convert rgb48 8 4 359 rgba
+end
+case pair-rgb48-prgba
+convert rgb48 8 4 360 prgba
+end
+case pair-rgb48-rgb48
+convert rgb48 8 4 361 rgb48
+end
+case pair-rgb48-rgba64
+convert rgb48 8 4 362 rgba64
+end
+case pair-rgb48-cmyk
+convert rgb48 8 4 363 cmyk
+end
+case pair-rgb48-alpha8
+convert rgb48 8 4 364 alpha8
+end
+case pair-rgb48-idx1
+convert rgb48 8 4 365 idx1
+end
+case pair-rgb48-idx2
+convert rgb48 8 4 366 idx2
+end
+case pair-rgb48-idx4
+convert rgb48 8 4 367 idx4
+end
+case pair-rgb48-idx8
+convert rgb48 8 4 368 idx8
+end
+case pair-rgba64-bw
+convert rgba64 8 4 369 bw
+end
+case pair-rgba64-gray2
+convert rgba64 8 4 370 gray2
+end
+case pair-rgba64-gray4
+convert rgba64 8 4 371 gray4
+end
+case pair-rgba64-gray8
+convert rgba64 8 4 372 gray8
+end
+case pair-rgba64-gray16
+convert rgba64 8 4 373 gray16
+end
+case pair-rgba64-bgr555
+convert rgba64 8 4 374 bgr555
+end
+case pair-rgba64-bgr565
+convert rgba64 8 4 375 bgr565
+end
+case pair-rgba64-bgr24
+convert rgba64 8 4 376 bgr24
+end
+case pair-rgba64-rgb24
+convert rgba64 8 4 377 rgb24
+end
+case pair-rgba64-bgr32
+convert rgba64 8 4 378 bgr32
+end
+case pair-rgba64-bgra
+convert rgba64 8 4 379 bgra
+end
+case pair-rgba64-pbgra
+convert rgba64 8 4 380 pbgra
+end
+case pair-rgba64-rgb32
+convert rgba64 8 4 381 rgb32
+end
+case pair-rgba64-rgba
+convert rgba64 8 4 382 rgba
+end
+case pair-rgba64-prgba
+convert rgba64 8 4 383 prgba
+end
+case pair-rgba64-rgb48
+convert rgba64 8 4 384 rgb48
+end
+case pair-rgba64-rgba64
+convert rgba64 8 4 385 rgba64
+end
+case pair-rgba64-cmyk
+convert rgba64 8 4 386 cmyk
+end
+case pair-rgba64-alpha8
+convert rgba64 8 4 387 alpha8
+end
+case pair-rgba64-idx1
+convert rgba64 8 4 388 idx1
+end
+case pair-rgba64-idx2
+convert rgba64 8 4 389 idx2
+end
+case pair-rgba64-idx4
+convert rgba64 8 4 390 idx4
+end
+case pair-rgba64-idx8
+convert rgba64 8 4 391 idx8
+end
+case pair-cmyk-bw
+convert cmyk 8 4 392 bw
+end
+case pair-cmyk-gray2
+convert cmyk 8 4 393 gray2
+end
+case pair-cmyk-gray4
+convert cmyk 8 4 394 gray4
+end
+case pair-cmyk-gray8
+convert cmyk 8 4 395 gray8
+end
+case pair-cmyk-gray16
+convert cmyk 8 4 396 gray16
+end
+case pair-cmyk-bgr555
+convert cmyk 8 4 397 bgr555
+end
+case pair-cmyk-bgr565
+convert cmyk 8 4 398 bgr565
+end
+case pair-cmyk-bgr24
+convert cmyk 8 4 399 bgr24
+end
+case pair-cmyk-rgb24
+convert cmyk 8 4 400 rgb24
+end
+case pair-cmyk-bgr32
+convert cmyk 8 4 401 bgr32
+end
+case pair-cmyk-bgra
+convert cmyk 8 4 402 bgra
+end
+case pair-cmyk-pbgra
+convert cmyk 8 4 403 pbgra
+end
+case pair-cmyk-rgb32
+convert cmyk 8 4 404 rgb32
+end
+case pair-cmyk-rgba
+convert cmyk 8 4 405 rgba
+end
+case pair-cmyk-prgba
+convert cmyk 8 4 406 prgba
+end
+case pair-cmyk-rgb48
+convert cmyk 8 4 407 rgb48
+end
+case pair-cmyk-rgba64
+convert cmyk 8 4 408 rgba64
+end
+case pair-cmyk-cmyk
+convert cmyk 8 4 409 cmyk
+end
+case pair-cmyk-alpha8
+convert cmyk 8 4 410 alpha8
+end
+case pair-cmyk-idx1
+convert cmyk 8 4 411 idx1
+end
+case pair-cmyk-idx2
+convert cmyk 8 4 412 idx2
+end
+case pair-cmyk-idx4
+convert cmyk 8 4 413 idx4
+end
+case pair-cmyk-idx8
+convert cmyk 8 4 414 idx8
+end
+case pair-alpha8-bw
+convert alpha8 8 4 415 bw
+end
+case pair-alpha8-gray2
+convert alpha8 8 4 416 gray2
+end
+case pair-alpha8-gray4
+convert alpha8 8 4 417 gray4
+end
+case pair-alpha8-gray8
+convert alpha8 8 4 418 gray8
+end
+case pair-alpha8-gray16
+convert alpha8 8 4 419 gray16
+end
+case pair-alpha8-bgr555
+convert alpha8 8 4 420 bgr555
+end
+case pair-alpha8-bgr565
+convert alpha8 8 4 421 bgr565
+end
+case pair-alpha8-bgr24
+convert alpha8 8 4 422 bgr24
+end
+case pair-alpha8-rgb24
+convert alpha8 8 4 423 rgb24
+end
+case pair-alpha8-bgr32
+convert alpha8 8 4 424 bgr32
+end
+case pair-alpha8-bgra
+convert alpha8 8 4 425 bgra
+end
+case pair-alpha8-pbgra
+convert alpha8 8 4 426 pbgra
+end
+case pair-alpha8-rgb32
+convert alpha8 8 4 427 rgb32
+end
+case pair-alpha8-rgba
+convert alpha8 8 4 428 rgba
+end
+case pair-alpha8-prgba
+convert alpha8 8 4 429 prgba
+end
+case pair-alpha8-rgb48
+convert alpha8 8 4 430 rgb48
+end
+case pair-alpha8-rgba64
+convert alpha8 8 4 431 rgba64
+end
+case pair-alpha8-cmyk
+convert alpha8 8 4 432 cmyk
+end
+case pair-alpha8-alpha8
+convert alpha8 8 4 433 alpha8
+end
+case pair-alpha8-idx1
+convert alpha8 8 4 434 idx1
+end
+case pair-alpha8-idx2
+convert alpha8 8 4 435 idx2
+end
+case pair-alpha8-idx4
+convert alpha8 8 4 436 idx4
+end
+case pair-alpha8-idx8
+convert alpha8 8 4 437 idx8
+end
+case pair-idx1-bw
+convert idx1 8 4 438 bw
+end
+case pair-idx1-gray2
+convert idx1 8 4 439 gray2
+end
+case pair-idx1-gray4
+convert idx1 8 4 440 gray4
+end
+case pair-idx1-gray8
+convert idx1 8 4 441 gray8
+end
+case pair-idx1-gray16
+convert idx1 8 4 442 gray16
+end
+case pair-idx1-bgr555
+convert idx1 8 4 443 bgr555
+end
+case pair-idx1-bgr565
+convert idx1 8 4 444 bgr565
+end
+case pair-idx1-bgr24
+convert idx1 8 4 445 bgr24
+end
+case pair-idx1-rgb24
+convert idx1 8 4 446 rgb24
+end
+case pair-idx1-bgr32
+convert idx1 8 4 447 bgr32
+end
+case pair-idx1-bgra
+convert idx1 8 4 448 bgra
+end
+case pair-idx1-pbgra
+convert idx1 8 4 449 pbgra
+end
+case pair-idx1-rgb32
+convert idx1 8 4 450 rgb32
+end
+case pair-idx1-rgba
+convert idx1 8 4 451 rgba
+end
+case pair-idx1-prgba
+convert idx1 8 4 452 prgba
+end
+case pair-idx1-rgb48
+convert idx1 8 4 453 rgb48
+end
+case pair-idx1-rgba64
+convert idx1 8 4 454 rgba64
+end
+case pair-idx1-cmyk
+convert idx1 8 4 455 cmyk
+end
+case pair-idx1-alpha8
+convert idx1 8 4 456 alpha8
+end
+case pair-idx1-idx1
+convert idx1 8 4 457 idx1
+end
+case pair-idx1-idx2
+convert idx1 8 4 458 idx2
+end
+case pair-idx1-idx4
+convert idx1 8 4 459 idx4
+end
+case pair-idx1-idx8
+convert idx1 8 4 460 idx8
+end
+case pair-idx2-bw
+convert idx2 8 4 461 bw
+end
+case pair-idx2-gray2
+convert idx2 8 4 462 gray2
+end
+case pair-idx2-gray4
+convert idx2 8 4 463 gray4
+end
+case pair-idx2-gray8
+convert idx2 8 4 464 gray8
+end
+case pair-idx2-gray16
+convert idx2 8 4 465 gray16
+end
+case pair-idx2-bgr555
+convert idx2 8 4 466 bgr555
+end
+case pair-idx2-bgr565
+convert idx2 8 4 467 bgr565
+end
+case pair-idx2-bgr24
+convert idx2 8 4 468 bgr24
+end
+case pair-idx2-rgb24
+convert idx2 8 4 469 rgb24
+end
+case pair-idx2-bgr32
+convert idx2 8 4 470 bgr32
+end
+case pair-idx2-bgra
+convert idx2 8 4 471 bgra
+end
+case pair-idx2-pbgra
+convert idx2 8 4 472 pbgra
+end
+case pair-idx2-rgb32
+convert idx2 8 4 473 rgb32
+end
+case pair-idx2-rgba
+convert idx2 8 4 474 rgba
+end
+case pair-idx2-prgba
+convert idx2 8 4 475 prgba
+end
+case pair-idx2-rgb48
+convert idx2 8 4 476 rgb48
+end
+case pair-idx2-rgba64
+convert idx2 8 4 477 rgba64
+end
+case pair-idx2-cmyk
+convert idx2 8 4 478 cmyk
+end
+case pair-idx2-alpha8
+convert idx2 8 4 479 alpha8
+end
+case pair-idx2-idx1
+convert idx2 8 4 480 idx1
+end
+case pair-idx2-idx2
+convert idx2 8 4 481 idx2
+end
+case pair-idx2-idx4
+convert idx2 8 4 482 idx4
+end
+case pair-idx2-idx8
+convert idx2 8 4 483 idx8
+end
+case pair-idx4-bw
+convert idx4 8 4 484 bw
+end
+case pair-idx4-gray2
+convert idx4 8 4 485 gray2
+end
+case pair-idx4-gray4
+convert idx4 8 4 486 gray4
+end
+case pair-idx4-gray8
+convert idx4 8 4 487 gray8
+end
+case pair-idx4-gray16
+convert idx4 8 4 488 gray16
+end
+case pair-idx4-bgr555
+convert idx4 8 4 489 bgr555
+end
+case pair-idx4-bgr565
+convert idx4 8 4 490 bgr565
+end
+case pair-idx4-bgr24
+convert idx4 8 4 491 bgr24
+end
+case pair-idx4-rgb24
+convert idx4 8 4 492 rgb24
+end
+case pair-idx4-bgr32
+convert idx4 8 4 493 bgr32
+end
+case pair-idx4-bgra
+convert idx4 8 4 494 bgra
+end
+case pair-idx4-pbgra
+convert idx4 8 4 495 pbgra
+end
+case pair-idx4-rgb32
+convert idx4 8 4 496 rgb32
+end
+case pair-idx4-rgba
+convert idx4 8 4 497 rgba
+end
+case pair-idx4-prgba
+convert idx4 8 4 498 prgba
+end
+case pair-idx4-rgb48
+convert idx4 8 4 499 rgb48
+end
+case pair-idx4-rgba64
+convert idx4 8 4 500 rgba64
+end
+case pair-idx4-cmyk
+convert idx4 8 4 501 cmyk
+end
+case pair-idx4-alpha8
+convert idx4 8 4 502 alpha8
+end
+case pair-idx4-idx1
+convert idx4 8 4 503 idx1
+end
+case pair-idx4-idx2
+convert idx4 8 4 504 idx2
+end
+case pair-idx4-idx4
+convert idx4 8 4 505 idx4
+end
+case pair-idx4-idx8
+convert idx4 8 4 506 idx8
+end
+case pair-idx8-bw
+convert idx8 8 4 507 bw
+end
+case pair-idx8-gray2
+convert idx8 8 4 508 gray2
+end
+case pair-idx8-gray4
+convert idx8 8 4 509 gray4
+end
+case pair-idx8-gray8
+convert idx8 8 4 510 gray8
+end
+case pair-idx8-gray16
+convert idx8 8 4 511 gray16
+end
+case pair-idx8-bgr555
+convert idx8 8 4 512 bgr555
+end
+case pair-idx8-bgr565
+convert idx8 8 4 513 bgr565
+end
+case pair-idx8-bgr24
+convert idx8 8 4 514 bgr24
+end
+case pair-idx8-rgb24
+convert idx8 8 4 515 rgb24
+end
+case pair-idx8-bgr32
+convert idx8 8 4 516 bgr32
+end
+case pair-idx8-bgra
+convert idx8 8 4 517 bgra
+end
+case pair-idx8-pbgra
+convert idx8 8 4 518 pbgra
+end
+case pair-idx8-rgb32
+convert idx8 8 4 519 rgb32
+end
+case pair-idx8-rgba
+convert idx8 8 4 520 rgba
+end
+case pair-idx8-prgba
+convert idx8 8 4 521 prgba
+end
+case pair-idx8-rgb48
+convert idx8 8 4 522 rgb48
+end
+case pair-idx8-rgba64
+convert idx8 8 4 523 rgba64
+end
+case pair-idx8-cmyk
+convert idx8 8 4 524 cmyk
+end
+case pair-idx8-alpha8
+convert idx8 8 4 525 alpha8
+end
+case pair-idx8-idx1
+convert idx8 8 4 526 idx1
+end
+case pair-idx8-idx2
+convert idx8 8 4 527 idx2
+end
+case pair-idx8-idx4
+convert idx8 8 4 528 idx4
+end
+case pair-idx8-idx8
+convert idx8 8 4 529 idx8
+end
+case ramp-bw
+convert bw 256 1 ramp bgra
+convert bgra 64 1 ramp bw
+end
+case ramp-gray2
+convert gray2 256 1 ramp bgra
+convert bgra 64 1 ramp gray2
+end
+case ramp-gray4
+convert gray4 256 1 ramp bgra
+convert bgra 64 1 ramp gray4
+end
+case ramp-gray8
+convert gray8 256 1 ramp bgra
+convert bgra 64 1 ramp gray8
+end
+case ramp-gray16
+convert gray16 128 1 ramp bgra
+convert bgra 64 1 ramp gray16
+end
+case ramp-bgr555
+convert bgr555 128 1 ramp bgra
+convert bgra 64 1 ramp bgr555
+end
+case ramp-bgr565
+convert bgr565 128 1 ramp bgra
+convert bgra 64 1 ramp bgr565
+end
+case ramp-bgr24
+convert bgr24 85 1 ramp bgra
+convert bgra 64 1 ramp bgr24
+end
+case ramp-rgb24
+convert rgb24 85 1 ramp bgra
+convert bgra 64 1 ramp rgb24
+end
+case ramp-bgr32
+convert bgr32 64 1 ramp bgra
+convert bgra 64 1 ramp bgr32
+end
+case ramp-bgra
+convert bgra 64 1 ramp bgra
+convert bgra 64 1 ramp bgra
+end
+case ramp-pbgra
+convert pbgra 64 1 ramp bgra
+convert bgra 64 1 ramp pbgra
+end
+case ramp-rgb32
+convert rgb32 64 1 ramp bgra
+convert bgra 64 1 ramp rgb32
+end
+case ramp-rgba
+convert rgba 64 1 ramp bgra
+convert bgra 64 1 ramp rgba
+end
+case ramp-prgba
+convert prgba 64 1 ramp bgra
+convert bgra 64 1 ramp prgba
+end
+case ramp-rgb48
+convert rgb48 42 1 ramp bgra
+convert bgra 64 1 ramp rgb48
+end
+case ramp-rgba64
+convert rgba64 32 1 ramp bgra
+convert bgra 64 1 ramp rgba64
+end
+case ramp-cmyk
+convert cmyk 64 1 ramp bgra
+convert bgra 64 1 ramp cmyk
+end
+case ramp-alpha8
+convert alpha8 256 1 ramp bgra
+convert bgra 64 1 ramp alpha8
+end
+case ramp-idx1
+convert idx1 256 1 ramp bgra
+convert bgra 64 1 ramp idx1
+end
+case ramp-idx2
+convert idx2 256 1 ramp bgra
+convert bgra 64 1 ramp idx2
+end
+case ramp-idx4
+convert idx4 256 1 ramp bgra
+convert bgra 64 1 ramp idx4
+end
+case ramp-idx8
+convert idx8 256 1 ramp bgra
+convert bgra 64 1 ramp idx8
+end
+case alpha-pbgra-0
+convert pbgra 256 64 7000 bgra
+convert bgra 256 64 7100 pbgra
+end
+case alpha-pbgra-1
+convert pbgra 256 64 7001 bgra
+convert bgra 256 64 7101 pbgra
+end
+case alpha-pbgra-2
+convert pbgra 256 64 7002 bgra
+convert bgra 256 64 7102 pbgra
+end
+case alpha-pbgra-3
+convert pbgra 256 64 7003 bgra
+convert bgra 256 64 7103 pbgra
+end
+case alpha-prgba-0
+convert prgba 256 64 7010 bgra
+convert bgra 256 64 7110 prgba
+end
+case alpha-prgba-1
+convert prgba 256 64 7011 bgra
+convert bgra 256 64 7111 prgba
+end
+case alpha-prgba-2
+convert prgba 256 64 7012 bgra
+convert bgra 256 64 7112 prgba
+end
+case alpha-prgba-3
+convert prgba 256 64 7013 bgra
+convert bgra 256 64 7113 prgba
+end
+case alpha-bgra-0
+convert bgra 256 64 7020 bgra
+convert bgra 256 64 7120 bgra
+end
+case alpha-bgra-1
+convert bgra 256 64 7021 bgra
+convert bgra 256 64 7121 bgra
+end
+case alpha-bgra-2
+convert bgra 256 64 7022 bgra
+convert bgra 256 64 7122 bgra
+end
+case alpha-bgra-3
+convert bgra 256 64 7023 bgra
+convert bgra 256 64 7123 bgra
+end
+case odd-0
+convert pbgra 5 3 501192102 alpha8
+end
+case odd-1
+convert cmyk 9 2 1526949036 gray16
+end
+case odd-2
+convert gray16 13 1 1175156274 idx8
+end
+case odd-3
+convert bgr32 13 1 2138649783 bgr24
+end
+case odd-4
+convert cmyk 5 3 1661523500 bgr555
+end
+case odd-5
+convert rgb24 9 3 3893423696 idx1
+end
+case odd-6
+convert bgra 6 3 2933193843 idx4
+end
+case odd-7
+convert alpha8 7 3 141019085 bgra
+end
+case odd-8
+convert pbgra 12 2 1083822413 rgb32
+end
+case odd-9
+convert alpha8 6 1 1052849055 idx2
+end
+case odd-10
+convert idx8 9 1 3716761342 bgr555
+end
+case odd-11
+convert gray16 5 2 1800101241 gray2
+end
+case odd-12
+convert gray4 2 1 2324312890 bgr565
+end
+case odd-13
+convert bgr32 10 4 858875921 bgra
+end
+case odd-14
+convert gray16 11 4 1208831437 idx8
+end
+case odd-15
+convert prgba 2 3 461901803 bgr555
+end
+case odd-16
+convert bgr24 6 3 2455274163 rgba
+end
+case odd-17
+convert bgr565 11 4 104949962 bgra
+end
+case odd-18
+convert bgra 8 3 3656588171 bgr555
+end
+case odd-19
+convert bgra 13 1 281240005 idx4
+end
+case odd-20
+convert gray16 13 4 3192694418 idx1
+end
+case odd-21
+convert bgr565 11 2 1839554841 bw
+end
+case odd-22
+convert idx1 3 1 3088756677 alpha8
+end
+case odd-23
+convert bw 5 4 1672710232 rgb48
+end
+case odd-24
+convert pbgra 3 1 3785441189 bgr555
+end
+case odd-25
+convert rgba64 3 4 1752071769 idx1
+end
+case odd-26
+convert cmyk 4 1 1821464309 gray8
+end
+case odd-27
+convert rgb32 8 3 3145819860 prgba
+end
+case odd-28
+convert rgba64 11 3 2573607500 bgr24
+end
+case odd-29
+convert gray8 11 1 2628654262 bgr24
+end
+case odd-30
+convert rgba 10 4 3132462855 rgb24
+end
+case odd-31
+convert rgba 11 4 2076993456 bw
+end
+case odd-32
+convert bgr555 4 4 1433553097 bgr565
+end
+case odd-33
+convert pbgra 6 1 2188295781 gray16
+end
+case odd-34
+convert cmyk 3 2 2356054637 gray8
+end
+case odd-35
+convert gray8 7 1 2292389223 rgb24
+end
+case odd-36
+convert idx8 9 4 4218972362 pbgra
+end
+case odd-37
+convert bgr565 1 4 1668712355 idx8
+end
+case odd-38
+convert prgba 2 3 261981711 bgr32
+end
+case odd-39
+convert prgba 5 1 4100188249 prgba
+end
+case odd-40
+convert bgra 9 1 1723549214 gray4
+end
+case odd-41
+convert gray2 12 1 1684599285 rgb24
+end
+case odd-42
+convert rgb32 9 3 3912068310 gray2
+end
+case odd-43
+convert bgr565 2 4 1860503556 idx8
+end
+case odd-44
+convert idx2 6 1 1090520957 bgr565
+end
+case odd-45
+convert idx2 12 1 214535931 prgba
+end
+case odd-46
+convert idx4 12 1 486766194 pbgra
+end
+case odd-47
+convert idx2 6 1 347851930 bgr32
+end
+case odd-48
+convert gray8 6 1 520255053 bgra
+end
+case odd-49
+convert bgra 13 3 3388624222 bgr24
+end
+case odd-50
+convert rgb32 2 3 1112691767 alpha8
+end
+case odd-51
+convert rgb24 11 1 3422365921 bgra
+end
+case odd-52
+convert idx2 6 2 194526628 idx1
+end
+case odd-53
+convert bgr565 8 2 211311097 gray8
+end
+case odd-54
+convert bgr565 4 4 2317697152 bgr555
+end
+case odd-55
+convert idx2 7 2 2804321050 bgr24
+end
+case odd-56
+convert idx4 11 4 3818452947 idx4
+end
+case odd-57
+convert idx4 2 4 39455314 bgr565
+end
+case odd-58
+convert idx2 3 1 2233195637 idx2
+end
+case odd-59
+convert gray8 1 4 1386312379 gray4
+end
+case odd-60
+convert gray4 9 1 3122653011 gray16
+end
+case odd-61
+convert rgba 1 3 2337540720 bgr24
+end
+case odd-62
+convert gray8 6 2 3200036301 bw
+end
+case odd-63
+convert idx1 4 4 1274589770 prgba
+end
+case odd-64
+convert gray16 6 2 2641660562 idx4
+end
+case odd-65
+convert bgra 2 3 1566819099 idx1
+end
+case odd-66
+convert prgba 9 2 653137220 bgr32
+end
+case odd-67
+convert rgb24 6 2 1095892369 idx2
+end
+case odd-68
+convert idx4 3 2 3320022518 gray2
+end
+case odd-69
+convert bgr565 2 1 1636029891 bgr24
+end
+case odd-70
+convert rgb32 4 3 3162055474 bgr565
+end
+case odd-71
+convert rgba64 2 1 751697626 bgra
+end
+case odd-72
+convert idx2 12 3 1872996179 idx1
+end
+case odd-73
+convert idx8 4 4 1732257466 pbgra
+end
+case odd-74
+convert rgb32 2 1 2167176492 cmyk
+end
+case odd-75
+convert bgr32 9 2 3738104659 bgr32
+end
+case odd-76
+convert cmyk 12 1 1981180666 rgba64
+end
+case odd-77
+convert gray2 5 1 178835108 bgr565
+end
+case odd-78
+convert rgb24 9 3 1671876936 bgr565
+end
+case odd-79
+convert prgba 9 2 3405903246 gray16
+end
+case odd-80
+convert gray4 13 1 3002424709 bw
+end
+case odd-81
+convert gray16 12 1 1263548922 idx2
+end
+case odd-82
+convert prgba 11 2 2538036339 idx1
+end
+case odd-83
+convert gray4 9 2 905369831 idx2
+end
+case odd-84
+convert bgra 12 1 2600807305 idx4
+end
+case odd-85
+convert gray8 2 4 336569993 rgb32
+end
+case odd-86
+convert alpha8 5 2 2839646751 alpha8
+end
+case odd-87
+convert rgb24 12 2 753347787 gray4
+end
+case odd-88
+convert cmyk 12 2 1238234756 gray2
+end
+case odd-89
+convert rgba64 10 4 1794465597 bgr555
+end
+case odd-90
+convert idx2 12 4 1959837263 bgr565
+end
+case odd-91
+convert gray8 13 1 1936163182 rgb48
+end
+case odd-92
+convert bgr24 12 1 3952379506 idx8
+end
+case odd-93
+convert gray16 1 1 373400600 rgb48
+end
+case odd-94
+convert bgr32 13 1 813744820 gray16
+end
+case odd-95
+convert alpha8 12 3 2987890799 idx2
+end
+case odd-96
+convert rgb48 8 3 3024277802 rgba64
+end
+case odd-97
+convert idx2 10 3 4160202097 rgba
+end
+case odd-98
+convert rgb48 3 1 2584462179 cmyk
+end
+case odd-99
+convert bw 3 1 3695872752 idx2
+end
+case odd-100
+convert prgba 13 4 3343903417 bgr565
+end
+case odd-101
+convert gray2 6 3 3121856328 rgb48
+end
+case odd-102
+convert idx4 8 1 3643554827 cmyk
+end
+case odd-103
+convert pbgra 5 2 1684894466 bw
+end
+case odd-104
+convert idx1 3 2 2556516230 gray16
+end
+case odd-105
+convert bgr24 4 3 2601207932 gray16
+end
+case odd-106
+convert idx8 7 2 3283514570 bgr24
+end
+case odd-107
+convert rgb48 3 3 2072766359 rgba
+end
+case odd-108
+convert bgr565 3 2 866487092 rgba
+end
+case odd-109
+convert gray4 2 1 1430773777 bgra
+end
+case odd-110
+convert rgb32 9 4 939170931 idx2
+end
+case odd-111
+convert idx4 4 3 1860543113 bgr555
+end
+case odd-112
+convert idx4 11 3 2650030968 rgba
+end
+case odd-113
+convert gray2 5 3 2241974587 gray4
+end
+case odd-114
+convert rgb32 5 2 53164237 bgr555
+end
+case odd-115
+convert rgba 4 4 3515451497 idx1
+end
+case odd-116
+convert idx8 1 3 2397450765 gray8
+end
+case odd-117
+convert idx2 12 4 1146320675 rgb48
+end
+case odd-118
+convert idx2 11 3 1708601780 cmyk
+end
+case odd-119
+convert pbgra 5 1 2022538679 bw
+end
+case odd-120
+convert prgba 9 2 4074986857 bgr565
+end
+case odd-121
+convert pbgra 4 4 4179714520 bgr24
+end
+case odd-122
+convert bgra 10 1 4238960426 rgba64
+end
+case odd-123
+convert prgba 12 1 802346126 rgba
+end
+case odd-124
+convert idx8 10 4 1202274278 rgb32
+end
+case odd-125
+convert gray8 5 1 823627821 idx2
+end
+case odd-126
+convert gray16 4 3 3681636070 bgr32
+end
+case odd-127
+convert bgr565 13 1 1350057941 idx4
+end
+case odd-128
+convert pbgra 10 3 949715143 gray8
+end
+case odd-129
+convert idx8 3 4 1669360768 gray16
+end
+case odd-130
+convert idx2 5 1 1915241336 bgr32
+end
+case odd-131
+convert prgba 8 1 3149939285 rgba64
+end
+case odd-132
+convert rgba64 12 2 2124035040 bgr555
+end
+case odd-133
+convert rgb24 10 4 1891519023 idx4
+end
+case odd-134
+convert bgra 2 3 1459200263 alpha8
+end
+case odd-135
+convert rgb24 5 4 3878390861 idx8
+end
+case odd-136
+convert prgba 7 3 65176813 rgba64
+end
+case odd-137
+convert idx1 13 4 4226158622 idx2
+end
+case odd-138
+convert gray8 1 4 534022600 rgb48
+end
+case odd-139
+convert gray2 8 3 4028731332 rgb24
+end
+case odd-140
+convert rgba64 6 1 4037423943 bgr32
+end
+case odd-141
+convert rgba 3 2 1835635016 rgba64
+end
+case odd-142
+convert idx2 3 1 980347589 idx8
+end
+case odd-143
+convert rgba64 13 1 3517760710 cmyk
+end
+case odd-144
+convert rgb24 9 4 51907023 gray2
+end
+case odd-145
+convert rgba 7 3 2707950098 idx1
+end
+case odd-146
+convert rgba 8 3 2189277847 gray16
+end
+case odd-147
+convert bgr565 11 3 864920938 alpha8
+end
+case odd-148
+convert bgra 5 4 1637038573 alpha8
+end
+case odd-149
+convert bgr555 4 4 1286846036 bgr555
+end
+case odd-150
+convert bw 6 4 1376475212 rgb48
+end
+case odd-151
+convert bgra 8 4 652690512 rgba64
+end
+case odd-152
+convert rgba64 11 4 1346914487 bgr565
+end
+case odd-153
+convert rgb24 12 4 2578635083 bgr32
+end
+case odd-154
+convert rgb48 7 4 3626719006 rgb32
+end
+case odd-155
+convert bgr24 10 1 2841919950 rgb24
+end
+case odd-156
+convert gray4 8 2 2316757987 gray2
+end
+case odd-157
+convert bgr24 4 3 933731613 idx2
+end
+case odd-158
+convert bgr32 7 4 2771760690 pbgra
+end
+case odd-159
+convert idx8 8 1 2117671040 bgra
+end
+case odd-160
+convert bgr565 11 4 3222407076 idx8
+end
+case odd-161
+convert cmyk 1 1 192822336 bgr24
+end
+case odd-162
+convert idx2 12 4 2354659051 rgba64
+end
+case odd-163
+convert alpha8 12 2 2673716136 idx2
+end
+case odd-164
+convert bgr565 8 3 1227990360 bgra
+end
+case odd-165
+convert gray16 8 2 3796694064 gray4
+end
+case odd-166
+convert rgba64 2 3 3545267036 gray8
+end
+case odd-167
+convert rgba 7 4 3326222072 idx2
+end
+case odd-168
+convert rgb48 3 1 1682677565 pbgra
+end
+case odd-169
+convert idx1 7 2 1919491790 rgba64
+end
+case odd-170
+convert gray4 4 3 3147052744 idx1
+end
+case odd-171
+convert idx4 12 4 2467282502 gray4
+end
+case odd-172
+convert rgba64 2 2 2086432237 bgr565
+end
+case odd-173
+convert idx2 8 3 1027838459 gray8
+end
+case odd-174
+convert rgba64 6 2 781894118 bgr24
+end
+case odd-175
+convert gray8 11 2 3554096056 rgba64
+end
+case odd-176
+convert gray2 10 4 2773924863 rgb48
+end
+case odd-177
+convert alpha8 12 3 3889952491 rgb24
+end
+case odd-178
+convert idx2 12 4 1464997227 bgr24
+end
+case odd-179
+convert gray4 11 4 2591877969 idx8
+end
+case odd-180
+convert gray2 13 3 3139159023 idx2
+end
+case odd-181
+convert bgr565 3 4 117407141 idx1
+end
+case odd-182
+convert rgb32 7 2 3867917560 gray4
+end
+case odd-183
+convert bgr555 6 1 741359738 bgr565
+end
+case odd-184
+convert rgb48 7 1 2418516144 bw
+end
+case odd-185
+convert cmyk 13 2 364330407 bgr565
+end
+case odd-186
+convert bgr555 7 1 1834881788 rgba
+end
+case odd-187
+convert idx1 2 1 3079066189 gray8
+end
+case odd-188
+convert rgba 4 2 2804072931 bgr555
+end
+case odd-189
+convert rgba64 4 2 3269859823 rgb48
+end
+case odd-190
+convert bgra 9 4 1404159877 idx4
+end
+case odd-191
+convert gray2 13 4 1994035664 bgr565
+end
+case odd-192
+convert gray4 8 1 504903416 gray16
+end
+case odd-193
+convert gray8 12 1 2975265655 prgba
+end
+case odd-194
+convert bgr24 5 3 3039303689 bgr24
+end
+case odd-195
+convert gray16 8 3 3987674273 gray8
+end
+case odd-196
+convert idx2 2 3 1058876292 prgba
+end
+case odd-197
+convert idx8 2 2 3698553053 idx8
+end
+case odd-198
+convert idx4 7 3 2788431409 bgr24
+end
+case odd-199
+convert bgr565 9 1 548033764 rgba64
+end
+case odd-200
+convert rgb32 11 4 1022623455 prgba
+end
+case odd-201
+convert alpha8 6 2 2197949398 idx8
+end
+case odd-202
+convert alpha8 7 4 1199918438 bgr24
+end
+case odd-203
+convert cmyk 9 1 4036447766 gray4
+end
+case odd-204
+convert idx2 12 2 4245443370 gray4
+end
+case odd-205
+convert bgr24 7 2 3686267589 cmyk
+end
+case odd-206
+convert bgr24 5 4 2197949733 idx8
+end
+case odd-207
+convert bgr24 1 1 87320982 bgr565
+end
+case odd-208
+convert gray2 8 2 1888630110 bgra
+end
+case odd-209
+convert rgb32 5 4 3249494300 rgb24
+end
+case odd-210
+convert bw 13 2 1223633820 alpha8
+end
+case odd-211
+convert rgb32 3 1 1599377342 rgb24
+end
+case odd-212
+convert rgba 2 3 4166945509 gray8
+end
+case odd-213
+convert gray2 2 2 443390681 gray8
+end
+case odd-214
+convert idx2 3 3 3976584351 gray4
+end
+case odd-215
+convert bgr32 5 3 1553895141 idx8
+end
+case odd-216
+convert rgb24 7 2 2900493734 rgba
+end
+case odd-217
+convert gray4 4 1 788686335 rgb24
+end
+case odd-218
+convert gray4 13 4 3540517581 idx1
+end
+case odd-219
+convert bgr555 2 1 3115800214 alpha8
+end
+case odd-220
+convert gray8 6 3 2559924798 alpha8
+end
+case odd-221
+convert bgra 1 2 994980884 bgra
+end
+case odd-222
+convert gray8 5 3 2172928005 gray4
+end
+case odd-223
+convert gray16 3 3 1202230159 rgb32
+end
+case odd-224
+convert pbgra 3 4 139701871 rgba
+end
+case odd-225
+convert gray8 3 3 2309806155 rgba64
+end
+case odd-226
+convert gray8 2 1 2258976979 cmyk
+end
+case odd-227
+convert pbgra 7 3 1810036589 prgba
+end
+case odd-228
+convert bgra 4 3 361476192 idx2
+end
+case odd-229
+convert idx8 12 4 3260974238 idx8
+end
+case odd-230
+convert rgb32 11 2 919497216 idx2
+end
+case odd-231
+convert prgba 11 2 38232376 rgb32
+end
+case odd-232
+convert rgb48 13 2 778948597 bw
+end
+case odd-233
+convert rgb48 4 2 4287176723 rgb48
+end
+case odd-234
+convert rgb24 12 1 2262065323 bgr32
+end
+case odd-235
+convert bgr565 3 3 128049253 rgb24
+end
+case odd-236
+convert cmyk 5 3 2623693644 prgba
+end
+case odd-237
+convert gray8 12 3 1230220891 pbgra
+end
+case odd-238
+convert bgra 11 3 2114104280 gray4
+end
+case odd-239
+convert gray8 12 4 2688063177 bgr32
+end
+case odd-240
+convert bgr565 9 2 3942709497 bgr24
+end
+case odd-241
+convert idx2 8 2 1694461234 bgr555
+end
+case odd-242
+convert bgr32 8 3 2057774859 gray2
+end
+case odd-243
+convert bgr555 9 3 1812722910 prgba
+end
+case odd-244
+convert prgba 11 2 1428165259 rgb24
+end
+case odd-245
+convert rgba 6 3 2887904631 rgb48
+end
+case odd-246
+convert pbgra 10 4 1730634511 rgb24
+end
+case odd-247
+convert rgba64 8 4 4232362293 rgba
+end
+case odd-248
+convert gray16 9 1 3777653308 bgr32
+end
+case odd-249
+convert bgr555 13 2 516393190 idx4
+end
+case odd-250
+convert rgb48 2 1 1726002948 prgba
+end
+case odd-251
+convert alpha8 13 1 4046379670 gray2
+end
+case odd-252
+convert pbgra 11 3 1889762663 prgba
+end
+case odd-253
+convert alpha8 3 4 937710207 idx4
+end
+case odd-254
+convert gray4 1 4 476434480 rgb32
+end
+case odd-255
+convert idx4 12 1 1707392284 rgb32
+end
+case odd-256
+convert gray16 1 2 4211388063 rgb32
+end
+case odd-257
+convert rgb32 3 4 3750114113 idx4
+end
+case odd-258
+convert bgr32 2 2 1507820700 gray16
+end
+case odd-259
+convert bgr32 10 2 4073792579 prgba
+end
+case odd-260
+convert gray4 12 2 1818061029 bgra
+end
+case odd-261
+convert cmyk 2 4 2997953830 rgb24
+end
+case odd-262
+convert rgb48 10 3 1747329561 idx1
+end
+case odd-263
+convert gray4 5 4 1854752901 pbgra
+end
+case odd-264
+convert prgba 13 1 1329707207 bw
+end
+case odd-265
+convert bgr24 5 3 776284033 alpha8
+end
+case odd-266
+convert bw 6 1 3290071938 rgba
+end
+case odd-267
+convert gray8 2 4 246735090 gray4
+end
+case odd-268
+convert gray16 12 2 1680782808 rgba64
+end
+case odd-269
+convert gray16 7 2 967350890 pbgra
+end
+case odd-270
+convert bgr24 13 2 1684192677 gray2
+end
+case odd-271
+convert idx2 8 3 294649858 gray8
+end
+case odd-272
+convert rgb32 12 1 2750762567 prgba
+end
+case odd-273
+convert idx4 2 4 2138964048 pbgra
+end
+case odd-274
+convert bgr32 4 4 4188636481 bgr555
+end
+case odd-275
+convert gray4 13 4 3121762867 prgba
+end
+case odd-276
+convert prgba 5 2 70844186 rgb24
+end
+case odd-277
+convert gray16 5 2 2778041350 bgr565
+end
+case odd-278
+convert cmyk 7 1 2715716997 gray16
+end
+case odd-279
+convert idx1 6 4 412064006 bgr565
+end
+case odd-280
+convert rgb48 6 2 1646929561 idx2
+end
+case odd-281
+convert gray2 12 4 1189987841 pbgra
+end
+case odd-282
+convert bgr555 7 1 1034123023 gray2
+end
+case odd-283
+convert bgr555 11 1 1337025295 idx4
+end
+case odd-284
+convert gray16 5 4 3428385147 alpha8
+end
+case odd-285
+convert rgb32 7 4 339244839 bgr24
+end
+case odd-286
+convert bgr24 6 4 1890520734 idx2
+end
+case odd-287
+convert bgr32 11 3 2406600549 bgr32
+end
+case odd-288
+convert bw 12 3 4144111942 idx4
+end
+case odd-289
+convert gray2 1 2 346647638 gray4
+end
+case odd-290
+convert idx4 6 4 2122651928 rgb48
+end
+case odd-291
+convert idx4 4 1 3263817633 bw
+end
+case odd-292
+convert bgr32 5 4 78609381 alpha8
+end
+case odd-293
+convert cmyk 12 4 3733810300 cmyk
+end
+case odd-294
+convert prgba 11 3 632367838 idx1
+end
+case odd-295
+convert bgr32 2 3 2204422524 idx4
+end
+case odd-296
+convert rgba64 10 3 2503569885 gray16
+end
+case odd-297
+convert gray2 1 1 49880303 bgra
+end
+case odd-298
+convert gray8 1 3 2815420557 idx1
+end
+case odd-299
+convert rgba 3 2 3302103480 idx2
+end

@@ -1,0 +1,22 @@
+# WIC pixel format conversion clauses (wingfx/spec/README.md): <id> <status> | <source> | <what it says>
+WIC.LAYOUT doc | Native Pixel Formats Overview | each format's channels, their order and size; 16-bit channels little-endian; pixels under 8 bits from the high bits of each byte; the same channel between formats copied
+WIC.CAN assumed | IWICFormatConverter::CanConvert | every pair of these formats can be converted (Wine refuses some)
+WIC.SAME assumed | IWICFormatConverter::Initialize | to the same format: the bytes as they are
+WIC.PAIR assumed | (none) | a pair neither of which is 32bppBGRA: as through 32bppBGRA
+WIC.PAIR.WIDE open | (none) | between two formats of 16-bit channels, or to or from 32bppCMYK, other than through 32bppBGRA
+WIC.TO.EXPAND measured | (none) | to 8 bits: n-bit gray v * 255 / (2^n - 1); 5 and 6 bit channels by repeating their high bits (wicconv golden)
+WIC.TO.GRAY16 measured | (none) | 16bppGray to 8 bits: a measured table of the first level of each 8-bit value, close to sRGB (wicconv golden, every level)
+WIC.TO.HIGHBYTE measured | (none) | 48bppRGB / 64bppRGBA to 8 bits: the high byte of each channel (wicconv golden)
+WIC.TO.UNPREMULTIPLY measured | (none) | premultiplied to straight: (c / 255) / (a / 255) * 255 in single floats, truncated, 0 where alpha is 0 (wicconv golden)
+WIC.TO.ALPHA measured | (none) | 8bppAlpha to color: white with that alpha (wicconv golden)
+WIC.TO.INDEXED doc | Native Pixel Formats Overview (indexed: the palette's color) | an index is its palette color, alpha included
+WIC.TO.INDEX.OUTSIDE measured | (none) | an index past the palette's colors is opaque black (wicconv golden)
+WIC.TO.CMYK open | (none) | 32bppCMYK to RGB (through Windows' CMYK profile: no formula)
+WIC.FROM.GRAY measured | (none) | to 8, 4, 2, 1 bit gray: Rec. 709 luminance of the linear light back to sRGB, rounded to 8 bits, then (g * 3 + 127) / 255 for 2 bits, g >> 4 for 4, g >= 128 for 1 (wicconv golden)
+WIC.FROM.GRAY16 open | (none) | to 16bppGray (the 8-bit rule scaled to 16 bits is off by one in half the levels)
+WIC.FROM.TRUNCATE measured | (none) | to 5 and 6 bit channels: the high bits (wicconv golden)
+WIC.FROM.WIDEN measured | (none) | to 16-bit channels: c * 257 (wicconv golden)
+WIC.FROM.PREMULTIPLY measured | (none) | straight to premultiplied: (c * a + 127) / 255 (wicconv golden)
+WIC.FROM.X measured | (none) | to 32bppBGR the alpha byte is kept; to 32bppRGB it is 0xff (wicconv golden)
+WIC.FROM.CMYK open | (none) | RGB to 32bppCMYK
+WIC.FROM.INDEXED open | (none) | to an indexed format without dithering: the nearest opaque entry by RGB distance holds in 252 of 256 measured pixels, not in close calls
