@@ -1173,8 +1173,12 @@ function closeGame(): void {
     void saveNow().finally(() => location.replace(url));
     return;
   }
-  // (bench.html: a program that ended without its last line)
-  dispatchEvent(new CustomEvent("vnvm-exit"));
+  // (bench.html: it goes on to its next step, or shows its results: not back to the list)
+  if (params.has("bench")) {
+    dispatchEvent(new CustomEvent("vnvm-exit"));
+    stopPlay?.();
+    return;
+  }
   log("ゲームが終了しました。一覧に戻ります");
   void wrapUp().finally(leave);
 }

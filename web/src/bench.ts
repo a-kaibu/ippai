@@ -13,7 +13,7 @@
 // `PUT /bench-log` (ippai serve keeps them in <jit>/bench-results.jsonl) when it ends, and
 // `GET /bench-results` gives them all back for the comparison.
 
-import { getUi, setBench, setStart } from "./ui/store";
+import { getUi, setBench, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 import {
   OutputParser,
@@ -175,6 +175,7 @@ async function pastRuns(): Promise<BenchRun[]> {
 /** The start screen: the profiles, and the past runs of every device. */
 async function startScreen(): Promise<void> {
   setStart({ shown: false });
+  setUi({ status: "" });
   const past = await pastRuns();
   const rows: string[][] = [
     [
@@ -441,6 +442,7 @@ async function end(run: BenchRun): Promise<void> {
   }
   const past = await pastRuns();
   const rows = compareRows(run, past);
+  setUi({ status: "" });
   const text = JSON.stringify(run);
   setBench({
     phase: saved

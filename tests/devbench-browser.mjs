@@ -42,6 +42,8 @@ try {
     // (&headless passes through to the program steps: headless Chromium can't present their canvas)
     await page.goto(`${base}bench.html?headless`);
     const label = { quick: "クイック", standard: "標準", full: "すべて" }[profile];
+    await page.getByRole("button", { name: new RegExp(`^${label}`) }).waitFor({ timeout: 30000 });
+    if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `devbench-start-${round}.png`) });
     await page.getByRole("button", { name: new RegExp(`^${label}`) }).click({ timeout: 30000 });
     const t0 = Date.now();
     await page.waitForFunction(() => /計測完了/.test(document.body.innerText), null, { timeout: 1800000, polling: 1000 });
