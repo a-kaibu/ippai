@@ -455,6 +455,9 @@ pub fn info(dxgi: u32) -> Option<Format> {
         69 => Format { page: P_RGBA8, bpp: 2, block: 1, conv: GRGB, no_alpha: false },
         89 => Format { page: P_RGBA16F, bpp: 4, block: 1, conv: XR_BIAS, no_alpha: false },
         60 | 61 => f(P_R8, 1),
+        // (NV12: the page's texture its luma plane, w x h; the rows Map and copies give are the
+        // luma then the chroma ones, pitch_rows)
+        103 => f(P_R8, 1),
         63 => f(P_R8SN, 1),
         67 => f(P_RGB9E5, 4),
         65 => c(1, 1, f9::A8),
@@ -555,6 +558,9 @@ pub fn page_bpp(page: u32) -> u32 {
 
 /// The guest's row pitch and row count of a w x h level.
 pub fn pitch_rows(dxgi: u32, w: u32, h: u32) -> (u32, u32) {
+    if dxgi == 103 {
+        return (w.next_multiple_of(2), h + h.div_ceil(2));
+    }
     match info(dxgi) {
         Some(f) => (w.div_ceil(f.block) * f.bpp, h.div_ceil(f.block)),
         None => (w * 4, h),
@@ -569,7 +575,12 @@ pub fn texture_bytes(dxgi: u32, w: u32, h: u32, d: u32, layers: u32, mips: u32, 
     let mut total = 0u64;
     for l in 0..mips.min(32) {
         let (lw, lh, ld) = ((w >> l).max(1) as u64, (h >> l).max(1) as u64, (d >> l).max(1) as u64);
-        let level = lw.div_ceil(block).saturating_mul(bpp).saturating_mul(lh.div_ceil(block)).saturating_mul(ld);
+        // (NV12: even rows, the chroma ones too: pitch_rows)
+        let level = if dxgi == 103 {
+            lw.next_multiple_of(2).saturating_mul(lh + lh.div_ceil(2)).saturating_mul(ld)
+        } else {
+            lw.div_ceil(block).saturating_mul(bpp).saturating_mul(lh.div_ceil(block)).saturating_mul(ld)
+        };
         total = total.saturating_add(level);
     }
     total.saturating_mul(layers.max(1) as u64).saturating_mul(samples.max(1) as u64)

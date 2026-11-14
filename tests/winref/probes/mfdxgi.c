@@ -2,8 +2,9 @@
  * (IMFDXGIBuffer: GetResource, GetSubresourceIndex, Get/SetUnknown; IMFMediaBuffer Lock reading
  * the texture, Unlock writing changes back; IMF2DBuffer pitch top-down and bottom-up; refused
  * arguments), then a Source Reader given the device (MF_SOURCE_READER_D3D_MANAGER, advanced
- * video processing) reading mfwmv's movie as RGB32: whether its samples are textures, their
- * size and format, and the colour of each frame through Lock. WARP on the Windows runner.
+ * video processing) reading mfwmv's movie as RGB32 and as NV12: whether its samples are
+ * textures, their size and format, and the colour of each frame through Lock; an NV12 texture's
+ * luma and chroma views. WARP on the Windows runner.
  * libs: -lmfplat -lmfreadwrite -lmfuuid -ld3d11 -lole32 -luuid
  * run: browser (sake's D3D11 is WebGPU: tests/winref/run-browser.mjs) */
 #define COBJMACROS
@@ -131,6 +132,13 @@ static void surface_buffer(void) {
     ID3D11Texture2D_Release(t);
 }
 
+static int classify(int y, int u, int v) {
+    /* BT.601 studio range: red Y 81 U 90 V 240, lime 145 54 34, blue 41 240 110 */
+    if (v > 180) return 'r';
+    if (u > 180) return 'b';
+    if (y > 100 && u < 100 && v < 100) return 'g';
+    return '?';
+}
 static int classify_rgb(int r, int g, int b) {
     if (r > 180 && g < 80 && b < 80) return 'r';
     if (g > 180 && r < 80 && b < 80) return 'g';
@@ -138,7 +146,54 @@ static int classify_rgb(int r, int g, int b) {
     return '?';
 }
 
-static void reader(const WCHAR *path) {
+static void nv12_views(void) {
+    BYTE px[8 * 6];
+    for (int i = 0; i < 48; i++) px[i] = i * 5;
+    D3D11_TEXTURE2D_DESC d = { 8, 4, 1, 1, DXGI_FORMAT_NV12, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+    D3D11_SUBRESOURCE_DATA init = { px, 8, 0 };
+    UINT sup = 0;
+    HRESULT hr = ID3D11Device_CheckFormatSupport(dev, DXGI_FORMAT_NV12, &sup);
+    printf("NV12 support: %#lx 2d %d sample %d lockable %d\n", hr, !!(sup & D3D11_FORMAT_SUPPORT_TEXTURE2D), !!(sup & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE), !!(sup & D3D11_FORMAT_SUPPORT_CPU_LOCKABLE));
+    ID3D11Texture2D *t = NULL;
+    D3D11_TEXTURE2D_DESC odd = d;
+    odd.Width = 7;
+    printf("  odd width: %#lx\n", ID3D11Device_CreateTexture2D(dev, &odd, &init, &t));
+    t = NULL;
+    hr = ID3D11Device_CreateTexture2D(dev, &d, &init, &t);
+    printf("  texture: %#lx\n", hr);
+    if (!t) return;
+    static const DXGI_FORMAT views[] = { DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_NV12, DXGI_FORMAT_R8G8B8A8_UNORM };
+    for (int i = 0; i < 4; i++) {
+        D3D11_SHADER_RESOURCE_VIEW_DESC v = { views[i], D3D11_SRV_DIMENSION_TEXTURE2D };
+        v.Texture2D.MipLevels = 1;
+        ID3D11ShaderResourceView *srv = NULL;
+        hr = ID3D11Device_CreateShaderResourceView(dev, (ID3D11Resource *)t, &v, &srv);
+        printf("  view as %d: %#lx\n", views[i], hr);
+        if (srv) ID3D11ShaderResourceView_Release(srv);
+    }
+    /* the bytes back through a staging copy: luma rows then chroma rows */
+    d.Usage = D3D11_USAGE_STAGING;
+    d.BindFlags = 0;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *s = NULL;
+    ID3D11Device_CreateTexture2D(dev, &d, NULL, &s);
+    if (s) {
+        ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)s, (ID3D11Resource *)t);
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (SUCCEEDED(ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)s, 0, D3D11_MAP_READ, 0, &m))) {
+            int same = 1;
+            for (int y = 0; y < 6; y++)
+                for (int x = 0; x < 8; x++)
+                    if (((BYTE *)m.pData)[y * m.RowPitch + x] != px[y * 8 + x]) same = 0;
+            printf("  staging copy: pitch>=8 %d, the bytes %d\n", m.RowPitch >= 8, same);
+            ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)s, 0);
+        }
+        ID3D11Texture2D_Release(s);
+    }
+    ID3D11Texture2D_Release(t);
+}
+
+static void reader(const WCHAR *path, const GUID *sub, const char *name) {
     UINT token = 0;
     IMFDXGIDeviceManager *m = NULL;
     HRESULT hr = MFCreateDXGIDeviceManager(&token, &m);
@@ -159,10 +214,11 @@ static void reader(const WCHAR *path) {
         IMFMediaType *t;
         MFCreateMediaType(&t);
         IMFMediaType_SetGUID(t, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
-        IMFMediaType_SetGUID(t, &MF_MT_SUBTYPE, &MFVideoFormat_RGB32);
+        IMFMediaType_SetGUID(t, &MF_MT_SUBTYPE, sub);
         hr = IMFSourceReader_SetCurrentMediaType(r, MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, t);
         IMFMediaType_Release(t);
-        printf("  set RGB32: %#lx\n", hr);
+        printf("  set %s: %#lx\n", name, hr);
+        int nv12 = IsEqualGUID(sub, &MFVideoFormat_NV12);
         char cols[40] = { 0 };
         int n = 0, textures = 0, sized = 0;
         DXGI_FORMAT fmt = 0;
@@ -195,7 +251,10 @@ static void reader(const WCHAR *path) {
                 DWORD len = 0;
                 int c = '?';
                 if (b && SUCCEEDED(IMFMediaBuffer_Lock(b, &p, NULL, &len))) {
-                    if (len >= 64 * 48 * 4) {
+                    if (nv12 && len >= 64 * 48 * 3 / 2) {
+                        const BYTE *uv = p + 64 * 48 + 12 * 64 + 32;
+                        c = classify(p[24 * 64 + 32], uv[0], uv[1]);
+                    } else if (!nv12 && len >= 64 * 48 * 4) {
                         const BYTE *q = p + (24 * 64 + 32) * 4;
                         c = classify_rgb(q[2], q[1], q[0]);
                     }
@@ -240,7 +299,9 @@ int main(void) {
     DWORD w;
     WriteFile(f, file_wmv, sizeof file_wmv, &w, NULL);
     CloseHandle(f);
-    reader(path);
+    nv12_views();
+    reader(path, &MFVideoFormat_RGB32, "RGB32");
+    reader(path, &MFVideoFormat_NV12, "NV12");
     DeleteFileW(path);
     ID3D11DeviceContext_Release(ctx);
     ID3D11Device_Release(dev);

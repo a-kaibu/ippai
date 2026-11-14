@@ -898,3 +898,108 @@ fn render_targets_read_back_their_bytes() {
     assert!(seen > 40, "{seen} render target formats");
     dev.done();
 }
+
+/// The page's texels of a texture's first level and layer, `bpp` bytes a texel, rows w * bpp.
+fn page_texels_of(g: u32, w: u32, h: u32, bpp: u32, req: u32) -> Vec<u8> {
+    let rb = mem(w * h * bpp);
+    gpu::pump();
+    gpu::record(|b| b.cmd(&[gpu::READBACK, req, g, 0, 0, 0, w, h, rb, w * bpp]));
+    assert!(gpu::wait_readback(req));
+    unsafe { std::slice::from_raw_parts(rb as *const u8, (w * h * bpp) as usize) }.to_vec()
+}
+
+/// A shader resource view's page texture (the view's own for NV12's chroma).
+fn view_gpu(v: u32) -> u32 {
+    let g = D11S.lock().unwrap();
+    let d = g.as_ref().unwrap();
+    match &d.objs[&d.id_of(v)].data {
+        Data::View(x) => match &d.objs[&x.res].data {
+            Data::Texture(t) => t.gpu,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+/// NV12 (Windows' answers: even sizes, one level, shader resource views as R8 of the luma plane
+/// and R8G8 of the chroma one, no render target): Map of a staging one and copies give its bytes
+/// (the luma rows, then the chroma rows, pitch_rows); the luma view samples the luma plane, the
+/// chroma view the chroma pairs, again after UpdateSubresource, of any size and content.
+#[test]
+fn nv12_planes() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let mut rng = Rng(0x0bad_cafe_1234_5678);
+    assert_eq!(format::pitch_rows(103, 6, 4), (6, 6));
+    assert_eq!(format::texture_bytes(103, 64, 48, 1, 1, 1, 1), 64 * 72);
+    // CheckFormatSupport: 2D, load, sample, CPU lockable; no render target, blending or UAV
+    let sup = check::support(103).unwrap();
+    assert_eq!(sup & 0x220, 0x220);
+    assert_eq!(sup & (0x4000 | 0x8000 | 0x200_0000), 0);
+    // refused: odd sizes, mips, a render target, 3D
+    for (s, bind) in [(Shape(2, 5, 4, 1, 1), 8), (Shape(2, 4, 3, 1, 1), 8), (Shape(2, 8, 8, 1, 2), 8), (Shape(2, 8, 8, 1, 1), 0x28), (Shape(3, 8, 8, 2, 1), 8)] {
+        assert_eq!(dev.tex_bound(s, 103, bind, None), 0, "{} {}x{}x{} mips {} bind {bind:#x}", s.0, s.1, s.2, s.3, s.4);
+    }
+    let mut req = 0x5400_0000;
+    for (w, h) in [(2u32, 2u32), (8, 4), (64, 48), (34, 18)] {
+        let s = Shape(2, w, h, 1, 1);
+        let data = random_subs(&mut rng, s, 103);
+        assert_eq!(data[0].len() as u32, w * h * 3 / 2);
+        let t = dev.tex(s, 103, false, Some(&data));
+        assert_ne!(t, 0, "NV12 {w}x{h}");
+        let st = dev.tex(s, 103, true, None);
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, st, t]);
+        assert_eq!(dev.read(st, s, 103, 0), data[0], "CopyResource of NV12 {w}x{h}");
+        // views: R8 (luma), R8G8 (chroma); none of the format itself, or of another
+        let srv = |fmt: u32| {
+            let desc = mem(24);
+            put(desc, &[fmt, 4, 0, 1, 0, 0]);
+            let o = mem(8);
+            put(o, &[0]);
+            let hr = call1(m(IF_DEVICE, 7), &[dev.dev, t, desc, o]);
+            (hr, rd1(o))
+        };
+        assert_ne!(srv(103).0, 0, "a view of NV12 as NV12");
+        assert_ne!(srv(28).0, 0, "a view of NV12 as RGBA8");
+        let (hr, luma) = srv(61);
+        assert_eq!(hr, 0);
+        let (hr, chroma) = srv(49);
+        assert_eq!(hr, 0);
+        let y: Vec<u8> = data[0][..(w * h) as usize].to_vec();
+        let uv: Vec<u8> = data[0][(w * h) as usize..].to_vec();
+        req += 1;
+        assert_eq!(page_texels_of(view_gpu(luma), w, h, 1, req), y, "luma of {w}x{h}");
+        {
+            let mut g = D11S.lock().unwrap();
+            let d = g.as_mut().unwrap();
+            let id = d.id_of(chroma);
+            buffer_view_sync(d, id);
+        }
+        req += 1;
+        assert_eq!(page_texels_of(view_gpu(chroma), w / 2, h / 2, 2, req), uv, "chroma of {w}x{h}");
+        // UpdateSubresource of the whole: the chroma view follows; Map of a copy the new bytes
+        let up = rng.bytes(data[0].len());
+        let p = mem(up.len() as u32);
+        put_bytes(p, &up);
+        call1(m(IF_CONTEXT, 48), &[dev.ctx, t, 0, 0, p, w, 0]);
+        {
+            let mut g = D11S.lock().unwrap();
+            let d = g.as_mut().unwrap();
+            let id = d.id_of(chroma);
+            buffer_view_sync(d, id);
+        }
+        req += 1;
+        assert_eq!(page_texels_of(view_gpu(chroma), w / 2, h / 2, 2, req), up[(w * h) as usize..], "chroma after an update, {w}x{h}");
+        req += 1;
+        assert_eq!(page_texels_of(view_gpu(luma), w, h, 1, req), up[..(w * h) as usize], "luma after an update, {w}x{h}");
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, st, t]);
+        assert_eq!(dev.read(st, s, 103, 0), up, "CopyResource after an update, {w}x{h}");
+        for v in [luma, chroma] {
+            call1(m(IF_SRV, 2), &[v]);
+        }
+        dev.release(st);
+        dev.release(t);
+    }
+    dev.done();
+}

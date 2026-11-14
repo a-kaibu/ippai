@@ -5,8 +5,9 @@
 //! bytes back with UpdateSubresource, as Wine's dxgi buffer does), IMFDXGIBuffer for the
 //! texture itself (GetResource, GetSubresourceIndex, Get/SetUnknown).
 //!
-//! The reader gives textures of RGB32 (B8G8R8X8) and ARGB32 (B8G8R8A8) frames; kura has no
-//! planar formats, so NV12 and the other YUV types stay memory buffers.
+//! The reader gives textures of NV12, RGB32 (B8G8R8X8) and ARGB32 (B8G8R8A8) frames (kura's
+//! NV12: views of its planes as R8 and R8G8); the other YUV types stay memory buffers, as do
+//! frames of odd sizes (NV12 textures are of even ones).
 //!
 //! The block: three interface slots (IMFMediaBuffer, IMFDXGIBuffer, IMF2DBuffer); the state in
 //! DXS by the block's address.
@@ -472,9 +473,10 @@ fn vtables() -> [u32; 3] {
 
 /// The bytes and rows of a `w` x `h` picture of DXGI format `fmt` (None: not one we copy).
 fn layout(fmt: u32, w: u32, h: u32) -> Option<(u32, u32)> {
-    let f = kura::d3d11::format::info(fmt)?;
+    kura::d3d11::format::info(fmt)?;
     let size = kura::d3d11::format::texture_bytes(fmt, w, h, 1, 1, 1, 1);
-    let rows = h.div_ceil(f.block.max(1) as u32);
+    // (rows of blocks; NV12's luma then chroma rows)
+    let rows = kura::d3d11::format::pitch_rows(fmt, w, h).1;
     (size > 0 && size <= MAX_BLOB as u64 && rows > 0).then(|| (size as u32, rows))
 }
 
@@ -552,11 +554,12 @@ fn MFCreateDXGISurfaceBuffer(c: &mut Ctx) -> u32 {
     }
 }
 
-/// The DXGI format the reader makes textures of for an output FOURCC (RGB32, ARGB32).
+/// The DXGI format the reader makes textures of for an output FOURCC (NV12, RGB32, ARGB32).
 pub fn format_of(sub: u32) -> Option<u32> {
     match sub {
         source::RGB32 => Some(88),
         source::ARGB32 => Some(87),
+        source::NV12 => Some(103),
         _ => None,
     }
 }
@@ -571,9 +574,10 @@ pub fn frame_buffer(c: &mut Ctx, dev: u32, w: u32, h: u32, fmt: u32, bytes: &[u8
     // (the initial data stays the buffer's copy: kura may read it after CreateTexture2D)
     let data = mem::heap_alloc(max, false);
     mem::write(data, &bytes[..max as usize]);
-    // D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET (the video
-    // processor's output)
-    let tex = new_texture(c, dev, w, h, fmt, 0, 0x28, 0, Some((data, max / rows)));
+    // D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, and D3D11_BIND_RENDER_TARGET for RGB
+    // (the video processor's output; NV12 is the decoder's, which kura draws no target of)
+    let bind = if fmt == 103 { 0x8 } else { 0x28 };
+    let tex = new_texture(c, dev, w, h, fmt, 0, bind, 0, Some((data, max / rows)));
     let b = if tex != 0 { new_buffer(c, tex, 0, false, true, Some(data)) } else { None };
     if b.is_none() {
         release(c, tex);
@@ -629,7 +633,10 @@ mod tests {
     fn reader_formats() {
         assert_eq!(format_of(source::RGB32), Some(88));
         assert_eq!(format_of(source::ARGB32), Some(87));
-        for f in source::DECODED.iter().filter(|&&f| !matches!(f, source::RGB32 | source::ARGB32)) {
+        assert_eq!(format_of(source::NV12), Some(103));
+        // (NV12: w x h luma, w x h / 2 chroma rows, w a row)
+        assert_eq!(layout(103, 64, 48), Some((64 * 72, 72)));
+        for f in source::DECODED.iter().filter(|&&f| !matches!(f, source::RGB32 | source::ARGB32 | source::NV12)) {
             assert_eq!(format_of(*f), None);
         }
         assert_eq!(layout(0, 4, 4), None, "an unknown format");

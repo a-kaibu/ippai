@@ -244,6 +244,9 @@ pub struct Texture {
 
 /// The page's texels are the guest's bytes (read back as they are).
 fn holds_bits(t: &Texture) -> bool {
+    if t.fmt == check::NV12 {
+        return false;
+    }
     match format::info(t.fmt) {
         Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0 && !f.no_alpha,
         None => format::page_bpp(t.page) == 4,
@@ -252,9 +255,10 @@ fn holds_bits(t: &Texture) -> bool {
 
 /// The guest's bytes are kept beside the page's texels: a format the page converts (and
 /// 32-bit float RGBA, kept as halves on a device without float32-filterable), of a texture
-/// nothing but uploads and copies write (no render target, depth or UAV binding).
+/// nothing but uploads and copies write (no render target, depth or UAV binding); NV12's (the
+/// page has its luma plane, views of the chroma one a texture of their own: `nv12_view_sync`).
 fn keeps_bits(t: &Texture) -> bool {
-    (!holds_bits(t) || t.page == format::P_RGBA32F) && t.bind & 0xe0 == 0 && !format::is_depth(t.page)
+    t.fmt == check::NV12 || (!holds_bits(t) || t.page == format::P_RGBA32F) && t.bind & 0xe0 == 0 && !format::is_depth(t.page)
 }
 
 /// A subresource's (level, layer or 0 for 3D, width, height, slices).
@@ -1334,6 +1338,10 @@ unsafe fn upload_texture(t: &mut Texture, sub: u32, mem: usize, pitch: u32, slic
         return;
     }
     let (level, layer, lw, lh, ld) = sub_size(t, sub);
+    // (NV12: whole subresources only, its rows the luma then the chroma ones)
+    if t.fmt == check::NV12 && bx.is_some_and(|b| b[..2] != [0, 0] || b[3] < lw || b[4] < lh) {
+        return;
+    }
     let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, lw, lh, ld]);
     // (2D: one slice, whatever the box's front and back)
     let (z0, z1) = if t.dim == 3 { (z0.min(ld), z1.min(ld)) } else { (0, 1) };
@@ -2565,6 +2573,20 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
     if out == 0 {
         return S_FALSE;
     }
+    // NV12's chroma plane (an R8G8 view): a texture of its own, w / 2 x h / 2, copied from the
+    // texture's bytes when they change (as a buffer view's)
+    if r.fmt == check::NV12 && matches!(v.fmt, 49 | 50) {
+        let (w, h, layers) = (t.w, t.h, t.layers);
+        let tex = new_texture(d, 2, w / 2, h / 2, layers, 1, v.fmt, 0, 8, false, 1);
+        let tid = d.id_of(tex);
+        d.bind(tid);
+        d.release(tid);
+        d.bind(rid);
+        let buf = Some(BufSrc { buf: rid, off: 0, bytes: 0, last: Vec::new() });
+        let o = d.new_obj(IF_SRV, Data::View(View { res: tid, buf, ..v }));
+        wrp(out, 0, o);
+        return S_OK;
+    }
     d.bind(rid);
     let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::View(v));
     wrp(out, 0, o);
@@ -2591,10 +2613,45 @@ unsafe fn create_buffer_srv(d: &mut D11, rid: u32, bv: check::BufView, out: u32)
     S_OK
 }
 
+/// An NV12 texture's chroma view (see create_view): its texture brought up to date with the
+/// chroma rows of the texture's bytes, every layer.
+fn nv12_view_sync(d: &mut D11, view: u32) {
+    let Some(Data::View(v)) = d.objs.get(&view).map(|o| &o.data) else { return };
+    let (Some(b), res) = (&v.buf, v.res) else { return };
+    let Some(Data::Texture(t)) = d.objs.get(&b.buf).map(|o| &o.data) else { return };
+    let (pitch, rows) = format::pitch_rows(t.fmt, t.w, t.h);
+    let luma = (pitch * t.h) as usize;
+    let chroma = (pitch * (rows - t.h)) as usize;
+    let mut now = vec![0u8; chroma * t.layers as usize];
+    for l in 0..t.layers {
+        if let Some(bits) = t.bits.get(&l) {
+            let n = chroma.min(bits.len().saturating_sub(luma));
+            now[l as usize * chroma..l as usize * chroma + n].copy_from_slice(&bits[luma..luma + n]);
+        }
+    }
+    if now == b.last {
+        return;
+    }
+    let layers = t.layers;
+    if let Some(Data::Texture(x)) = d.objs.get_mut(&res).map(|o| &mut o.data) {
+        for l in 0..layers {
+            unsafe { upload_texture(x, l, now.as_ptr() as usize + l as usize * chroma, pitch, 0, None) };
+        }
+    }
+    if let Some(Data::View(v)) = d.objs.get_mut(&view).map(|o| &mut o.data) {
+        if let Some(b) = v.buf.as_mut() {
+            b.last = now;
+        }
+    }
+}
+
 /// A buffer view's texture, brought up to date with its buffer.
 fn buffer_view_sync(d: &mut D11, view: u32) {
     let Some(Data::View(v)) = d.objs.get(&view).map(|o| &o.data) else { return };
     let Some(b) = &v.buf else { return };
+    if matches!(d.objs.get(&b.buf).map(|o| &o.data), Some(Data::Texture(_))) {
+        return nv12_view_sync(d, view);
+    }
     let Some(Data::Buffer(buf)) = d.objs.get(&b.buf).map(|o| &o.data) else { return };
     if buf.mem == 0 {
         return;
@@ -3495,6 +3552,7 @@ unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub:
         return;
     }
     let (Some(fa), Some(fb)) = (format::info(a.fmt), format::info(b.fmt)) else { return };
+    let (fa_nv12, fb_nv12) = (a.fmt == check::NV12, b.fmt == check::NV12);
     let (sl, slayer, sw, sh, sd) = sub_size(b, ssub);
     let (dl, dlayer, dw, dh, dd) = sub_size(a, dsub);
     let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, sw, sh, sd]);
@@ -3513,6 +3571,10 @@ unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub:
         if !whole {
             return;
         }
+    }
+    // (NV12: whole subresources only, as UpdateSubresource)
+    if (fa_nv12 || fb_nv12) && !whole {
+        return;
     }
     texture_written(d, di);
     let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) else { return };

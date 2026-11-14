@@ -32,16 +32,30 @@ const MISC_KEYEDMUTEX: u32 = 0x100;
 const MISC_GDI: u32 = 0x200;
 
 /// Windows' row for a DXGI format (None: no such format). The video formats of planes or of
-/// pixel pairs (NV12..IA44, 103-112: optional, a device without video support answers E_FAIL for
+/// pixel pairs (P010..IA44, 104-112: optional, a device without video support answers E_FAIL for
 /// them) as that device has them: the page keeps none of them, and a texture said to work but
 /// kept nowhere would draw black. (AYUV, Y410, Y416, P8, A8P8 and B4G4R4A4 it keeps: texels of
-/// one size, their bytes kept for Map and copies.)
+/// one size, their bytes kept for Map and copies.) NV12 it keeps (its bytes, the luma plane as
+/// an R8 texture and the chroma one as R8G8 for views of them, see `nv12`): Windows' row less
+/// what the page does not do with it (render targets, blending, UAVs, multisampling, the video
+/// processor's input and output: no ID3D11VideoDevice).
 pub fn format(fmt: u32) -> Option<(bool, u32, bool, u32, [u8; 3], u32)> {
-    FORMATS.get(fmt as usize).copied().filter(|_| fmt != 0).map(|f| if UNKEPT.contains(&fmt) { (false, 0, false, 0, [0; 3], f.5) } else { f })
+    FORMATS.get(fmt as usize).copied().filter(|_| fmt != 0).map(|f| {
+        if fmt == NV12 {
+            (true, f.1 & NV12_SUPPORT, false, 0, [0; 3], f.5 & !winfmt::RT)
+        } else if UNKEPT.contains(&fmt) {
+            (false, 0, false, 0, [0; 3], f.5)
+        } else {
+            f
+        }
+    })
 }
 
 /// The video formats the page keeps no texture of (see `format`)
-pub const UNKEPT: std::ops::RangeInclusive<u32> = 103..=112;
+pub const UNKEPT: std::ops::RangeInclusive<u32> = 104..=112;
+pub const NV12: u32 = 103;
+/// D3D11_FORMAT_SUPPORT_TEXTURE2D, SHADER_LOAD, SHADER_SAMPLE, CPU_LOCKABLE, SHADER_GATHER
+const NV12_SUPPORT: u32 = 0x20 | 0x100 | 0x200 | 0x2_0000 | 0x80_0000;
 
 /// CheckFormatSupport: the bits, or None (E_FAIL)
 pub fn support(fmt: u32) -> Option<u32> {
@@ -103,6 +117,10 @@ pub fn texture(t: &Tex, init: bool) -> Result<u32, u32> {
         return bad;
     }
     let mips = if t.mips == 0 { max } else { t.mips };
+    // (NV12: 2D, even sizes, one level, one sample, as Windows takes it)
+    if t.fmt == NV12 && (t.dim != 2 || t.w % 2 != 0 || t.h % 2 != 0 || mips != 1 || t.samples != 1) {
+        return bad;
+    }
     let need = |case: u32| cases & case != 0;
     // (the probe asked for mips, cubes, 1D and 3D textures with a shader resource bind, and
     // for multisampling with a render target one: without that bind, what the format supports)
@@ -599,7 +617,9 @@ pub fn video_views(fmt: u32) -> Option<&'static [u32]> {
         100 => &[28, 30],
         101 => &[24, 25],
         102 => &[11, 12],
-        103..=114 => &[],
+        // (NV12: the luma plane as R8, the chroma one as R8G8; UNORM or UINT)
+        103 => &[61, 62, 49, 50],
+        104..=114 => &[],
         _ => return None,
     })
 }
@@ -658,6 +678,10 @@ pub fn view(kind: u32, r: &Res, desc: Option<&[u32]>) -> Result<View, u32> {
     let cast = r.backbuffer && srgb_twin(fmt, r.fmt);
     // (views of video formats: of the formats of their texels, AYUV as R8G8B8A8, Y410 as
     // R10G10B10A2, Y416 as R16G16B16A16, UNORM or UINT; none in the format itself)
+    // (NV12: shader resource views only, see `format`)
+    if r.fmt == NV12 && kind != SRV {
+        return bad;
+    }
     if let Some(ok) = video_views(r.fmt) {
         if !ok.contains(&fmt) {
             return bad;
