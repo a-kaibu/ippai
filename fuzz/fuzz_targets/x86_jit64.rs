@@ -151,6 +151,8 @@ fuzz_target!(|data: &[u8]| {
     let blocks = 1 + (state[1] & 3) as usize;
     jit::long::DEBUG_BLOCKS.store(blocks, Relaxed);
     jit::long::DEBUG_ALL_REGS.store(state[2] & 0x80 != 0, Relaxed);
+    // (and the blocks nested or dispatched on a number: jit::long::STRUCTURED)
+    jit::long::STRUCTURED.store(state[2] & 0x40 != 0, Relaxed);
     let mut window = Window((LO..HI).map(pattern).collect());
     window.0[..code.len()].copy_from_slice(code);
     let end = LO + code.len() as u32;

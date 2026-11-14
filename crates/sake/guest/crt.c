@@ -235,9 +235,20 @@ void *bsearch(const void *key, const void *base, size_t num, size_t w, cmp_fn f)
 }
 
 /* realloc of a small block (Lua reallocates its objects all the time): within its 16-byte
- * class in place, else a new small block; anything else is the host's */
+ * class in place, else a new small block; anything else is the host's. On x86 host_malloc and
+ * host_free are fast.rs's stubs; on x64 they are the traps, and the fast paths are malloc and
+ * free below (a trap per new Lua object made x64 Lua 4x slower than x86). */
+#ifdef __x86_64__
+void *malloc(size_t n);
+void free(void *p);
+#define small_malloc malloc
+#define small_free free
+#else
+#define small_malloc host_malloc
+#define small_free host_free
+#endif
 void *realloc(void *p, size_t n) {
-    if (!p) return host_malloc(n);
+    if (!p) return small_malloc(n);
     unsigned *h = (unsigned *)p;
     if (h[-1] != SLAB || !n) return host_realloc(p, n);
     unsigned old = h[-2], cap = (old + 15) >> 4;
@@ -246,10 +257,10 @@ void *realloc(void *p, size_t n) {
         h[-2] = n;
         return p;
     }
-    void *q = host_malloc(n);
+    void *q = small_malloc(n);
     if (!q) return 0;
     memmove(q, p, old < n ? old : n);
-    host_free(p);
+    small_free(p);
     return q;
 }
 

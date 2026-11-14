@@ -180,7 +180,7 @@ pub(crate) fn stale_hit(a: u32) {
     });
     if !parked {
         note_stale(a, "since translated");
-        drop_states();
+        drop_states(a as usize >> 12, a as usize >> 12);
     } else if new {
         // (code not seen before: counted, as one that keeps changing goes to the interpreter)
         note_stale(a, "since translated");
@@ -243,6 +243,7 @@ fn reinstate(st: &mut State, a: u32) -> bool {
     if let Some(f) = w.func {
         st.fns.insert(f);
     }
+    st.code_of.entry(w.base).or_insert_with(|| w.code.clone());
     st.roots.insert(w.base, w.roots);
     true
 }
@@ -411,6 +412,12 @@ struct State {
     since_reclaim: u32,
     /// translations of code on W|X pages checked on entry, live and parked (park.rs)
     park: park::Parking,
+    /// the guest code each entry's module (by its first table index) was made from: what goes
+    /// when some of it changes (drop_pages)
+    code_of: HashMap<u32, Vec<(u32, u32)>>,
+    /// the starts of every block a loaded translation has, entries or not (a 64-bit region's
+    /// blocks inside loops have no hash entry): what new regions may take in as translated
+    translated: HashSet<u32>,
 }
 
 /// Loads between two looks for modules nothing refers to any more (reclaim); IPPAI_JIT_RECLAIM
@@ -510,6 +517,84 @@ struct Shared {
     sites: Vec<u32>,
     /// translated with the MXCSR flag checks (jit::Region::exact)
     exact: bool,
+    /// made after the ones with smaller numbers (share_seq): the oldest go first
+    seq: u64,
+}
+
+impl Shared {
+    /// What it holds of sake's heap.
+    fn size(&self) -> usize {
+        self.bytes.len() + self.text.len() + (self.starts.len() + self.code.len()) * 8 + self.sites.len() * 4
+    }
+}
+
+/// SHARED's bytes at most (module code, guest text and tables): past it the oldest go (each
+/// thread keeps the modules it loaded; another thread then translates that code itself).
+const SHARED_MAX: usize = 48 << 20;
+/// Builds of one key kept (regions and functions of code that keeps changing: Mono, packers).
+const SHARED_PER_KEY: usize = 4;
+
+/// SHARED's size in bytes ([`Shared::size`]), kept as entries come and go.
+static SHARED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Adds `r` to SHARED under `key`: an older build of the same code (the same bytes) goes, so
+/// do the oldest builds past SHARED_PER_KEY, and the oldest of all past SHARED_MAX.
+fn share_push(key: Vec<u32>, r: Arc<Shared>) {
+    let mut g = SHARED.lock().unwrap();
+    let map = g.get_or_insert_with(HashMap::new);
+    let list = map.entry(key).or_default();
+    let mut freed = 0;
+    list.retain(|o| {
+        let keep = !(o.exact == r.exact && o.build < r.build && o.text == r.text);
+        if !keep {
+            freed += o.size();
+        }
+        keep
+    });
+    let added = r.size();
+    list.push(r);
+    while list.len() > SHARED_PER_KEY {
+        freed += list.remove(0).size();
+    }
+    let total = SHARED_BYTES.fetch_add(added, Ordering::Relaxed) + added - freed;
+    SHARED_BYTES.fetch_sub(freed, Ordering::Relaxed);
+    if total <= SHARED_MAX {
+        return;
+    }
+    // the oldest (down to 3/4: not again at the next build)
+    let mut all: Vec<(u64, usize)> = map.values().flatten().map(|s| (s.seq, s.size())).collect();
+    all.sort_unstable();
+    let mut over = total - SHARED_MAX * 3 / 4;
+    let mut cut = 0;
+    for &(seq, n) in &all {
+        if over == 0 {
+            break;
+        }
+        cut = seq + 1;
+        over = over.saturating_sub(n);
+    }
+    let mut gone = (0, 0);
+    map.values_mut().for_each(|l| {
+        l.retain(|s| {
+            let keep = s.seq >= cut;
+            if !keep {
+                gone.0 += 1;
+                gone.1 += s.size();
+            }
+            keep
+        })
+    });
+    map.retain(|_, l| !l.is_empty());
+    SHARED_BYTES.fetch_sub(gone.1, Ordering::Relaxed);
+    if stats() {
+        eprintln!("vnjit: {} shared builds dropped ({} KiB; over {} MiB)", gone.0, gone.1 >> 10, SHARED_MAX >> 20);
+    }
+}
+
+/// The order shared builds are made in ([`Shared::seq`]).
+fn share_seq() -> u64 {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Shared regions by their roots.
@@ -552,7 +637,7 @@ fn loaded(base: i32, n: u32, bytes: usize) -> i32 {
 fn shared_size() -> (usize, usize) {
     let g = SHARED.lock().unwrap();
     let Some(m) = g.as_ref() else { return (0, 0) };
-    m.values().flatten().fold((0, 0), |(n, b), r| (n + 1, b + r.bytes.len() + r.text.len() + (r.starts.len() + r.code.len()) * 8 + r.sites.len() * 4))
+    m.values().flatten().fold((0, 0), |(n, b), r| (n + 1, b + r.size()))
 }
 
 fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
@@ -586,8 +671,8 @@ fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) 
 
 fn share_build(mem: &mut Linear, key: Vec<u32>, bytes: Vec<u8>, region: &jit::Region, build: u32) {
     let Some(text) = region_text(mem, region) else { return };
-    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone(), exact: region.exact });
-    SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(key).or_default().push(r);
+    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone(), exact: region.exact, seq: share_seq() });
+    share_push(key, r);
 }
 
 /// The key of the function at `eip` among the shared modules (regions use their roots).
@@ -745,7 +830,8 @@ fn drop_translations() {
     }
     CODE_RANGES.lock().unwrap().clear();
     *SHARED.lock().unwrap() = None;
-    GENERATION.fetch_add(1, Ordering::SeqCst);
+    SHARED_BYTES.store(0, Ordering::Relaxed);
+    changed(0, u32::MAX);
 }
 
 /// The guest's pages `addr..addr + len` may get new code (made writable, unmapped, mapped over,
@@ -763,7 +849,7 @@ pub fn code_changed(addr: usize, len: usize) {
         }
     }
     if hit {
-        drop_states();
+        drop_states(lo, hi);
         if stats() {
             eprintln!("vnjit code changed at {addr:#x}+{len:#x}: translations dropped");
         }
@@ -783,24 +869,124 @@ fn mx_check() -> bool {
     true
 }
 
-/// Every thread's translations go (each drops its own at its next run, check_generation);
-/// shared builds stay, each found again only by its code's bytes.
-fn drop_states() {
-    for w in &CODE_PAGES {
-        w.store(0, Ordering::Relaxed);
+/// The translations made from code on pages `lo..=hi` go, every thread's (each drops its own
+/// at its next run: check_generation, drop_pages); shared builds stay, each found again only
+/// by its code's bytes.
+fn drop_states(lo: usize, hi: usize) {
+    for p in lo..=hi.min((1 << 19) - 1) {
+        CODE_PAGES[p >> 5].fetch_and(!(1 << (p & 31)), Ordering::Relaxed);
     }
-    CODE_RANGES.lock().unwrap().clear();
-    GENERATION.fetch_add(1, Ordering::SeqCst);
+    {
+        let (a, e) = ((lo as u64) << 12, ((hi as u64) + 1) << 12);
+        CODE_RANGES.lock().unwrap().retain(|&s, &mut end| (end as u64) <= a || (s as u64) >= e);
+    }
+    changed(lo as u32, hi as u32);
 }
 
-/// Drops this thread's translations if code changed since it made them.
+/// The code changes since a thread last looked: (generation, first page, last page), the
+/// newest last; pages 0..=u32::MAX: everything. Kept for [`CHANGES_KEPT`] changes (a thread
+/// that missed one drops all its translations).
+static CHANGES: Mutex<std::collections::VecDeque<(u32, u32, u32)>> = Mutex::new(std::collections::VecDeque::new());
+const CHANGES_KEPT: usize = 1024;
+
+/// A new generation for a change of pages `lo..=hi`.
+fn changed(lo: u32, hi: u32) {
+    let mut c = CHANGES.lock().unwrap();
+    let g = GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    c.push_back((g, lo, hi));
+    while c.len() > CHANGES_KEPT {
+        c.pop_front();
+    }
+}
+
+/// The pages changed in generations `seen + 1 ..= now` (None: all of it, or not known).
+fn changes_since(seen: u32, now: u32) -> Option<Vec<(u32, u32)>> {
+    let c = CHANGES.lock().unwrap();
+    // (every generation in between must still be listed)
+    if !c.front().is_some_and(|f| f.0.wrapping_sub(seen) as i32 <= 1) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for &(g, lo, hi) in c.iter() {
+        let d = g.wrapping_sub(seen);
+        if d == 0 || d > now.wrapping_sub(seen) {
+            continue;
+        }
+        if lo == 0 && hi == u32::MAX {
+            return None;
+        }
+        out.push((lo, hi));
+    }
+    Some(out)
+}
+
+/// Drops this thread's translations if code changed since it made them: the ones made from
+/// the changed pages (all of them when that is not known, or while the compiler thread is
+/// translating for this thread).
 fn check_generation() {
     mx_check();
     let g = GENERATION.load(Ordering::Relaxed);
-    // (| not ||: the flag is taken either way)
-    if (SEEN.with(|s| s.replace(g)) != g) | FRESH_TABLE.with(|f| f.take()) {
+    let seen = SEEN.with(|s| s.replace(g));
+    let fresh = FRESH_TABLE.with(|f| f.take());
+    if seen == g && !fresh {
+        return;
+    }
+    let kept = !fresh && changes_since(seen, g).is_some_and(|pages| STATE.with(|s| s.borrow_mut().as_mut().is_none_or(|st| drop_pages(st, &pages))));
+    if !kept {
         STATE.with(|s| *s.borrow_mut() = None);
     }
+}
+
+/// Removes the translations made from code on the pages `pages` (first, last) from this
+/// thread's state: their hash and call cache entries (the modules go at the next reclaim),
+/// and what was known of their addresses (so they are translated again). False when it
+/// cannot (a translation in flight may be of the old code): the whole state goes then.
+fn drop_pages(st: &mut State, pages: &[(u32, u32)]) -> bool {
+    let hit = |a: u32, n: u32| {
+        let (p0, p1) = (a >> 12, a.saturating_add(n.max(1) - 1) >> 12);
+        pages.iter().any(|&(lo, hi)| p0 <= hi && p1 >= lo)
+    };
+    st.known.retain(|&a| !hit(a, 1));
+    let bad: HashSet<u32> = st.code_of.iter().filter(|(_, c)| c.iter().any(|&(a, n)| hit(a, n))).map(|(&b, _)| b).collect();
+    if bad.is_empty() {
+        return true;
+    }
+    if !st.pending.is_empty() {
+        return false;
+    }
+    let mask = (1u32 << jit::ENTRY_SHIFT) - 1;
+    let (gone, kept): (Vec<[u32; 2]>, Vec<[u32; 2]>) = st.hash.iter().filter(|e| e[0] != 0).partition(|e| bad.contains(&(e[1] & mask)));
+    st.hash.iter_mut().for_each(|e| *e = [0, 0]);
+    for e in &kept {
+        insert(&mut st.hash, e[0], e[1]);
+    }
+    st.used = kept.len();
+    for c in st.calls.iter_mut().filter(|c| c[0] != 0 && bad.contains(&(c[1] & mask))) {
+        *c = [0, 0];
+    }
+    for e in &gone {
+        st.known.remove(&e[0]);
+        st.fns.remove(&e[0]);
+        st.fn_builds.remove(&e[0]);
+    }
+    let fns = &st.fns;
+    st.site_fn.retain(|_, l| {
+        l.retain(|f| fns.contains(f));
+        !l.is_empty()
+    });
+    for b in &bad {
+        if let Some(c) = st.code_of.get(b) {
+            for &(a, _) in c {
+                st.translated.remove(&a);
+            }
+        }
+        st.code_of.remove(b);
+        st.roots.remove(b);
+    }
+    if stats() {
+        eprintln!("vnjit: {} translations made from changed code dropped ({} entries), {} kept", bad.len(), gone.len(), st.code_of.len());
+    }
+    true
 }
 
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
@@ -844,6 +1030,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 loads: Vec::new(),
                 since_reclaim: 0,
                 park: park::Parking::default(),
+                code_of: HashMap::new(),
+                translated: HashSet::new(),
             }
         });
         f(st)
@@ -940,6 +1128,9 @@ fn init_flags() {
         jit::long::DEBUG_INS.store(num("IPPAI_JIT64_INS"), std::sync::atomic::Ordering::Relaxed);
         jit::long::DEBUG_BLOCKS.store(num("IPPAI_JIT64_BLOCKS"), std::sync::atomic::Ordering::Relaxed);
         jit::long::DEBUG_CHECK.store(num("IPPAI_JIT64_CHECK") != 0, std::sync::atomic::Ordering::Relaxed);
+        // (IPPAI_JIT64_STRUCT=1: a region's blocks nested (jit::long::STRUCTURED), for A/B)
+        jit::long::STRUCTURED.store(num("IPPAI_JIT64_STRUCT") != 0, std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_NO_SIDE.store(num("IPPAI_JIT64_NO_SIDE") != 0, std::sync::atomic::Ordering::Relaxed);
         for name in std::env::var("IPPAI_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
             if !jit::long::debug_off_named(name) {
                 eprintln!("IPPAI_JIT64_OFF: no mnemonic {name}");
@@ -1175,7 +1366,7 @@ fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)], co
     note_load(st, base, 1, bytes.len());
     let base = base as u32;
     let entries: Vec<(u32, u32)> = starts.iter().filter(|s| !st.fns.contains(&s.0)).map(|&(a, i)| (a, base | i << jit::ENTRY_SHIFT)).collect();
-    enter(st, base, roots.clone(), starts);
+    enter(st, base, roots.clone(), starts, code);
     track_wx(st, base, entries, roots, None, code);
     true
 }
@@ -1192,7 +1383,9 @@ fn grow(st: &mut State, n: usize) {
 }
 
 /// Points the hash table at the blocks of the region at table index `base`.
-fn enter(st: &mut State, base: u32, roots: Vec<u32>, starts: &[(u32, u32)]) {
+fn enter(st: &mut State, base: u32, roots: Vec<u32>, starts: &[(u32, u32)], code: &[(u32, u32)]) {
+    st.translated.extend(code.iter().map(|c| c.0));
+    st.code_of.insert(base, code.to_vec());
     for &(a, _) in starts {
         st.known.insert(a);
     }
@@ -1385,7 +1578,7 @@ fn load_saved(st: &mut State, i: usize) -> bool {
     }
     let e = &s.entries[i];
     mark_code(&e.code);
-    enter(st, base as u32 + s.offsets[i], e.roots.clone(), &e.starts);
+    enter(st, base as u32 + s.offsets[i], e.roots.clone(), &e.starts, &e.code);
     true
 }
 
@@ -1921,7 +2114,12 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64], hops: u32) {
         return;
     }
     st.hot.remove(&(from, u32::MAX));
-    let Some(roots) = st.roots.get(&from) else { return };
+    let Some(roots) = st.roots.get(&from) else {
+        if stats() {
+            eprintln!("vnjit64 merge from {from:#x}: no region there");
+        }
+        return;
+    };
     let mut roots = roots.clone();
     let mut new = Vec::new();
     let mut i = 0;
@@ -1934,6 +2132,9 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64], hops: u32) {
         i = k;
     }
     if new.is_empty() || roots.len() + new.len() > 32 {
+        if stats() {
+            eprintln!("vnjit64 merge from {from:#x} (roots {roots:x?}): {} new targets", new.len());
+        }
         return;
     }
     let to = new[0];
@@ -1952,13 +2153,16 @@ fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
     let full: Vec<u64> = roots.iter().map(|&r| r as u64 | (cpu.rip_hi as u64) << 32).collect();
     let mut m = Module { name: Some(format!("x64_{:x}{:08x}_{}", cpu.rip_hi, roots[0], roots.len())), ..Module::default() };
-    let (misses, known, hash) = (&st.misses, &st.known, &st.hash);
+    let (misses, known, hash, translated) = (&st.misses, &st.known, &st.hash, &st.translated);
     let Some(region) = jit::long::translate_region64(&mut m, &mut Linear, &full, (lo, hi), |a, sure| {
-        debug_allowed(a) && !(a >= lo && a < hi) && (misses.contains_key(&a) || compiled(hash, a) || sure && !known.contains(&a))
+        debug_allowed(a) && !(a >= lo && a < hi) && (misses.contains_key(&a) || compiled(hash, a) || translated.contains(&a) || sure && !known.contains(&a))
     }) else {
         return;
     };
     if !region.starts.iter().any(|s| s.0 == to) {
+        if stats() {
+            eprintln!("vnjit64 merge {from:#x} -> {to:#x} refused: not an entry of the region ({} entries)", region.starts.len());
+        }
         return; // too big already
     }
     st.merges += 1;
@@ -2492,8 +2696,8 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>
     }
     if ok {
         keep_profile(&mut region);
-        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites, exact: region.exact });
-        SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(fn_key(eip).to_vec()).or_default().push(r);
+        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites, exact: region.exact, seq: share_seq() });
+        share_push(fn_key(eip).to_vec(), r);
         maybe_save();
     }
     ok
@@ -2528,7 +2732,7 @@ fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &
     for &(a, _) in starts {
         st.known.insert(a);
     }
-    enter(st, base as u32, vec![eip], &[]);
+    enter(st, base as u32, vec![eip], &[], code);
     grow(st, starts.len());
     let mut entries = Vec::new();
     for (i, &(a, _)) in starts.iter().enumerate() {
@@ -3203,5 +3407,136 @@ mod late_tests {
                 assert_eq!(s.offsets[i], if i % 2 == 1 { 1 } else { 0 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod invalidate_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A region at table index `base`: entries at `starts`, made from `code`.
+    fn put(st: &mut State, base: u32, starts: &[u32], code: &[(u32, u32)]) {
+        let s: Vec<(u32, u32)> = starts.iter().enumerate().map(|(i, &a)| (a, i as u32)).collect();
+        enter(st, base, vec![starts[0]], &s, code);
+    }
+
+    fn slot_of(st: &State, a: u32) -> Option<u32> {
+        let mask = st.hash.len() as u32 - 1;
+        let mut h = jit::dispatch::slot(a, mask);
+        while st.hash[h as usize][0] != 0 {
+            if st.hash[h as usize][0] == a {
+                return Some(st.hash[h as usize][1] & ((1 << jit::ENTRY_SHIFT) - 1));
+            }
+            h = (h + 1) & mask;
+        }
+        None
+    }
+
+    #[test]
+    fn a_page_written_drops_only_what_was_made_from_it() {
+        with_state(|st| {
+            // region 1 on pages 0x401 and 0x402, region 2 on 0x500, region 3 on 0x401 too
+            put(st, 1, &[0x401100, 0x402010], &[(0x401100, 0x20), (0x401ff0, 0x30)]);
+            put(st, 2, &[0x500000, 0x500040], &[(0x500000, 0x60)]);
+            put(st, 3, &[0x401800], &[(0x401800, 8)]);
+            st.calls[0] = [0x401100, 1];
+            st.calls[1] = [0x500000, 2];
+            assert!(drop_pages(st, &[(0x402, 0x402)]));
+            // (region 1 runs into page 0x402: all of it goes, region 3 beside it stays)
+            assert_eq!(slot_of(st, 0x401100), None);
+            assert_eq!(slot_of(st, 0x402010), None);
+            assert_eq!(slot_of(st, 0x401800), Some(3));
+            assert_eq!(slot_of(st, 0x500040), Some(2));
+            assert_eq!(st.calls[0], [0, 0]);
+            assert_eq!(st.calls[1], [0x500000, 2]);
+            assert!(!st.code_of.contains_key(&1) && !st.translated.contains(&0x401100) && st.translated.contains(&0x401800));
+            assert!(!st.known.contains(&0x401100), "translated again when it runs");
+            // nothing made from page 0x600: nothing goes
+            assert!(drop_pages(st, &[(0x600, 0x6ff)]));
+            assert_eq!(st.used, 3);
+            // a translation in flight may be of the old code: the whole state goes instead
+            st.pending.insert(0x500000);
+            assert!(!drop_pages(st, &[(0x500, 0x500)]));
+        });
+        STATE.with(|s| *s.borrow_mut() = None);
+    }
+
+    #[test]
+    fn changes_since_a_generation() {
+        let g0 = GENERATION.load(Ordering::SeqCst);
+        changed(0x10, 0x11);
+        changed(0x20, 0x20);
+        let g = GENERATION.load(Ordering::SeqCst);
+        let c = changes_since(g0, g).unwrap();
+        assert!(c.contains(&(0x10, 0x11)) && c.contains(&(0x20, 0x20)));
+        assert_eq!(changes_since(g, g).unwrap(), vec![]);
+        // one generation forgotten: not known
+        for _ in 0..CHANGES_KEPT + 1 {
+            changed(0x30, 0x30);
+        }
+        assert!(changes_since(g, GENERATION.load(Ordering::SeqCst)).is_none());
+        // everything changed: not known either
+        let g1 = GENERATION.load(Ordering::SeqCst);
+        changed(0, u32::MAX);
+        assert!(changes_since(g1, GENERATION.load(Ordering::SeqCst)).is_none());
+    }
+
+    proptest! {
+        /// Any regions, any written pages: what stays was made from none of them, and every
+        /// entry of a region made from none of them stays.
+        #[test]
+        fn drop_pages_property(regions in proptest::collection::vec(proptest::collection::vec((0u32..64, 1u32..0x3000), 1..4), 1..24), pages in proptest::collection::vec((0u32..64, 0u32..3), 1..4)) {
+            let pages: Vec<(u32, u32)> = pages.iter().map(|&(p, n)| (0x400 + p, 0x400 + p + n)).collect();
+            with_state(|st| {
+                let mut all = Vec::new();
+                for (i, r) in regions.iter().enumerate() {
+                    let base = 1 + i as u32;
+                    // (distinct entry addresses per region)
+                    let code: Vec<(u32, u32)> = r.iter().map(|&(p, n)| (0x40_0000 + p * 0x1000 + i as u32 * 16, n)).collect();
+                    let starts: Vec<u32> = code.iter().map(|c| c.0).collect();
+                    put(st, base, &starts, &code);
+                    all.push((base, starts, code));
+                }
+                prop_assert!(drop_pages(st, &pages));
+                let hit = |a: u32, n: u32| pages.iter().any(|&(lo, hi)| a >> 12 <= hi && (a + n - 1) >> 12 >= lo);
+                for (base, starts, code) in &all {
+                    let bad = code.iter().any(|&(a, n)| hit(a, n));
+                    for &a in starts {
+                        match slot_of(st, a) {
+                            Some(s) => prop_assert!(!all.iter().find(|r| r.0 == s).unwrap().2.iter().any(|&(a, n)| hit(a, n)), "{a:#x} still goes to changed code"),
+                            None => prop_assert!(bad || all.iter().any(|r| r.0 > *base && r.1.contains(&a)), "{a:#x} of an untouched region dropped"),
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+            STATE.with(|s| *s.borrow_mut() = None);
+        }
+    }
+
+    #[test]
+    fn shared_builds_are_bounded() {
+        let mk = |text: u8, build: u32, n: usize| Arc::new(Shared { bytes: vec![0; n], starts: vec![], code: vec![], text: vec![text], build, sites: vec![], exact: false, seq: share_seq() });
+        let key = vec![0xdead_0000u32];
+        // a newer build of the same code takes the older one's place
+        share_push(key.clone(), mk(1, 1, 10));
+        share_push(key.clone(), mk(1, 2, 10));
+        let l = SHARED.lock().unwrap().as_ref().unwrap()[&key].clone();
+        assert_eq!(l.iter().map(|s| s.build).collect::<Vec<_>>(), vec![2]);
+        // other code (rewritten) is kept beside it, up to SHARED_PER_KEY builds
+        for t in 2..10 {
+            share_push(key.clone(), mk(t, 1, 10));
+        }
+        assert_eq!(SHARED.lock().unwrap().as_ref().unwrap()[&key].len(), SHARED_PER_KEY);
+        // the oldest go past SHARED_MAX
+        for i in 0..20u32 {
+            share_push(vec![0xbeef_0000 + i], mk(0, 1, 4 << 20));
+        }
+        assert!(SHARED_BYTES.load(Ordering::Relaxed) <= SHARED_MAX);
+        let total: usize = SHARED.lock().unwrap().as_ref().unwrap().values().flatten().map(|s| s.size()).sum();
+        assert_eq!(total, SHARED_BYTES.load(Ordering::Relaxed));
+        assert!(SHARED.lock().unwrap().as_ref().unwrap().contains_key(&vec![0xbeef_0000 + 19]), "the newest stays");
+        assert!(!SHARED.lock().unwrap().as_ref().unwrap().contains_key(&vec![0xbeef_0000]), "the oldest went");
     }
 }

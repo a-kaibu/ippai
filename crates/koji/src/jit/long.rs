@@ -216,6 +216,31 @@ struct Gen<'a> {
     watch_store: bool,
     /// the current instruction went to the interpreter (whose stores the host checks)
     fell_back: bool,
+    /// blocks laid out as nested wasm blocks and loops (structure.rs): a jump is a `br` to
+    /// its target's open label (`fwd`/`back`, by node), not a dispatch on L_BLK
+    structured: bool,
+    fwd: Vec<Option<u32>>,
+    back: Vec<Option<u32>>,
+    /// the block being emitted, and the node of each block's jump table (structured)
+    cur: usize,
+    table_node: BTreeMap<usize, usize>,
+    /// loop headers' side dispatches: (entry inside the loop, next node, the last hop)
+    side: BTreeMap<usize, Vec<(usize, usize, bool)>>,
+}
+
+impl super::structure::Nest for Gen<'_> {
+    fn code(&mut self) -> &mut Code {
+        &mut self.c
+    }
+    fn depth(&mut self) -> &mut u32 {
+        &mut self.depth
+    }
+    fn fwd(&mut self) -> &mut Vec<Option<u32>> {
+        &mut self.fwd
+    }
+    fn back(&mut self) -> &mut Vec<Option<u32>> {
+        &mut self.back
+    }
 }
 
 /// The registers `code` reads or writes (bit i: register i's local, L_R + i), and the ones
@@ -918,6 +943,33 @@ impl<'a> Gen<'a> {
             self.exit_to(target, 0);
             return;
         };
+        if self.structured {
+            let label = match (self.back[k], self.fwd[k]) {
+                (Some(p), _) => (p, true),
+                (None, Some(p)) => (p, false),
+                // (not a way the layout has: out, and back in through the exit's lookup if
+                // the target is one of the region's entries)
+                (None, None) => {
+                    self.exit_to(target, 0);
+                    return;
+                }
+            };
+            if self.blocks[k].flags_in {
+                self.flags_to_cpu();
+            }
+            if label.1 {
+                // a loop's next round: count down the budget
+                let b = cpu_off!(jit_budget);
+                self.c.get(L_CPU).get(L_CPU).load32(b).i32c(1).sub().store32(b);
+                self.c.get(L_CPU).load32(b).i32c(0).le_s().if_();
+                self.depth += 1;
+                self.exit_to(target, 0);
+                self.depth -= 1;
+                self.c.end();
+            }
+            self.c.br(self.depth - label.0);
+            return;
+        }
         if self.blocks[k].flags_in {
             self.flags_to_cpu();
         }
@@ -1982,6 +2034,13 @@ impl<'a> Gen<'a> {
                     return false;
                 }
                 self.read_op(0, 64);
+                // (a jump table's targets in the region: its dispatch node)
+                if let Some(p) = self.table_node.get(&self.cur).and_then(|&t| self.fwd[t]) {
+                    self.c.set(L_NT);
+                    self.flags_to_cpu();
+                    self.c.br(self.depth - p);
+                    return true;
+                }
                 self.exit_dyn(0);
                 true
             }
@@ -2283,6 +2342,299 @@ fn decode<M: Memory>(mem: &mut M, ip: u64, trap: (u32, u32)) -> Vec<Instruction>
 /// Translates the region at `roots` (full RIPs, one 4GB alias: the first's) into `module` as one
 /// function, entered at any of its blocks. `accept`: whether another block (by its low 32 bits)
 /// may join.
+/// Regions nest their blocks as wasm blocks and loops (structure.rs, entries only where that
+/// allows, loops entered in the middle through their headers) instead of dispatching every
+/// jump between their blocks on a block number at the top of one loop. Off by default: on
+/// flatbench x64 (2026-11-14) the jump tables, fib, strings and SQLite got 10-30% faster but
+/// sort and the objects case 20-70% slower, as merges of hot regions stopped happening
+/// (IPPAI_JIT64_STRUCT=1 in kura; tools/jit64test runs two tests in three so).
+pub static STRUCTURED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Debugging and A/B: no entries inside loops (structure64's side dispatches).
+pub static DEBUG_NO_SIDE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The region's control flow graph laid out by structure.rs (nodes: the blocks, a dispatch node
+/// per jump table, and one before them all going to the entries) and its entries, the first
+/// block first: the roots, the return addresses of calls and loop headers that are in no loop
+/// but as its header (into the middle of a loop is not a structured way in).
+fn structure64(blocks: &[Block], index: &BTreeMap<u64, usize>, returns: &[u64], tables: &BTreeMap<usize, Vec<u64>>, roots: &[u64]) -> Option<(super::structure::Layout, Vec<usize>, BTreeMap<usize, Vec<(usize, usize, bool)>>)> {
+    let n = blocks.len();
+    let find = |a: u64| index.get(&a).copied();
+    let mut succ: Vec<Vec<usize>> = alloc::vec![Vec::new(); n + tables.len() + 1];
+    let tnode: BTreeMap<usize, usize> = tables.keys().enumerate().map(|(i, &k)| (k, n + i)).collect();
+    for (k, b) in blocks.iter().enumerate() {
+        let last = b.ins.last().unwrap();
+        let near = last.op0_kind() == OpKind::NearBranch64;
+        let mut s: Vec<usize> = Vec::new();
+        match last.flow_control() {
+            FlowControl::Next => s.extend(find(last.next_ip())),
+            FlowControl::UnconditionalBranch if near => s.extend(find(last.near_branch64())),
+            FlowControl::ConditionalBranch if near => {
+                s.extend(find(last.near_branch64()));
+                s.extend(find(last.next_ip()));
+            }
+            FlowControl::Call if near => s.extend(find(last.near_branch64())),
+            FlowControl::Return => s.extend(returns.iter().filter_map(|&r| find(r))),
+            FlowControl::IndirectBranch => s.extend(tnode.get(&k).copied()),
+            _ => {}
+        }
+        s.sort_unstable();
+        s.dedup();
+        succ[k] = s;
+    }
+    for (i, t) in tables.values().enumerate() {
+        let mut s: Vec<usize> = t.iter().filter_map(|&a| find(a)).collect();
+        s.sort_unstable();
+        s.dedup();
+        succ[n + i] = s;
+    }
+    let l0 = super::structure::from_succ(succ.clone(), 0, &[]);
+    let rets: Vec<usize> = blocks
+        .iter()
+        .filter_map(|b| b.ins.last())
+        .filter(|l| matches!(l.flow_control(), FlowControl::Call | FlowControl::IndirectCall))
+        .filter_map(|l| find(l.next_ip()))
+        .collect();
+    let rooted: Vec<usize> = roots.iter().filter_map(|&r| find(r)).collect();
+    let wanted = |k: usize| k != 0 && (rooted.contains(&k) || rets.contains(&k) || l0.header(k));
+    let reached: Vec<bool> = {
+        let mut r = alloc::vec![false; n + tables.len() + 1];
+        for &v in l0.order_iter() {
+            r[v] = true;
+        }
+        r
+    };
+    // (and the roots block 0 does not reach: merged regions' other roots)
+    let mut direct = l0.entries(n, wanted);
+    direct.extend((1..n).filter(|&k| !reached[k] && rooted.contains(&k)));
+    let base_irr = l0.irreducible();
+    if !direct.is_empty() && super::structure::from_succ(succ.clone(), 0, &direct).irreducible() > base_irr {
+        // (one at a time: the ones that keep the graph as reducible as it was)
+        let all = core::mem::take(&mut direct);
+        for k in all {
+            direct.push(k);
+            if super::structure::from_succ(succ.clone(), 0, &direct).irreducible() > base_irr {
+                direct.pop();
+            }
+        }
+    }
+    // entries inside loops: through the headers of the loops around them, outermost first
+    // (each header's side dispatch goes on to the next, see emit_side64), the outermost one
+    // an entry itself
+    let outer = l0.entries(n, |k| l0.header(k));
+    let bodies = l0.loop_bodies();
+    let mut side: BTreeMap<usize, Vec<(usize, usize, bool)>> = BTreeMap::new();
+    let mut inner = Vec::new();
+    let mut heads = Vec::new();
+    let mut succ2 = succ.clone();
+    if !DEBUG_NO_SIDE.load(Relaxed) {
+        for e in (1..n).filter(|&k| reached[k] && wanted(k) && !direct.contains(&k)) {
+            let mut chain: Vec<(usize, usize)> = bodies.iter().filter(|(&h, b)| h != e && b[e]).map(|(&h, b)| (h, b.iter().filter(|&&x| x).count())).collect();
+            chain.sort_by(|a, b| b.1.cmp(&a.1));
+            let Some(&(h0, _)) = chain.first() else { continue };
+            if !outer.contains(&h0) && h0 != 0 {
+                continue;
+            }
+            let hs: Vec<usize> = chain.iter().map(|c| c.0).collect();
+            for (i, &h) in hs.iter().enumerate() {
+                let next = hs.get(i + 1).copied().unwrap_or(e);
+                if !succ2[h].contains(&next) {
+                    succ2[h].push(next);
+                }
+                side.entry(h).or_default().push((e, next, i + 1 == hs.len()));
+            }
+            inner.push(e);
+            if h0 != 0 && !direct.contains(&h0) && !heads.contains(&h0) {
+                heads.push(h0);
+            }
+        }
+    }
+    let mut extra: Vec<usize> = direct.iter().chain(heads.iter()).copied().collect();
+    if !inner.is_empty() {
+        // (the first node dispatches on L_BLK even with block 0 its only other way)
+        if extra.is_empty() {
+            extra.push(0);
+        }
+        let l = super::structure::from_succ(succ2.clone(), 0, &extra);
+        if l.irreducible() <= l0.irreducible() {
+            let mut entries: Vec<usize> = alloc::vec![0];
+            for k in extra.into_iter().chain(inner.iter().copied()) {
+                if !entries.contains(&k) {
+                    entries.push(k);
+                }
+            }
+            return Some((l, entries, side));
+        }
+    }
+    // (without the entries inside loops)
+    if direct.is_empty() {
+        return Some((l0, alloc::vec![0], BTreeMap::new()));
+    }
+    let l = super::structure::from_succ(succ, 0, &direct);
+    if l.irreducible() > l0.irreducible() {
+        return Some((l0, alloc::vec![0], BTreeMap::new()));
+    }
+    Some((l, core::iter::once(0).chain(direct).collect(), BTreeMap::new()))
+}
+
+/// A loop header's side dispatch (see structure64): with L_BLK an entry inside the loop
+/// (from the region's first node), on to the next header around it or to the entry itself
+/// (L_BLK -1 again then); with L_BLK negative or another block, the header's own code.
+fn emit_side64(g: &mut Gen<'_>, side: &[(usize, usize, bool)]) {
+    let n = g.blocks.len();
+    g.c.block(); // own
+    g.depth += 1;
+    let own = g.depth;
+    g.c.get(L_BLK).i32c(0).lt_s().br_if(0);
+    // (stubs: the last hops, and hops whose next header has no label here)
+    let finals: Vec<(usize, usize)> = side.iter().filter(|s| s.2 || g.fwd[s.1].is_none()).map(|s| (s.0, s.1)).collect();
+    for _ in &finals {
+        g.c.block();
+    }
+    g.depth += finals.len() as u32;
+    g.c.get(L_BLK).op(0x0e);
+    super::wasm::uleb(&mut g.c.b, n as u64);
+    for k in 0..n {
+        let l = match side.iter().find(|s| s.0 == k) {
+            Some(&(e, next, last)) => match (last, g.fwd[next]) {
+                (false, Some(p)) => g.depth - p,
+                _ => finals.iter().position(|f| f.0 == e).unwrap() as u32,
+            },
+            None => g.depth - own,
+        };
+        super::wasm::uleb(&mut g.c.b, l as u64);
+    }
+    super::wasm::uleb(&mut g.c.b, (g.depth - own) as u64);
+    for &(e, next) in &finals {
+        g.c.end();
+        g.depth -= 1;
+        g.c.i32c(-1).set(L_BLK);
+        match g.fwd[e].filter(|_| next == e) {
+            Some(p) => {
+                g.c.br(g.depth - p);
+            }
+            // (no way there in the layout: the interpreter runs the entry's first instruction)
+            None => g.exit_to(g.blocks[e].start, RET_INTERP),
+        }
+    }
+    g.c.end(); // own
+    g.depth -= 1;
+    g.c.i32c(-1).set(L_BLK);
+}
+
+/// Block `k`'s code (its jumps go through Gen::goto).
+fn emit_block64<M: Memory>(g: &mut Gen<'_>, mem: &mut M, k: usize, count: &mut usize, layout: &mut String) {
+    let blocks = g.blocks;
+    g.cur = k;
+    g.flags = Flags::Cpu;
+    g.mx_checked = None;
+    g.mx_seen = [[None; 2]; 16];
+    if let Some(side) = g.side.get(&k).cloned() {
+        emit_side64(g, &side);
+    }
+    g.smc = super::WATCH.get().is_some_and(|w| w(blocks[k].start as u32));
+    let list = &blocks[k].ins;
+    g.fresh = None;
+    let start = blocks[k].start as u32;
+    if super::fresh_at(start) {
+        let end = list.last().unwrap().next_ip();
+        let mut b = alloc::vec![0u8; end.wrapping_sub(blocks[k].start) as usize];
+        if !b.is_empty() && mem.fetch(start, &mut b) == b.len() {
+            g.ins = list[0];
+            g.fresh_entry(start, &b);
+            g.fresh = Some((start, b.len() as u32));
+        }
+    }
+    let mut open = true;
+    for ins in list {
+        g.ins = *ins;
+        *count += 1;
+        if !g.emit() {
+            open = false;
+            break;
+        }
+    }
+    if open {
+        // fell through (block size cap, a trap address, an undecodable instruction)
+        let next = list.last().unwrap().next_ip();
+        g.goto(next);
+    }
+    if super::LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
+        layout.push_str(&alloc::format!("{:#x} {}\n", blocks[k].start, list.len()));
+    }
+}
+
+/// A jump table's dispatch node (structured): the target in L_NT (flags in the Cpu), to its
+/// block when it is one of the table's in the region (a perfect hash of the low half), else out.
+fn emit_table64(g: &mut Gen<'_>, targets: &[u64], hi: u32) {
+    g.flags = Flags::Cpu;
+    g.mx_checked = None;
+    g.mx_seen = [[None; 2]; 16];
+    let mut keys: Vec<u64> = targets.iter().copied().filter(|a| g.index.contains_key(a) && (a >> 32) as u32 == hi).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    g.c.get(L_NT).i64c(32).x(I64_SHR_U).x(I32_WRAP).u32c(hi).ne().if_();
+    g.depth += 1;
+    g.c.get(L_NT);
+    g.exit_dyn(0);
+    g.depth -= 1;
+    g.c.end();
+    g.c.get(L_NT).x(I32_WRAP).set(L_A);
+    if !keys.is_empty() {
+        let low: Vec<u32> = keys.iter().map(|&a| a as u32).collect();
+        let (mul, shift, slots) = super::structure::perfect_hash(&low);
+        let m = keys.len();
+        g.c.block(); // miss
+        g.depth += 1;
+        let miss = g.depth;
+        for _ in 0..m {
+            g.c.block();
+        }
+        g.depth += m as u32;
+        g.c.get(L_A).u32c(mul).mul().i32c(shift as i32).shr_u().op(0x0e);
+        super::wasm::uleb(&mut g.c.b, slots.len() as u64);
+        for &i in &slots {
+            super::wasm::uleb(&mut g.c.b, i as u64);
+        }
+        super::wasm::uleb(&mut g.c.b, m as u64);
+        for &a in &keys {
+            g.c.end();
+            g.depth -= 1;
+            g.c.get(L_A).u32c(a as u32).eq().if_();
+            g.depth += 1;
+            g.goto(a);
+            g.flags = Flags::Cpu;
+            g.depth -= 1;
+            g.c.end();
+            g.c.br(g.depth - miss);
+        }
+        g.c.end(); // miss
+        g.depth -= 1;
+    }
+    g.c.get(L_NT);
+    g.exit_dyn(0);
+}
+
+/// The first node of a region with more entries than its first block: `br_table` on L_BLK
+/// (the hash table's block number) to the entry's label.
+fn emit_entries64(g: &mut Gen<'_>, entries: &[usize]) {
+    let n = g.blocks.len();
+    let label = |g: &Gen<'_>, k: usize| g.depth - g.fwd[k].or(g.fwd[entries[0]]).expect("an entry's label");
+    g.c.get(L_BLK).op(0x0e);
+    super::wasm::uleb(&mut g.c.b, n as u64);
+    let first = label(g, entries[0]);
+    for k in 0..n {
+        // (an entry inside loops: its outermost header's label, whose side dispatch goes on)
+        let via = g.side.iter().filter(|(_, v)| v.iter().any(|s| s.0 == k)).map(|(&h, _)| h).find(|&h| g.fwd[h].is_some() && entries.contains(&h));
+        let l = match via {
+            Some(h) if !g.fwd[k].is_some() => label(g, h),
+            _ if entries.contains(&k) => label(g, k),
+            _ => first,
+        };
+        super::wasm::uleb(&mut g.c.b, l as u64);
+    }
+    super::wasm::uleb(&mut g.c.b, first as u64);
+}
+
 pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
     // (each page read once: the instructions decoded, the bytes blocks check on entry and the
     // region's text agree although other threads may rewrite the code meanwhile)
@@ -2301,6 +2653,8 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     let mut todo: Vec<(u64, bool)> = roots.iter().rev().map(|&r| (r, false)).collect();
     // (an unsigned bound of a register checked by the jump into a block: (block, register, n))
     let mut bounds: Vec<(u64, Register, u64)> = Vec::new();
+    // (block -> the targets of the jump table it ends with)
+    let mut tables: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
     let mut total = 0;
     while let Some((a, sure)) = todo.pop() {
         if index.contains_key(&a) || blocks.len() >= limit(&DEBUG_BLOCKS, MAX_BLOCKS) || total >= MAX_REGION_INS {
@@ -2336,8 +2690,12 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
             FlowControl::Call | FlowControl::IndirectCall => todo.push((last.next_ip(), true)),
             FlowControl::IndirectBranch => {
                 let n = bounds.iter().find(|b| b.0 == a).map(|b| (b.1, b.2));
-                for t in jump_table(mem, &ins, n).into_iter().rev() {
+                let t = jump_table(mem, &ins, n);
+                for &t in t.iter().rev() {
                     todo.push((t, true));
+                }
+                if !t.is_empty() {
+                    tables.insert(blocks.len(), t);
                 }
             }
             FlowControl::Next => todo.push((last.next_ip(), false)),
@@ -2390,7 +2748,9 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     returns.sort_unstable();
     returns.dedup();
     returns.truncate(MAX_RETURNS);
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, fresh: None, watch_store: false, fell_back: false };
+    let lay = if !STRUCTURED.load(Relaxed) { None } else { structure64(&blocks, &index, &returns, &tables, roots) };
+    let nodes = blocks.len() + tables.len() + 1;
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new(), hi_swapped: Vec::new(), smc: false, fresh: None, watch_store: false, fell_back: false, structured: lay.is_some(), fwd: alloc::vec![None; nodes], back: alloc::vec![None; nodes], cur: 0, table_node: BTreeMap::new(), side: BTreeMap::new() };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
@@ -2398,64 +2758,58 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     g.c.i32c(0).set(L_FC);
     g.load_regs();
     g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
-    // loop $top; block $exit; block b_{n-1} .. block b_0; br_table; end b_0: code; ...
-    g.c.loop_();
-    g.c.block();
-    for _ in 0..n {
-        g.c.block();
-    }
-    g.c.get(L_BLK);
-    {
-        // br_table: 0x0e vec(labels) default
-        g.c.op(0x0e);
-        let mut tmp = Vec::new();
-        super::wasm::uleb(&mut tmp, n as u64);
-        for k in 0..n {
-            super::wasm::uleb(&mut tmp, k as u64);
-        }
-        super::wasm::uleb(&mut tmp, 0);
-        for b in tmp {
-            g.c.op(b);
-        }
-    }
     let mut count = 0;
     let mut layout = String::new();
-    for k in 0..n as usize {
-        g.c.end();
-        // inside: blocks k+1..n-1, the exit block, the loop
-        g.depth = n - 1 - k as u32;
-        g.flags = Flags::Cpu;
-        g.mx_checked = None;
-        g.mx_seen = [[None; 2]; 16];
-        g.smc = super::WATCH.get().is_some_and(|w| w(blocks[k].start as u32));
-        let list = &blocks[k].ins;
-        g.fresh = None;
-        let start = blocks[k].start as u32;
-        if super::fresh_at(start) {
-            let end = list.last().unwrap().next_ip();
-            let mut b = alloc::vec![0u8; end.wrapping_sub(blocks[k].start) as usize];
-            if !b.is_empty() && mem.fetch(start, &mut b) == b.len() {
-                g.ins = list[0];
-                g.fresh_entry(start, &b);
-                g.fresh = Some((start, b.len() as u32));
+    let hi = (entry >> 32) as u32;
+    let entries: Vec<usize>;
+    if let Some((l, ents, side)) = &lay {
+        entries = ents.clone();
+        g.side = side.clone();
+        // loop $top; block $exit; the blocks nested by structure.rs (the first node: a
+        // br_table on L_BLK to the entries when there are more than one); end $exit
+        g.c.loop_();
+        g.c.block();
+        let nb = blocks.len();
+        let tnodes: Vec<(usize, &Vec<u64>)> = tables.iter().map(|(&k, t)| (k, t)).collect();
+        for (i, &(k, _)) in tnodes.iter().enumerate() {
+            g.table_node.insert(k, nb + i);
+        }
+        super::structure::emit(&mut g, l, |g, k| {
+            if k < nb {
+                emit_block64(g, mem, k, &mut count, &mut layout);
+            } else if k < nb + tnodes.len() {
+                emit_table64(g, tnodes[k - nb].1, hi);
+            } else {
+                emit_entries64(g, &entries);
+            }
+        });
+    } else {
+        entries = (0..blocks.len()).collect();
+        // loop $top; block $exit; block b_{n-1} .. block b_0; br_table; end b_0: code; ...
+        g.c.loop_();
+        g.c.block();
+        for _ in 0..n {
+            g.c.block();
+        }
+        g.c.get(L_BLK);
+        {
+            // br_table: 0x0e vec(labels) default
+            g.c.op(0x0e);
+            let mut tmp = Vec::new();
+            super::wasm::uleb(&mut tmp, n as u64);
+            for k in 0..n {
+                super::wasm::uleb(&mut tmp, k as u64);
+            }
+            super::wasm::uleb(&mut tmp, 0);
+            for b in tmp {
+                g.c.op(b);
             }
         }
-        let mut open = true;
-        for ins in list {
-            g.ins = *ins;
-            count += 1;
-            if !g.emit() {
-                open = false;
-                break;
-            }
-        }
-        if open {
-            // fell through (block size cap, a trap address, an undecodable instruction)
-            let next = list.last().unwrap().next_ip();
-            g.goto(next);
-        }
-        if super::LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
-            layout.push_str(&alloc::format!("{:#x} {}\n", blocks[k].start, list.len()));
+        for k in 0..n as usize {
+            g.c.end();
+            // inside: blocks k+1..n-1, the exit block, the loop
+            g.depth = n - 1 - k as u32;
+            emit_block64(&mut g, mem, k, &mut count, &mut layout);
         }
     }
     g.c.end(); // exit: L_NT, L_ST (every block leaves by a branch)
@@ -2472,7 +2826,7 @@ fn translate_seen64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], 
     locals.push(V128);
     let code = splice_regs(core::mem::take(&mut g.c), &g.marks, DEBUG_ALL_REGS.load(Relaxed));
     module.funcs.push(Func { ty: 2, locals, code });
-    let starts = blocks.iter().enumerate().map(|(k, b)| (b.start as u32, k as u32)).collect();
+    let starts = entries.iter().map(|&k| (blocks[k].start as u32, k as u32)).collect();
     let code: Vec<(u32, u32)> = blocks.iter().map(|b| {
         let end = b.ins.last().unwrap().next_ip();
         (b.start as u32, (end - b.start) as u32)
@@ -2523,6 +2877,45 @@ mod tests {
             b[12..].copy_from_slice(&[0xff, 0xe0]);
             run(&b);
         }
+    }
+
+    /// Debugging the layout of real code: LAYOUT_EXE (a PE32+), LAYOUT_BASE (where sake mapped
+    /// it, hex), LAYOUT_ROOTS (hex, comma-separated): the region's blocks, its entries and its
+    /// side dispatches. `cargo test -p koji --lib layout_of_exe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn layout_of_exe() {
+        extern crate std;
+        struct Img(u32, Vec<u8>);
+        impl Memory for Img {
+            fn read8(&mut self, a: u32) -> Result<u8, crate::Fault> {
+                a.checked_sub(self.0).and_then(|o| self.1.get(o as usize).copied()).ok_or(crate::Fault { addr: a, write: false })
+            }
+            fn write8(&mut self, _: u32, _: u8) -> Result<(), crate::Fault> {
+                Ok(())
+            }
+        }
+        let image = std::fs::read(std::env::var("LAYOUT_EXE").unwrap()).unwrap();
+        let base = u32::from_str_radix(&std::env::var("LAYOUT_BASE").unwrap(), 16).unwrap();
+        let roots: Vec<u64> = std::env::var("LAYOUT_ROOTS").unwrap().split(',').map(|r| u64::from_str_radix(r, 16).unwrap()).collect();
+        let pe = u32::from_le_bytes(image[0x3c..0x40].try_into().unwrap()) as usize;
+        let nsec = u16::from_le_bytes(image[pe + 6..pe + 8].try_into().unwrap()) as usize;
+        let opt = u16::from_le_bytes(image[pe + 20..pe + 22].try_into().unwrap()) as usize;
+        let size = u32::from_le_bytes(image[pe + 24 + 56..pe + 24 + 60].try_into().unwrap());
+        let mut mapped = alloc::vec![0u8; size as usize];
+        for i in 0..nsec {
+            let sh = pe + 24 + opt + i * 40;
+            let va = u32::from_le_bytes(image[sh + 12..sh + 16].try_into().unwrap()) as usize;
+            let raw = u32::from_le_bytes(image[sh + 16..sh + 20].try_into().unwrap()) as usize;
+            let ptr = u32::from_le_bytes(image[sh + 20..sh + 24].try_into().unwrap()) as usize;
+            let n = raw.min(mapped.len() - va).min(image.len() - ptr);
+            mapped[va..va + n].copy_from_slice(&image[ptr..ptr + n]);
+        }
+        super::super::LAYOUT.store(true, Relaxed);
+        let mut m = Module::default();
+        let r = translate_region64(&mut m, &mut Img(base, mapped), &roots, (0xfe00_0000, 0xff00_0000), |_, _| true).unwrap();
+        std::println!("{}", r.layout);
+        std::println!("entries {:x?}", r.starts);
     }
 
     /// (local index, opcode) of every local.get/set/tee `code.locs` lists, checking that each

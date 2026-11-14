@@ -161,6 +161,13 @@ pub(super) fn layout(
         s.dedup();
         succ[n + i] = s;
     }
+    from_succ(succ, entry, extra)
+}
+
+/// The layout of a graph given as its successor lists (`succ`, the last node standing for the
+/// extra entries when `extra` has some: it goes to `entry` and each of them), from `entry`.
+pub(super) fn from_succ(mut succ: Vec<Vec<usize>>, entry: usize, extra: &[usize]) -> Layout {
+    let total = succ.len();
     let entry = if extra.is_empty() {
         entry
     } else {
@@ -375,7 +382,35 @@ enum Act {
 /// Emits the function body (inside the exit/dyn blocks): every reachable node once, nested
 /// as described above. `emit(g, node)` emits a node's code (its jumps go through
 /// Gen::goto_block, which finds the open labels in `g.fwd`/`g.back`).
-pub(super) fn emit<'a>(g: &mut Gen<'a>, l: &Layout, mut emit_node: impl FnMut(&mut Gen<'a>, usize)) {
+/// What [`emit`] needs of a translator: its code, the label depth (labels between the code and
+/// the function's exit block), the open labels of nodes, and the checks hoisted before a loop.
+pub(super) trait Nest {
+    fn code(&mut self) -> &mut super::wasm::Code;
+    fn depth(&mut self) -> &mut u32;
+    fn fwd(&mut self) -> &mut Vec<Option<u32>>;
+    fn back(&mut self) -> &mut Vec<Option<u32>>;
+    fn loop_checks(&mut self, _x: usize) {}
+}
+
+impl Nest for Gen<'_> {
+    fn code(&mut self) -> &mut super::wasm::Code {
+        &mut self.c
+    }
+    fn depth(&mut self) -> &mut u32 {
+        &mut self.depth
+    }
+    fn fwd(&mut self) -> &mut Vec<Option<u32>> {
+        &mut self.fwd
+    }
+    fn back(&mut self) -> &mut Vec<Option<u32>> {
+        &mut self.back
+    }
+    fn loop_checks(&mut self, x: usize) {
+        Gen::loop_checks(self, x)
+    }
+}
+
+pub(super) fn emit<G: Nest>(g: &mut G, l: &Layout, mut emit_node: impl FnMut(&mut G, usize)) {
     let total = l.succ.len();
     let mut children: Vec<Vec<usize>> = alloc::vec![Vec::new(); total];
     for &v in l.rpo.iter().skip(1) {
@@ -392,9 +427,10 @@ pub(super) fn emit<'a>(g: &mut Gen<'a>, l: &Layout, mut emit_node: impl FnMut(&m
                 if l.header[x] {
                     // (the checks hoisted out of it, on the way in: see Gen::loop_checks)
                     g.loop_checks(x);
-                    g.c.loop_();
-                    g.depth += 1;
-                    g.back[x] = Some(g.depth);
+                    g.code().loop_();
+                    *g.depth() += 1;
+                    let d = *g.depth();
+                    g.back()[x] = Some(d);
                     stack.push(Act::EndLoop(x));
                 }
                 stack.push(Act::Within(x, 0));
@@ -404,23 +440,24 @@ pub(super) fn emit<'a>(g: &mut Gen<'a>, l: &Layout, mut emit_node: impl FnMut(&m
                     emit_node(g, x);
                 } else {
                     let y = children[x][i];
-                    g.c.block();
-                    g.depth += 1;
-                    g.fwd[y] = Some(g.depth);
+                    g.code().block();
+                    *g.depth() += 1;
+                    let d = *g.depth();
+                    g.fwd()[y] = Some(d);
                     stack.push(Act::AfterBlock(y));
                     stack.push(Act::Within(x, i + 1));
                 }
             }
             Act::AfterBlock(y) => {
-                g.c.end();
-                g.depth -= 1;
-                g.fwd[y] = None;
+                g.code().end();
+                *g.depth() -= 1;
+                g.fwd()[y] = None;
                 stack.push(Act::Tree(y));
             }
             Act::EndLoop(x) => {
-                g.back[x] = None;
-                g.c.end();
-                g.depth -= 1;
+                g.back()[x] = None;
+                g.code().end();
+                *g.depth() -= 1;
             }
         }
     }

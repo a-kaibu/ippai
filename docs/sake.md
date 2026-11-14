@@ -289,6 +289,22 @@
     自分のコードへの `add byte [rip+..]` を混ぜる (見張りの有無を 2 件ずつ交互)、x86_jit64 は全ストアを
     見張って比べる (regressions/x86_jit64/add-rip-rewrites-next)。
   - 残り: script 1.5 倍、C++ の std::map 2〜4 倍、x87 と minss の JIT。
+  - なぜまだ x64 が遅いか (2026-11-14): 32 ビットは関数単位の翻訳 (FN モード、structure.rs) が既定だが、
+    x64 は古いリージョン翻訳 (1 リージョン = `loop{block×n; br_table}`、出口ごとにレジスタを Cpu へ
+    書いてハッシュ引き) のまま。x86 を IPPAI_JIT_FN=0 でリージョンに戻すと flatbench は 4.35 秒で
+    x64 とほぼ同じ。ほかに x64 だけの重さは、Cpu のレジスタが lo/hi に分かれている、メモリ参照ごとの
+    範囲チェック、同期コンパイル。
+    - guest CRT の realloc が x64 で host_malloc/host_free (trap) を呼んでいた (Lua はオブジェクトを
+      作るたびに trap)。x64 は CRT 内の malloc/free を使う。flatbench x64 6.08 → 約 4.3〜5.0 秒
+      (x86 約 2.0 秒)。
+    - long.rs に構造化レイアウトを試作 (structure.rs の from_succ / Nest を共用、入口は根・戻り先・
+      ループ外のヘッダ、ループ内の入口はヘッダの横ディスパッチ、ジャンプテーブルは完全ハッシュ)。
+      表・fib・文字列・SQLite は速く、sort/oop は merge_hot64 がほぼ効かなくなり遅いので既定オフ
+      (IPPAI_JIT64_STRUCT=1 で有効、jit64test と fuzz は両方を回す)。本命は x64 の FN モード。
+  - 翻訳の無効化 (review P1-6): コードページへの書き込みは、そのページから作った翻訳だけを落とす
+    (kura jit.rs の CHANGES 履歴 1024 件 + code_of、ほかのスレッドは check_generation で差分だけ
+    drop_pages)。履歴が切れたら従来どおり全部捨てる。共有キャッシュ (P1-5) は 48 MiB・キーあたり
+    4 ビルドまで、超えたら古い順に 3/4 まで捨てる。テスト: invalidate_tests (proptest 含む)。
 - gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
 - user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。

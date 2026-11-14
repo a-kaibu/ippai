@@ -1359,6 +1359,12 @@ fn main() {
         // region's own blocks through the hash table)
         // (JALLREGS: regions load and store all sixteen registers, as before they named theirs)
         koji::jit::long::DEBUG_ALL_REGS.store(std::env::var("JALLREGS").is_ok(), Relaxed);
+        // (two tests in three with the regions' blocks nested (STRUCTURED), the third dispatched
+        // on a number in one loop (JFLAT: all of them): both layouts must agree with the
+        // interpreter)
+        koji::jit::long::STRUCTURED.store(std::env::var("JFLAT").is_err() && t % 3 != 2, Relaxed);
+        // (and of the nested ones, every other three without entries inside loops)
+        koji::jit::long::DEBUG_NO_SIDE.store(t / 3 % 2 == 1, Relaxed);
         koji::jit::long::DEBUG_BLOCKS.store(if t % 2 == 1 { 1 + t / 2 % 3 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
         // (every other pair of tests: stores checked against the code, some into it)
         WATCH.store(t / 4 % 2 == 0, Relaxed);
