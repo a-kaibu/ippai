@@ -30,6 +30,9 @@ struct Slot {
     reading: u32,
     /// per track: format, then offset and stride of planes 0..3 in `buf`
     layout: [[u32; 7]; 2],
+    /// the rows of the frame the planes hold (`fit_rows`: the stream's height, unless the
+    /// page's planes are shorter)
+    rows: u32,
 }
 
 /// Where a stream's bytes are.
@@ -90,6 +93,12 @@ struct Stream {
     /// per frame (decode order) the frame it is in presentation order, where they differ
     /// (H.264's B frames); None: the same
     pts: Option<Vec<u32>>,
+    /// per track: its key frames, in order (`fill` finds the one before a frame by binary
+    /// search, not by walking back over the frames every call)
+    keys: Vec<Vec<u32>>,
+    /// the bytes of the file `fill` last had the store fetch ahead (`prefetch`): the window
+    /// moves a frame per frame, a new prefetch is asked for once it has moved PREFETCH_STEP
+    planned: (u64, u64),
 }
 
 static STREAMS: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
@@ -152,15 +161,16 @@ fn add(src: Source, i: Info) -> Option<u32> {
         t if t.iter().any(|(c, _)| c == "raw-i420") => return None,
         _ => false,
     };
-    let index = i.tracks.into_iter().map(|t| t.1).collect();
+    let index: Vec<crate::vnv::Frames> = i.tracks.into_iter().map(|t| t.1).collect();
+    let keys = index.iter().map(|f| f.iter().enumerate().filter(|(_, x)| x.2).map(|(k, _)| k as u32).collect()).collect();
     static NEXT: AtomicI32 = AtomicI32::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
     let slots = (0..SLOTS)
-        .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: 0, layout: [[0; 7]; 2] })
+        .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: 0, layout: [[0; 7]; 2], rows: 0 })
         .collect();
     // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
     let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
-    with(|m| m.insert(id, Stream { src, index, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw, pts: None }));
+    with(|m| m.insert(id, Stream { src, index, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw, pts: None, keys, planned: (0, 0) }));
     Some(id)
 }
 
@@ -224,6 +234,10 @@ pub fn frame_exact(id: u32, n: i32, timeout: Duration, f: impl FnOnce(&[[u32; 7]
             ring();
         }
         if let Some(k) = (0..s.slots.len()).find(|&k| !s.slots[k].writing && s.slots[k].frame == n) {
+            if s.slots[k].rows < s.h {
+                // (the page's planes hold less than the frame: `fit_rows`)
+                return false;
+            }
             s.shown = n;
             s.slots[k].reading += 1;
             let (buf, layout) = (s.slots[k].buf.as_ptr(), s.slots[k].layout);
@@ -252,31 +266,64 @@ const READ_HIGH: usize = 120;
 /// At most this much of a track read at once (a bad table: no huge allocation).
 const READ_MAX: u64 = 64 << 20;
 
+/// The key frame at or before `n` (frame 0 when none is: where a decoder starts).
+fn key_before(keys: &[u32], n: usize) -> usize {
+    match keys.partition_point(|&k| k as usize <= n) {
+        0 => 0,
+        i => keys[i - 1] as usize,
+    }
+}
+
+/// How far the window ahead (`fill`'s prefetch) moves before the store is asked again: it
+/// moves a frame per frame, and each prefetch walks the vfs's pieces of the whole window.
+const PREFETCH_STEP: u64 = 1 << 20;
+
+/// (tests: how many prefetches `fill` asked for)
+#[cfg(test)]
+static PREFETCHES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// Has the bytes of frame `n` of stream `id` read (a file's), from each track's key frame
 /// before it (where its decoder starts) to a few seconds past it; the bytes before go. Reads
 /// without holding the streams' lock (the page takes it every frame).
+#[cfg(test)]
 fn fill(id: u32, n: i32) {
+    fill_as(id, n, true)
+}
+
+/// `fill`; with `ahead` false only what the page needs for frame `n` itself (from the key
+/// frame to n) is read now: `frame` reads ahead after it handed the frame out, so a chunk
+/// still on its way from the store does not hold up a frame the page already decoded.
+fn fill_as(id: u32, n: i32, ahead: bool) {
     let plan = with(|m| {
-        let s = m.get(&id).filter(|s| !s.closed)?;
+        let s = m.get_mut(&id).filter(|s| !s.closed && !s.failed)?;
         let Source::File { file, wins, .. } = &s.src else { return None };
-        let mut ahead = (u64::MAX, 0u64);
+        let mut window = (u64::MAX, 0u64);
+        let mut too_far = false;
         let reads: Vec<Option<(u64, u64, u64)>> = s
             .index
             .iter()
             .zip(wins)
-            .map(|(frames, (o, b))| {
+            .zip(&s.keys)
+            .map(|((frames, (o, b)), keys)| {
                 let last = frames.len().checked_sub(1)?;
                 let n = (n.max(0) as usize).min(last);
-                let k = (0..=n).rev().find(|&k| frames[k].2).unwrap_or(0);
+                let k = key_before(keys, n);
                 let start = frames[k].0 as u64;
                 let end_of = |j: usize| {
                     let f = frames[j.min(last)];
                     f.0 as u64 + f.1 as u64
                 };
+                // (a key frame further than READ_MAX before the frame: its bytes could never
+                // all be read, the movie would freeze; the guest falls back instead)
+                if end_of(n).saturating_sub(start) > READ_MAX {
+                    too_far = true;
+                    return None;
+                }
                 let far = end_of(n + 2 * READ_HIGH).max(start);
-                ahead = (ahead.0.min(start), ahead.1.max(far));
+                window = (window.0.min(start), window.1.max(far));
                 let have = (*o, *o + b.len() as u64);
-                if have.0 <= start && end_of(n + READ_LOW) <= have.1 {
+                let need = if ahead { end_of(n + READ_LOW) } else { end_of(n) };
+                if have.0 <= start && need <= have.1 {
                     return None;
                 }
                 let end = end_of(n + READ_HIGH).clamp(start, start + READ_MAX);
@@ -285,12 +332,29 @@ fn fill(id: u32, n: i32) {
                 Some((start, from, end))
             })
             .collect();
-        Some((file.clone(), reads, ahead))
+        if too_far {
+            eprintln!("kura: video {id}: frame {n} is more than {READ_MAX} bytes past its key frame");
+            s.failed = true;
+            WAKE.notify_all();
+            return None;
+        }
+        let file = file.clone();
+        let p = s.planned;
+        let prefetch = ahead && window.0 < window.1 && (window.0 < p.0 || window.0 > p.1 || window.1 > p.1.saturating_add(PREFETCH_STEP));
+        if prefetch {
+            s.planned = window;
+        }
+        Some((file, reads, prefetch.then_some(window)))
     });
-    let Some((file, reads, ahead)) = plan else { return };
+    let Some((file, reads, prefetch)) = plan else { return };
+    if prefetch.is_none() && reads.iter().all(Option::is_none) {
+        return;
+    }
     let mut f = file.lock().unwrap_or_else(|e| e.into_inner());
-    if ahead.0 < ahead.1 {
-        f.prefetch(ahead.0, ahead.1 - ahead.0);
+    if let Some(w) = prefetch {
+        #[cfg(test)]
+        PREFETCHES.fetch_add(1, Ordering::Relaxed);
+        f.prefetch(w.0, w.1 - w.0);
     }
     if reads.iter().all(Option::is_none) {
         return;
@@ -345,9 +409,19 @@ pub fn close(id: u32) {
 /// Drops stream `id` when it is closed and no slot of it is written or read any more.
 fn release(m: &mut HashMap<u32, Stream>, id: u32) {
     if m.get(&id).is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading > 0)) {
-        m.remove(&id);
+        let s = m.remove(&id);
+        // (the page may still be reading the header `vnhost_video_list` pointed it at: the
+        // stream goes at the next list, when the page is done with the last one)
+        if PAGE.load(Ordering::Relaxed) {
+            if let Some(s) = s {
+                GRAVE.lock().unwrap_or_else(|e| e.into_inner()).push(s);
+            }
+        }
     }
 }
+
+/// Streams dropped since the page last listed them (`release`).
+static GRAVE: Mutex<Vec<Stream>> = Mutex::new(Vec::new());
 
 fn ring() {
     DOORBELL.fetch_add(1, Ordering::SeqCst);
@@ -397,8 +471,14 @@ const FIRST: Duration = Duration::from_millis(500);
 /// # Safety
 /// `dst` must hold `h` rows of `pitch` bytes.
 pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) -> bool {
+    fill_as(id, n, false);
+    let r = frame_now(id, n, dst, pitch, w, h, out);
+    fill_as(id, n, true);
+    r
+}
+
+unsafe fn frame_now(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) -> bool {
     let start = Instant::now();
-    fill(id, n);
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
     // uncompressed: straight from the file (frames past the end: the last one)
     if let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed && s.raw) {
@@ -428,9 +508,9 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             s.shown = s.slots[k].frame;
             s.slots[k].reading += 1;
             let (sw, sh, tracks) = (s.w, s.h, s.tracks);
-            let (buf, layout) = (s.slots[k].buf.as_ptr(), s.slots[k].layout);
+            let (buf, layout, rows) = (s.slots[k].buf.as_ptr(), s.slots[k].layout, s.slots[k].rows);
             drop(g);
-            convert(buf, &layout, tracks, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
+            convert(buf, &layout, tracks, sw, sh, dst, pitch, w.min(sw), h.min(sh).min(rows), out);
             let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
             let m = g.get_or_insert_with(HashMap::new);
             if let Some(s) = m.get_mut(&id) {
@@ -889,6 +969,8 @@ pub extern "C" fn vnhost_video_doorbell() -> u32 {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_video_list(out: *mut u32, max: u32) -> u32 {
     PAGE.store(true, Ordering::Relaxed);
+    // (the headers handed out by the last list are read by now)
+    drop(std::mem::take(&mut *GRAVE.lock().unwrap_or_else(|e| e.into_inner())));
     let out = std::slice::from_raw_parts_mut(out, max as usize * 6);
     with(|m| {
         let mut n = 0;
@@ -985,12 +1067,62 @@ pub unsafe extern "C" fn vnhost_video_begin(id: u32, n: i32, size: *mut u32) -> 
         }
         sl.writing = true;
         sl.frame = n;
-        // (sized by the page's first copy: YUV, or RGBA when frames are not readable as YUV)
-        if sl.buf.len() < *size as usize {
-            sl.buf = vec![0; *size as usize];
+        // (sized by the page's first copy: YUV, or RGBA when frames are not readable as YUV;
+        // never empty: `vnhost_video_ready` finds the slot by its buffer's address, and every
+        // empty Vec has the same one)
+        let want = (*size as usize).max(1);
+        if sl.buf.len() < want {
+            sl.buf = vec![0; want];
         }
         sl.buf.as_mut_ptr() as u32
     })
+}
+
+/// Whether the planes of `layout` hold every byte `convert` reads for a `w` x `h` frame of
+/// `tracks` tracks within `len` bytes: per track a known format, and per plane its offset plus
+/// its last row's start plus that row's bytes (chroma: half the rows and columns, rounded up;
+/// NV12's Cb Cr pairs) inside the buffer.
+fn fits(layout: &[[u32; 7]; 2], tracks: u32, w: u32, h: u32, len: usize) -> bool {
+    if w == 0 || h == 0 {
+        return true;
+    }
+    let plane = |l: &[u32; 7], i: usize, rows: u64, bytes: u64| -> bool {
+        let (off, st) = (l[1 + 2 * i] as u64, l[2 + 2 * i] as u64);
+        off + st * (rows - 1) + bytes <= len as u64
+    };
+    let (w, h) = (w as u64, h as u64);
+    let (cw, ch) = ((w - 1) / 2 + 1, (h - 1) / 2 + 1);
+    let color = &layout[0];
+    let ok = match color[0] {
+        RGBA => plane(color, 0, h, 4 * (w - 1) + 3),
+        I420 => plane(color, 0, h, w) && plane(color, 1, ch, cw) && plane(color, 2, ch, cw),
+        NV12 => plane(color, 0, h, w) && plane(color, 1, ch, 2 * cw),
+        _ => false,
+    };
+    ok && (tracks < 2
+        || match layout[1][0] {
+            RGBA => plane(&layout[1], 0, h, 4 * (w - 1) + 1),
+            I420 | NV12 => plane(&layout[1], 0, h, w),
+            _ => false,
+        })
+}
+
+/// The most rows (up to `h`) of a `w`-wide frame `layout` holds within `len` bytes (`fits`).
+fn fit_rows(layout: &[[u32; 7]; 2], tracks: u32, w: u32, h: u32, len: usize) -> u32 {
+    if fits(layout, tracks, w, h, len) {
+        return h;
+    }
+    // (fits holds for fewer rows if for more: the largest that does)
+    let (mut lo, mut hi) = (0u32, h);
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if fits(layout, tracks, w, mid, len) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
 }
 
 /// The page copied the frame into the slot at `buf`: `layout` is 14 words, per track the format
@@ -1003,13 +1135,25 @@ pub unsafe extern "C" fn vnhost_video_ready(id: u32, buf: u32, layout: *const u3
     let l = std::slice::from_raw_parts(layout, 14);
     with(|m| {
         let Some(s) = m.get_mut(&id) else { return };
-        if let Some(sl) = s.slots.iter_mut().find(|sl| sl.buf.as_ptr() as u32 == buf) {
+        let (w, h, tracks) = (s.w, s.h, s.tracks);
+        if let Some(sl) = s.slots.iter_mut().find(|sl| sl.writing && !sl.buf.is_empty() && sl.buf.as_ptr() as u32 == buf) {
             sl.writing = false;
+            let layout: [[u32; 7]; 2] = [l[..7].try_into().unwrap(), l[7..].try_into().unwrap()];
             if ok == 0 {
                 sl.frame = -1;
             } else {
-                sl.layout[0].copy_from_slice(&l[..7]);
-                sl.layout[1].copy_from_slice(&l[7..]);
+                // (planes that end before the slot's rows do: `convert` reads only the rows
+                // they hold, never memory past the slot; none: the frame is dropped)
+                let rows = fit_rows(&layout, tracks, w, h, sl.buf.len());
+                if rows < h {
+                    eprintln!("kura: video {id}: frame {}'s planes {layout:?} hold {rows} of {h} rows in {} bytes ({w} wide)", sl.frame, sl.buf.len());
+                }
+                if rows == 0 {
+                    sl.frame = -1;
+                } else {
+                    sl.layout = layout;
+                    sl.rows = rows;
+                }
             }
         }
         release(m, id);
@@ -1569,5 +1713,175 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every byte index `convert_any` (and the SIMD lanes, which stay inside each row's
+    /// pixels) reads of a `w` x `rows` frame: the model `fits` is held to.
+    fn max_read(layout: &[[u32; 7]; 2], tracks: u32, w: u32, rows: u32) -> Option<u64> {
+        let mut most = 0u64;
+        let mut at = |l: &[u32; 7], i: usize, y: u64, x: u64| most = most.max(l[1 + 2 * i] as u64 + y * l[2 + 2 * i] as u64 + x);
+        let c = &layout[0];
+        for y in 0..rows as u64 {
+            for x in 0..w as u64 {
+                match c[0] {
+                    RGBA => at(c, 0, y, 4 * x + 2),
+                    I420 => {
+                        at(c, 0, y, x);
+                        at(c, 1, y / 2, x / 2);
+                        at(c, 2, y / 2, x / 2);
+                    }
+                    NV12 => {
+                        at(c, 0, y, x);
+                        at(c, 1, y / 2, (x / 2) * 2 + 1);
+                    }
+                    _ => return None,
+                }
+                if tracks > 1 {
+                    match layout[1][0] {
+                        RGBA => at(&layout[1], 0, y, 4 * x),
+                        I420 | NV12 => at(&layout[1], 0, y, x),
+                        _ => return None,
+                    }
+                }
+            }
+        }
+        Some(most)
+    }
+
+    proptest::proptest! {
+        /// `fit_rows` is the most rows whose every read is inside the slot (and none when
+        /// the formats are unknown): the page's planes cannot make `frame` read past the slot.
+        #[test]
+        fn fit_rows_as_every_read(
+            w in 1u32..12, h in 1u32..12, tracks in 1u32..3,
+            fmt in (0u32..4, 0u32..4),
+            planes in proptest::collection::vec((0u32..300, 0u32..60), 6),
+            len in 0usize..1200,
+        ) {
+            let mut layout = [[0u32; 7]; 2];
+            layout[0][0] = fmt.0;
+            layout[1][0] = fmt.1;
+            for (i, &(o, st)) in planes.iter().enumerate() {
+                layout[i / 3][1 + 2 * (i % 3)] = o;
+                layout[i / 3][2 + 2 * (i % 3)] = st;
+            }
+            let r = fit_rows(&layout, tracks, w, h, len);
+            proptest::prop_assert!(r <= h);
+            match max_read(&layout, tracks, w, 1) {
+                None => proptest::prop_assert_eq!(r, 0),
+                Some(_) => {
+                    if r > 0 {
+                        proptest::prop_assert!(max_read(&layout, tracks, w, r).unwrap() < len as u64);
+                    }
+                    if r < h {
+                        proptest::prop_assert!(max_read(&layout, tracks, w, r + 1).unwrap() >= len as u64);
+                    }
+                }
+            }
+        }
+
+        /// The key frame before a frame by binary search: the one the walk back found.
+        #[test]
+        fn key_before_as_the_walk(keys in proptest::collection::vec(proptest::bool::weighted(0.1), 1..300), n in 0usize..400) {
+            let list: Vec<u32> = keys.iter().enumerate().filter(|k| *k.1).map(|k| k.0 as u32).collect();
+            let n = n.min(keys.len() - 1);
+            let walk = (0..=n).rev().find(|&k| keys[k]).unwrap_or(0);
+            proptest::prop_assert_eq!(key_before(&list, n), walk);
+        }
+    }
+
+    /// A slot whose planes the page laid out past its buffer: the frame is drawn only as far
+    /// as they hold (and dropped when not even a row fits), never read past the slot; the
+    /// slot of a zero-size copy has an address of its own (review b04).
+    #[test]
+    fn ready_checks_the_planes() {
+        let mut d = b"VNV1".to_vec();
+        for v in [4u32, 4, 1, 0, 0] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        let id = open(d).unwrap();
+        // (RGBA 4x4 needs 64 bytes at stride 16; the slot has 40: two rows)
+        let mut size = 40;
+        let buf = unsafe { vnhost_video_begin(id, 0, &mut size) };
+        let layout = [RGBA, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        unsafe { vnhost_video_ready(id, buf, layout.as_ptr(), 1) };
+        assert_eq!(with(|m| m[&id].slots.iter().find(|s| s.frame == 0).map(|s| s.rows)), Some(2));
+        // (frame_exact hands out only whole frames)
+        assert!(!frame_exact(id, 0, Duration::from_millis(1), |_, _| {}));
+        let mut px = vec![0xeeu8; 16 * 4];
+        assert!(unsafe { frame(id, 0, px.as_mut_ptr(), 16, 4, 4, Out::Ycc) });
+        assert_eq!(&px[32..], &[0xee; 32], "rows past what the planes hold are left alone");
+        // (an unknown format, or planes that hold no row: no frame)
+        for l in [[7, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [RGBA, 30, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]] {
+            let buf = unsafe { vnhost_video_begin(id, 1, &mut size) };
+            assert_ne!(buf, 0);
+            unsafe { vnhost_video_ready(id, buf, l.as_ptr(), 1) };
+            assert_eq!(vnhost_video_has(id, 1), 0, "{l:?}");
+        }
+        // (two zero-size copies: two slots, each found again by its own address)
+        let mut z = 0;
+        let a = unsafe { vnhost_video_begin(id, 2, &mut z) };
+        let b = unsafe { vnhost_video_begin(id, 3, &mut z) };
+        assert!(a != 0 && b != 0 && a != b);
+        unsafe { vnhost_video_ready(id, b, layout.as_ptr(), 0) };
+        assert!(with(|m| m[&id].slots.iter().any(|s| s.writing && s.frame == 2)), "the other slot is still written");
+        unsafe { vnhost_video_ready(id, a, layout.as_ptr(), 0) };
+        close(id);
+        assert!(!exists(id));
+    }
+
+    /// Sequential frames of a file's stream ask the store to fetch ahead about once per
+    /// PREFETCH_STEP of the window, not once per frame (each ask walks the whole window's
+    /// pieces under the vfs locks); a seek back asks again (review b04 P1).
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn prefetch_once_per_step() {
+        let d = raw(64, 64, 600, 128, 128);
+        let f = TempVnv::new(&d);
+        let (id, _) = open_file(&f.0).unwrap();
+        let mut px = vec![0u8; 64 * 64 * 4];
+        let p0 = PREFETCHES.load(Ordering::Relaxed);
+        for n in 0..400 {
+            assert!(unsafe { frame(id, n, px.as_mut_ptr(), 256, 64, 64, Out::Ycc) });
+            assert_eq!(px[0], 16u8.wrapping_add(n as u8));
+        }
+        let seq = PREFETCHES.load(Ordering::Relaxed) - p0;
+        // (a frame is 6 KiB: 400 frames move the window 2.4 MiB)
+        assert!((1..=6).contains(&seq), "{seq} prefetches for 400 frames");
+        assert!(unsafe { frame(id, 3, px.as_mut_ptr(), 256, 64, 64, Out::Ycc) });
+        assert!(PREFETCHES.load(Ordering::Relaxed) - p0 > seq, "a seek back fetches again");
+        close(id);
+    }
+
+    /// A track whose key frame lies more than READ_MAX before the frame asked for (one key
+    /// frame for a long movie, or a bad table): the stream fails, so the guest falls back,
+    /// instead of reading nothing for ever (the movie froze with no error).
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn key_frame_too_far_back_fails() {
+        let mib = 1u32 << 20;
+        let frames: Vec<(Vec<u8>, bool)> = (0..80).map(|k| (vec![k as u8], k == 0)).collect();
+        let mut d = crate::vnv::write(16, 16, &[("vp09.00.31.08".into(), frames)], None);
+        let i = info(&d).unwrap();
+        // (each frame 1 MiB, one after the other in a sparse file past the header)
+        let base = d.len() as u32;
+        for (k, &(off, size, key)) in i.tracks[0].1.iter().enumerate() {
+            let mut e = off.to_le_bytes().to_vec();
+            e.extend(size.to_le_bytes());
+            e.extend((key as u32).to_le_bytes());
+            let at = d.windows(12).position(|w| w == &e[..]).unwrap();
+            d[at..at + 4].copy_from_slice(&(base + k as u32 * mib).to_le_bytes());
+            d[at + 4..at + 8].copy_from_slice(&mib.to_le_bytes());
+        }
+        let f = TempVnv::new(&d);
+        std::fs::OpenOptions::new().write(true).open(&f.0).unwrap().set_len(base as u64 + 81 * mib as u64).unwrap();
+        let (id, _) = open_file(&f.0).unwrap();
+        fill(id, 10);
+        assert!(!failed(id));
+        fill(id, 70);
+        assert!(failed(id), "frame 70 is 70 MiB past the only key frame");
+        let mut px = vec![0u8; 16 * 16 * 4];
+        assert!(!unsafe { frame(id, 70, px.as_mut_ptr(), 64, 16, 16, Out::Ycc) });
+        close(id);
     }
 }
