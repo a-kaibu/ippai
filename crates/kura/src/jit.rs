@@ -52,6 +52,44 @@ fn debug_allowed(a: u32) -> bool {
 static WX_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
 static EXE_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
 
+/// The first and last page of `len` (not 0) bytes at `addr` (below 2 GB), the last one no
+/// further than the last page below 2 GB (addr + len is summed wide: it wrapped a 32-bit usize
+/// and the range lo..=hi then ran backwards).
+fn page_span(addr: u32, len: u32) -> (usize, usize) {
+    let end = (addr as u64 + len as u64 - 1) >> 12;
+    ((addr >> 12) as usize, end.min((1 << 19) - 1) as usize)
+}
+
+#[cfg(kani)]
+mod page_span_proofs {
+    #[kani::proof]
+    fn span_is_ordered_and_below_2g() {
+        let addr: u32 = kani::any_where(|&a| a < 1 << 31);
+        let len: u32 = kani::any_where(|&l| l > 0);
+        let (lo, hi) = super::page_span(addr, len);
+        assert!(lo <= hi && hi < 1 << 19);
+    }
+}
+
+#[cfg(test)]
+mod page_span_tests {
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn span_is_ordered_and_below_2g(addr in 0u32..1 << 31, len in 1u32..) {
+            let (lo, hi) = super::page_span(addr, len);
+            prop_assert!(lo <= hi && hi < 1 << 19);
+            prop_assert_eq!(lo as u64, addr as u64 >> 12);
+            prop_assert_eq!(hi as u64, ((addr as u64 + len as u64 - 1) >> 12).min((1 << 19) - 1));
+        }
+    }
+    #[test]
+    fn the_end_of_the_address_space() {
+        assert_eq!(super::page_span(0x7fff_f000, u32::MAX), (0x7ffff, 0x7ffff));
+        assert_eq!(super::page_span(0x1000, 0x2001), (1, 3));
+    }
+}
+
 fn set_pages(map: &[AtomicU32], addr: usize, len: usize, on: bool) {
     if len == 0 || addr >= 1 << 31 {
         return;
@@ -175,6 +213,7 @@ fn park_page(st: &mut State, a: u32) -> (bool, bool) {
                 st.used -= 1;
             }
             st.known.remove(&e);
+            st.maps_rev += 1;
             for c in st.calls.iter_mut().filter(|c| c[1] == v) {
                 *c = [0, 0];
             }
@@ -354,6 +393,10 @@ struct State {
     hints: HashMap<u32, u32>,
     /// functions the compiler thread is translating, and where it says it is done
     pending: HashSet<u32>,
+    /// the copy of `misses`, `known` and `hints` the jobs take with them, and the count of the
+    /// changes to them that their sizes do not show (see [`JobMaps`])
+    job_maps: JobMaps,
+    maps_rev: u64,
     done_tx: std::sync::mpsc::Sender<Batch>,
     done_rx: std::sync::mpsc::Receiver<Batch>,
     /// this state's number (its jobs' [`Job::state`]): a thread's state is made again when code
@@ -673,7 +716,7 @@ pub fn fault_pages(addr: u32, len: u32, kind: u8, checks: bool) {
         let m: &'static [std::sync::atomic::AtomicU8] = Box::leak((0..1 << 19).map(|_| std::sync::atomic::AtomicU8::new(0)).collect());
         m
     });
-    let (lo, hi) = (addr as usize >> 12, ((addr as usize + len as usize - 1) >> 12).min((1 << 19) - 1));
+    let (lo, hi) = page_span(addr, len);
     for b in &map[lo..=hi] {
         b.store(kind, Ordering::Relaxed);
     }
@@ -774,6 +817,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
             static STATES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             State {
                 pending: HashSet::new(),
+                job_maps: JobMaps::default(),
+                maps_rev: 0,
                 done_tx,
                 done_rx,
                 id: STATES.fetch_add(1, Ordering::Relaxed),
@@ -1753,6 +1798,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
             *w += 1;
             if *w >= FN_WINDOWS {
                 st.hot.remove(&(from, to));
+                st.maps_rev += 1;
                 if st.hints.insert(site, to).is_some() {
                     st.rehinted.insert(site);
                 }
@@ -1985,6 +2031,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             return false;
         }
         st.misses.remove(&eip);
+        st.maps_rev += 1;
         if cpu.mode64 != 0 {
             return compile_long(st, cpu, mem);
         }
@@ -2142,7 +2189,8 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         // a few ms here, several times that on a phone: a dropped frame each, in the story's
         // scene changes)
         let tc = Instant::now();
-        let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), state: st.id, done: st.done_tx.clone() };
+        let maps = st.job_maps.get(&st.misses, &st.known, &st.hints, st.maps_rev);
+        let job = Job { eip, lo, hi, part, build, maps, state: st.id, done: st.done_tx.clone() };
         if crate::env_on!("IPPAI_JIT_TIME") {
             eprintln!("vnjit job {eip:#x}: misses {} known {} hints {}, copied in {:?}", st.misses.len(), st.known.len(), st.hints.len(), tc.elapsed());
         }
@@ -2162,15 +2210,98 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
 type Built = Option<(Vec<u8>, jit::Region, Vec<u8>)>;
 
 /// A function for the compiler thread to translate, with this thread's view of what ran.
+/// What a job reads of its thread's state: the addresses in `misses` and `known`, and `hints`.
+type Maps = (HashMap<u32, u32>, HashSet<u32>, HashMap<u32, u32>);
+
+/// The copy of a thread's `misses`, `known` and `hints` its jobs share. A scene change asks for
+/// hundreds of functions, and each job took its own copy of all three (tens of thousands of
+/// entries each, on the guest thread, all alive in the queue at once). The translation reads
+/// only which addresses are in them and what the hints say, so one copy serves until an
+/// address is added (the sizes say so) or one is taken out or a hint replaced (`rev` counts
+/// those); a miss counted again changes nothing a job reads.
+#[derive(Default)]
+struct JobMaps {
+    made: Option<(std::sync::Arc<Maps>, [usize; 3], u64)>,
+}
+
+impl JobMaps {
+    fn get(&mut self, misses: &HashMap<u32, u32>, known: &HashSet<u32>, hints: &HashMap<u32, u32>, rev: u64) -> std::sync::Arc<Maps> {
+        let at = [misses.len(), known.len(), hints.len()];
+        match &self.made {
+            Some((m, a, r)) if *a == at && *r == rev => m.clone(),
+            _ => {
+                let m = std::sync::Arc::new((misses.clone(), known.clone(), hints.clone()));
+                self.made = Some((m.clone(), at, rev));
+                m
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod job_maps_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Any changes made as jit.rs makes them (an address added; one taken out or a hint
+        /// replaced with `rev` counted; a miss counted again): the copy a job gets names the
+        /// addresses and hints of that moment, and it is the same copy while nothing a job
+        /// reads changed.
+        #[test]
+        fn a_job_reads_the_state_of_its_moment(ops in proptest::collection::vec((0u8..8, 0u32..12, 0u32..4), 1..200)) {
+            let (mut misses, mut known, mut hints) = (HashMap::new(), HashSet::new(), HashMap::new());
+            let (mut rev, mut cache) = (0u64, JobMaps::default());
+            let mut last: Option<std::sync::Arc<Maps>> = None;
+            let mut changed = true;
+            for (op, a, v) in ops {
+                match op {
+                    0 => {
+                        changed |= !misses.contains_key(&a);
+                        *misses.entry(a).or_insert(0) += 1;
+                    }
+                    1 => changed |= known.insert(a),
+                    2 => {
+                        // (counted whether or not it changed anything: copied again then, which is allowed)
+                        changed = true;
+                        rev += 1;
+                        hints.insert(a, v);
+                    }
+                    3 => {
+                        changed = true;
+                        misses.remove(&a);
+                        rev += 1;
+                    }
+                    4 => {
+                        changed = true;
+                        known.remove(&a);
+                        rev += 1;
+                    }
+                    _ => {
+                        let m = cache.get(&misses, &known, &hints, rev);
+                        let keys = |h: &HashMap<u32, u32>| h.keys().copied().collect::<HashSet<u32>>();
+                        prop_assert_eq!(keys(&m.0), keys(&misses));
+                        prop_assert_eq!(&m.1, &known);
+                        prop_assert_eq!(&m.2, &hints);
+                        if let (Some(l), false) = (&last, changed) {
+                            prop_assert!(std::sync::Arc::ptr_eq(l, &m), "copied again though nothing changed");
+                        }
+                        last = Some(m);
+                        changed = false;
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct Job {
     eip: u32,
     lo: u32,
     hi: u32,
     part: bool,
     build: u32,
-    misses: HashMap<u32, u32>,
-    known: HashSet<u32>,
-    hints: HashMap<u32, u32>,
+    maps: std::sync::Arc<Maps>,
     /// the [`State`] asking (its jobs that wait together come back as one batch, to its `done`).
     /// Not the thread: a thread whose state was made again (check_generation) has jobs of both
     /// in the queue, and a batch of both went to the old state's channel, which nobody reads:
@@ -2241,7 +2372,7 @@ fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
                     let exact = jit::mx_exact();
                     let items: Vec<(u32, u32, Built)> = jobs
                         .into_iter()
-                        .map(|j| (j.eip, j.build, build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.misses, &j.known, &j.hints)))
+                        .map(|j| (j.eip, j.build, build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.maps.0, &j.maps.1, &j.maps.2)))
                         .collect();
                     let mods: Vec<&[u8]> = items.iter().filter_map(|(_, _, b)| b.as_ref().map(|b| &b.0[..])).collect();
                     let merged = if mods.len() > 1 { jit::wasm::merge(&mods, &[]) } else { None };
