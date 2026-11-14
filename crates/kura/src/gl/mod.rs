@@ -337,7 +337,8 @@ impl Ctx {
 }
 
 pub(crate) struct Gl {
-    ctxs: HashMap<u32, Ctx>,
+    /// (boxed: `with` takes the current one out and puts it back on every call)
+    ctxs: HashMap<u32, Box<Ctx>>,
     next_ctx: u32,
     textures: HashMap<u32, Texture>,
     buffers: HashMap<u32, Buffer>,
@@ -396,6 +397,18 @@ fn lock() -> std::sync::MutexGuard<'static, Option<Gl>> {
     g
 }
 
+/// GL_MAX_TEXTURE_SIZE: what glGet answers and glTexImage2D, glCopyTexImage2D, glReadPixels take.
+const MAX_TEXTURE: u32 = 8192;
+
+/// GL_MAX_MODELVIEW / PROJECTION / TEXTURE_STACK_DEPTH (Mesa's), by the matrix mode or the
+/// glGet name.
+fn stack_depth(mode: u32) -> usize {
+    match mode {
+        GL_TEXTURE | 0x0D39 => 10,
+        _ => 32,
+    }
+}
+
 /// Runs `f` with the current context (nothing without one).
 fn with<R: Default>(f: impl FnOnce(&mut Gl, &mut Ctx) -> R) -> R {
     let id = CURRENT.with(|c| c.get());
@@ -405,7 +418,7 @@ fn with<R: Default>(f: impl FnOnce(&mut Gl, &mut Ctx) -> R) -> R {
     let mut g = lock();
     let g = g.as_mut().unwrap();
     let Some(mut c) = g.ctxs.remove(&id) else { return R::default() };
-    let r = f(g, &mut c);
+    let r = f(g, &mut *c);
     g.ctxs.insert(id, c);
     r
 }
@@ -432,7 +445,7 @@ pub extern "C" fn vngl_context_create(_share: u32) -> u32 {
     let g = g.as_mut().unwrap();
     let id = g.next_ctx;
     g.next_ctx += 1;
-    g.ctxs.insert(id, Ctx::new());
+    g.ctxs.insert(id, Box::new(Ctx::new()));
     id
 }
 
@@ -602,7 +615,8 @@ fn get(g: &Gl, c: &Ctx, pname: u32) -> Option<Vec<f64>> {
     Some(match pname {
         0x0BA2 => i(&c.viewport),
         0x0C10 => i(&c.scissor),
-        0x0D33 => vec![8192.0],
+        0x0D33 => vec![MAX_TEXTURE as f64],
+        0x0D36 | 0x0D38 | 0x0D39 => vec![stack_depth(pname) as f64],
         0x84E2 => vec![2.0],
         0x8872 | 0x8B4D | 0x8B4C => vec![8.0],
         0x8869 => vec![16.0],
@@ -863,6 +877,10 @@ unsafe extern "C" fn glMultMatrixd(m: *const f64) {
 }
 extern "C" fn glPushMatrix() {
     with(|_, c| {
+        // (GL_STACK_OVERFLOW past the depth: a push per frame without its pop grows nothing)
+        if c.stack().len() >= stack_depth(c.matrix_mode) {
+            return c.err(0x0503);
+        }
         let t = *c.top();
         c.stack().push(t);
     })
@@ -1715,7 +1733,7 @@ pub(crate) unsafe fn to_rgba(src: *const u8, w: u32, h: u32, format: u32, ty: u3
     let row = l * group;
     let pitch = if s >= a { row } else { row.div_ceil(a) * a };
     let src = src.add(unpack[2].max(0) as usize * pitch + unpack[3].max(0) as usize * group);
-    let mut out = vec![0u8; (w * h * 4) as usize];
+    let mut out = vec![0u8; w as usize * h as usize * 4];
     let mut v = [0u8; 4];
     for y in 0..h as usize {
         let row = src.add(y * pitch);
@@ -1816,7 +1834,7 @@ unsafe extern "C" fn glTexImage2D(target: u32, level: i32, internal: i32, w: i32
         if target != GL_TEXTURE_2D {
             return c.err(GL_INVALID_ENUM);
         }
-        if level < 0 || level > 15 || w < 0 || h < 0 || !(0..=1).contains(&border) || internal <= 0 || (5..0x1900).contains(&internal) {
+        if level < 0 || level > 15 || !(0..=MAX_TEXTURE as i32).contains(&w) || !(0..=MAX_TEXTURE as i32).contains(&h) || !(0..=1).contains(&border) || internal <= 0 || (5..0x1900).contains(&internal) {
             return c.err(GL_INVALID_VALUE);
         }
         let e = pixels_err(format, ty);
@@ -2008,6 +2026,9 @@ extern "C" fn glCopyTexImage2D(target: u32, level: i32, internal: u32, x: i32, y
         return;
     }
     with(|g, c| {
+        if w > MAX_TEXTURE as i32 || h > MAX_TEXTURE as i32 {
+            return c.err(GL_INVALID_VALUE);
+        }
         if let Some(t) = g.textures.get_mut(&bound_texture(c)) {
             if level == 0 {
                 alloc_texture(t, w as u32, h as u32, base_format(internal as i32));
@@ -2021,6 +2042,10 @@ extern "C" fn glCopyTexImage2D(target: u32, level: i32, internal: u32, x: i32, y
 unsafe extern "C" fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, out: *mut u8) {
     if w <= 0 || h <= 0 || out.is_null() {
         return;
+    }
+    // (no target is wider: w * h * 4 fits, and the page's rows of w * 4 fit the buffer)
+    if w > MAX_TEXTURE as i32 || h > MAX_TEXTURE as i32 {
+        return with(|_, c| c.err(GL_INVALID_VALUE));
     }
     let req = with(|g, c| {
         let (src, sl, sw, sh) = read_target(g, c)?;
