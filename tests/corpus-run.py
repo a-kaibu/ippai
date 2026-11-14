@@ -102,7 +102,9 @@ def pe_machine(path, store):
         return 0
 
 def wait_port(p):
-    for _ in range(50):
+    # (a minute: a server makes sake's C:\\ again at its start when the store's is older than its
+    # fonts or RPG Maker RTPs, ~20 s on a busy runner; the page found no server after 10 s)
+    for _ in range(300):
         try: socket.create_connection(('127.0.0.1', p), 0.2).close(); return True
         except OSError: time.sleep(0.2)
     return False

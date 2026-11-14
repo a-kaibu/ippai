@@ -23,6 +23,9 @@ import pickexe
 # setup programs and self-extractors, by what their exe carries
 MARKS = [
     (b'DGCA SelfExtractor', 'dgca'),
+    # (a DGCA self-extractor whose stub is packed, so its version text is not there to read:
+    # the archive's own first chunk, "DGCA" and its 32-byte header size. #198 巣作りドラゴン DragonT.exe)
+    (b'DGCA\x20\x00\x00\x00', 'dgca'),
     (b'Gentee Launcher', 'gentee'),
     (b'YU-RIS Self-EXE Extracter', 'yuris-sfx'),
     (b'EXEpress CX', 'exepress'),

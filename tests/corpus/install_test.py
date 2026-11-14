@@ -52,10 +52,13 @@ class Choose(unittest.TestCase):
 
     def test_self_extractors_by_their_marks(self):
         for mark, name in [(b'DGCA SelfExtractor', 'fusikano_try.exe'), (b'Gentee Launcher', 'yumekui_trial_1_setup.exe'),
-                           (b'-YU-RIS Self-EXE Extracter', '待雪の花 WEB体験版.exe'), (b"LHA's SFX ", 'mrsjs.exe')]:
+                           (b'-YU-RIS Self-EXE Extracter', '待雪の花 WEB体験版.exe'), (b"LHA's SFX ", 'mrsjs.exe'),
+                           # (巣作りドラゴン's packed DGCA stub: the archive's first chunk header only)
+                           (b'DGCA\x20\x00\x00\x00\x70\xd2\xa7\x01', 'DragonT.exe')]:
             self.assertEqual(self.choose({name: MZ + b'x' * 99 + mark + b'y' * 50}, name), name)
-        # (a game without a mark is left alone)
+        # (a game without a mark is left alone, and so is one that only names DGCA in its text)
         self.assertIsNone(self.choose({'game.exe': MZ + b'game'}, 'game.exe'))
+        self.assertIsNone(self.choose({'game.exe': MZ + b'made with DGCA 1.0\0'}, 'game.exe'))
 
     def test_install_media(self):
         # BLUEGALE's ミセス・ジャンキー: autorun.inf, setup.exe and the game in exe/
