@@ -9,7 +9,9 @@
 //          group's MIN_ROUNDS; one more
 //          before them warms the JIT's saved translations and is not counted), SCALE (work per
 //          case, default 1), ONLY="exe:case ..." (just those), TIMEOUT (s per run, default 240),
-//          PLAYWRIGHT (the playwright module), CHROME_ARGS (more browser flags)
+//          PLAYWRIGHT (the playwright module), CHROME_ARGS (more browser flags), BENCH_ENV
+//          ("NAME=value ..." more of the program's environment, e.g. IPPAI_D3D_STATS=1: its
+//          "d3d9 stats" lines are printed)
 //
 // Pages: play.html?autostart&headless with the bench tree mounted, IPPAI_NOPACE (frames as fast as
 // the guest makes them) and Chromium's frame rate unlimited (no vsync), so frame times are what
@@ -33,6 +35,7 @@ const ROUNDS = Number(process.env.ROUNDS || Math.max(3, ...groups.map((g) => MIN
 const SCALE = process.env.SCALE ?? "1";
 const TIMEOUT = Number(process.env.TIMEOUT ?? 240) * 1000;
 const only = (process.env.ONLY ?? "").split(/\s+/).filter(Boolean);
+const extraEnv = (process.env.BENCH_ENV ?? "").split(/\s+/).filter(Boolean).map((e) => `&env=${encodeURIComponent(e)}`).join("");
 
 const todo = groups.flatMap((g) => {
   if (!GROUPS[g]) throw new Error(`no group ${g}`);
@@ -63,7 +66,7 @@ async function runOnce(build, c) {
   const scale = c.format === "plain" ? "" : SCALE;
   const args = [c.args, c.args && scale].filter(Boolean).join(",");
   const url =
-    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1&mount=/ippai/game=bench${c.page ? `&${c.page}` : ""}` +
+    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1${extraEnv}&mount=/ippai/game=bench${c.page ? `&${c.page}` : ""}` +
     `${args ? `&args=${encodeURIComponent(args)}` : ""}&run=${encodeURIComponent(`Z:\\ippai\\game\\${c.exe}`)}`;
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
@@ -83,6 +86,7 @@ async function runOnce(build, c) {
     if (log.length < 400) log.push(text);
     for (const line of text.split("\n")) {
       let r;
+      if (line.startsWith("d3d9 stats/")) console.log(`${build.name} ${c.exe}:${c.args}: ${line}`);
       if (line === "BENCH-HOST nopace") nopace = true;
       // (the GPU time of the timed frames, where the page has timestamp-query: "<case>.gpu", ms
       // per frame)

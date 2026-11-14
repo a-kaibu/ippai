@@ -110,9 +110,85 @@ pub struct Buffer {
     pub fmt: u32,
     pub pool: u32,
     pub mem: u32,
+    /// (#119) Its copy on the page (a page buffer, 0: none yet), for a buffer that is not
+    /// D3DUSAGE_DYNAMIC: draws read that instead of their own copy of the bytes. `gen` counts
+    /// its writable locks and their unlocks, `sent` is the `gen` the page has, `dirty` the
+    /// bytes locked for writing since.
+    pub gpu: u32,
+    pub gen: u64,
+    pub sent: u64,
+    pub dirty: Option<(u32, u32)>,
+    pub locked: bool,
+    /// what the page copy holds, and a count of its changes (draws hash that: a buffer locked
+    /// and written with the same bytes again leaves a still frame the same)
+    pub shadow: Vec<u8>,
+    pub cgen: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// A buffer whose page copy a draw may read (`Buffer::gpu`): not dynamic (the game writes those
+/// every frame, often past what it locks); IPPAI_NORESIDENT=1: none.
+fn resident(b: &Buffer) -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    b.usage & 0x200 == 0 && b.len >= 4 && !*OFF.get_or_init(|| std::env::var_os("IPPAI_NORESIDENT").is_some_and(|v| v != "0"))
+}
+
+/// The page copy of buffer `obj`, made or brought up to date with what was locked for writing
+/// since it was sent (`Buffer::dirty`: the words of it that differ from what the page has):
+/// its page buffer and the count of its changes.
+fn page_buffer(objs: &mut HashMap<u32, super::Obj, super::FastHash>, obj: u32) -> (u32, u64) {
+    let Some(Data::Buffer(b)) = objs.get_mut(&obj).map(|o| &mut o.data) else { return (0, 0) };
+    let size = b.len.next_multiple_of(4);
+    if b.gpu == 0 {
+        b.gpu = crate::d3d11::page_id();
+        b.dirty = Some((0, b.len));
+        b.shadow = vec![0; size as usize];
+        gpu::record(|q| q.cmd(&[gpu::CREATE_BUFFER, b.gpu, size]));
+        b.cgen += 1;
+        // (all of it once, zeros too: the page's buffer starts as zeros, so sent as they are)
+        let bytes = unsafe { std::slice::from_raw_parts(b.mem as *const u8, b.len as usize) };
+        b.shadow[..bytes.len()].copy_from_slice(bytes);
+        gpu::record(|q| {
+            let off = q.blob(&b.shadow);
+            q.cmd(&[gpu::WRITE_BUFFER, b.gpu, 0, off, size]);
+        });
+        RESIDENT_SENT.fetch_add(size as u64, std::sync::atomic::Ordering::Relaxed);
+        b.dirty = None;
+        b.sent = b.gen;
+    }
+    if let Some((lo, hi)) = b.dirty.take() {
+        // (whole words; only from the first to the last that changed)
+        let (lo, hi) = ((lo & !3) as usize, (hi.min(b.len) as usize).next_multiple_of(4).min(size as usize));
+        if hi > lo {
+            let now = unsafe { std::slice::from_raw_parts((b.mem as usize + lo) as *const u8, (hi - lo).min(b.len as usize - lo)) };
+            let old = &b.shadow[lo..lo + now.len()];
+            if let (Some(a), Some(z)) = (now.iter().zip(old).position(|(x, y)| x != y), now.iter().zip(old).rposition(|(x, y)| x != y)) {
+                let (a, z) = (a & !3, (z + 1).next_multiple_of(4).min(now.len()));
+                b.shadow[lo + a..lo + z].copy_from_slice(&now[a..z]);
+                let words = &b.shadow[lo + a..(lo + z).next_multiple_of(4)];
+                gpu::record(|q| {
+                    let off = q.blob(words);
+                    q.cmd(&[gpu::WRITE_BUFFER, b.gpu, (lo + a) as u32, off, words.len() as u32]);
+                });
+                RESIDENT_SENT.fetch_add(words.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                b.cgen += 1;
+            }
+        }
+    }
+    b.sent = b.gen;
+    (b.gpu, b.cgen)
+}
+
+/// In a DRAW's (buffer, offset) pairs: the data block
+pub const DATA: u32 = 0xffff_ffff;
+/// a pair's buffer marked so: the indices' (the page buffers' numbers are below it)
+pub const INDEX_PAIR: u32 = 0x8000_0000;
+
+/// Bytes sent to page copies of buffers, and bytes draws read from them instead of copying
+/// (#119; stats)
+pub static RESIDENT_SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static RESIDENT_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Elem {
     pub stream: u32,
     pub offset: u32,
@@ -215,10 +291,6 @@ pub struct Device {
     /// the last uniform blocks written in this batch (bytes, offset)
     last_vs: (Vec<u8>, u32),
     last_ps: (Vec<u8>, u32),
-    // Ping-pong with the last blocks: draws reuse allocations while still comparing
-    // against the previous bytes before reusing their GPU offsets.
-    vs_scratch: Vec<u8>,
-    ps_scratch: Vec<u8>,
     batch_gen: u64,
     /// the batch `last_vs` / `last_ps` were written to
     uniform_gen: u64,
@@ -234,6 +306,14 @@ pub struct Device {
     pub palettes: HashMap<u32, Box<[u8; 1024]>>,
     pub cur_palette: u32,
     pub pal_gen: u64,
+    /// Counts the calls that may change what a draw prepares from the device's state (its
+    /// layout, shaders, pipeline: `Prep`) and the calls that may change its uniform blocks;
+    /// `stale` says which (#118).
+    pub prep_gen: u64,
+    pub uni_gen: u64,
+    /// the last draw's preparation, and its uniform blocks
+    prep: Option<Box<Prep>>,
+    uni: Option<Box<Uni>>,
 }
 
 /// The render states Direct3D 9 has (GetRenderState of the others: D3DERR_INVALIDCALL), as
@@ -441,8 +521,98 @@ fn f2u(v: f32) -> u32 {
     v.to_bits()
 }
 
+/// Whether a call may change what draws prepare from the device's state (`Prep`: the vertex
+/// layout, shaders, pipeline, samplers) and their uniform blocks (`Uni`), before it runs: the
+/// calls named here change neither (a value set again, the uniforms' own states, getters,
+/// locks); every other call may (#118). The first is the second too.
+unsafe fn stale(d: &D3d, iface: u32, m: u32, a: &dyn Fn(usize) -> u32) -> (bool, bool) {
+    const BOTH: (bool, bool) = (true, true);
+    const UNI: (bool, bool) = (false, true);
+    const NONE: (bool, bool) = (false, false);
+    match iface {
+        // (their contents: the draws read those again, and textures' and surfaces' page
+        // textures and formats come from the objects at each draw)
+        IF_VB | IF_IB | IF_TEXTURE | IF_SURFACE => return NONE,
+        IF_DEVICE => {}
+        _ => return BOTH,
+    }
+    let Some(dev) = d.dev.as_ref() else { return BOTH };
+    // (a state block being recorded takes the Set* calls: conservative)
+    if dev.recording.is_some() {
+        return BOTH;
+    }
+    let st = &dev.st;
+    match m {
+        // BeginScene, EndScene, Clear, SetScissorRect, draws (the scissor is each draw's own)
+        41 | 42 | 43 | 75 | 81..=84 => NONE,
+        // getters
+        45 | 48 | 50 | 52 | 54 | 56 | 58 | 64 | 66 | 68 | 76 | 78 | 80 | 88 | 90 | 93 | 95 | 97 | 99 | 101 | 103 | 105 | 108 | 110 | 112 | 114 => NONE,
+        // SetTransform, MultiplyTransform, SetViewport, SetMaterial, SetLight (not which are on),
+        // the shader constants
+        44 | 46 | 47 | 49 | 51 | 94 | 96 | 98 | 109 | 111 | 113 => UNI,
+        57 => match st.rs.get(a(1) as usize) {
+            Some(&v) if v == a(2) => NONE,
+            // ALPHAREF, TEXTUREFACTOR: uniforms; BLENDFACTOR: each draw's own
+            Some(_) if a(1) == 24 || a(1) == 60 => UNI,
+            Some(_) if a(1) == 193 => NONE,
+            _ => BOTH,
+        },
+        67 => match st.tss.get(a(1) as usize).and_then(|s| s.get(a(2) as usize)) {
+            Some(&v) if v == a(3) => NONE,
+            // D3DTSS_CONSTANT: a uniform
+            Some(_) if a(2) == 32 => UNI,
+            _ => BOTH,
+        },
+        69 => match sampler_slot(a(1)).and_then(|s| st.ss[s].get(a(2) as usize).map(|&v| (s, v))) {
+            Some((_, v)) if v == a(3) => NONE,
+            // (the filters, ADDRESSW, LOD and the rest: each draw's sampler; ADDRESSU/V, BORDERCOLOR
+            // and MAGFILTER only when they change the addressing the pixel shader does)
+            Some((s, _)) => {
+                let mut ss = st.ss[s];
+                let addr = |ss: &[u32; 14]| {
+                    let f = dxwgsl::addr::flags(ss[1], ss[2], ss[5] >= 2);
+                    (f, if f != 0 { ss[4] } else { 0 })
+                };
+                let before = addr(&ss);
+                ss[a(2) as usize] = a(3);
+                if addr(&ss) == before { NONE } else { BOTH }
+            }
+            None => BOTH,
+        },
+        // SetTexture: another texture of the same kind (its page texture and format are each
+        // draw's own)
+        65 => {
+            let kind = |t: u32| d.objs.get(&t).map(|o| o.iface);
+            match sampler_slot(a(1)) {
+                Some(s) if kind(st.textures[s]) == kind(d.id_of(a(2))) => NONE,
+                _ => BOTH,
+            }
+        }
+        // SetFVF (0: ignored; the one in use: no declaration either)
+        89 if a(1) == 0 || st.fvf == a(1) && st.decl == 0 => NONE,
+        // SetVertexDeclaration (the one in use, with its FVF)
+        87 if st.decl == d.id_of(a(1)) && matches!(d.objs.get(&st.decl).map(|o| &o.data), Some(Data::Decl(dc)) if dc.fvf == st.fvf) => NONE,
+        92 if st.vs == d.id_of(a(1)) => NONE,
+        107 if st.ps == d.id_of(a(1)) => NONE,
+        // SetStreamSource: another buffer or offset (each draw's own), the same stride
+        100 => match st.streams.get(a(1) as usize) {
+            Some(&(_, _, stride)) if stride == a(4) => NONE,
+            _ => BOTH,
+        },
+        102 if st.freq.get(a(1) as usize) == Some(&a(2)) => NONE,
+        // SetIndices: the index format is each draw's own
+        104 => NONE,
+        _ => BOTH,
+    }
+}
+
 pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32, after: &mut After) -> u32 {
     let a = |i: usize| *args.add(i);
+    let (p, u) = stale(d, iface, m, &a);
+    if let Some(dev) = d.dev.as_mut() {
+        dev.prep_gen += p as u64;
+        dev.uni_gen += u as u64;
+    }
     match iface {
         IF_D3D9 => d3d9_call(d, m, this, &a),
         IF_DEVICE => device_call(d, m, &a, after),
@@ -788,6 +958,12 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
 }
 
 impl Device {
+    /// Whatever draws prepared from the state is to be prepared again (`stale`).
+    pub fn stale_all(&mut self) {
+        self.prep_gen += 1;
+        self.uni_gen += 1;
+    }
+
     fn new_gpu(&mut self) -> u32 {
         self.next_gpu += 1;
         self.next_gpu
@@ -895,8 +1071,6 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         dummy: 0,
         last_vs: (Vec::new(), 0),
         last_ps: (Vec::new(), 0),
-        vs_scratch: Vec::new(),
-        ps_scratch: Vec::new(),
         batch_gen: u64::MAX,
         uniform_gen: u64::MAX,
         in_scene: false,
@@ -907,6 +1081,10 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         palettes: HashMap::new(),
         cur_palette: 0,
         pal_gen: 0,
+        prep_gen: 0,
+        uni_gen: 0,
+        prep: None,
+        uni: None,
     });
     let _ = dev.new_gpu();
     // (another device of the program waits: its calls switch back to it, `D3d::activate`)
@@ -1141,7 +1319,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             if mem == 0 {
                 return super::E_OUTOFMEMORY;
             }
-            let b = Buffer { len, usage, fmt: f, pool, mem };
+            let b = Buffer { len, usage, fmt: f, pool, mem, gpu: 0, gen: 0, sent: 0, dirty: None, locked: false, shadow: Vec::new(), cgen: 0 };
             let o = d.new_obj(if m == 26 { IF_VB } else { IF_IB }, 0, Data::Buffer(b));
             wrp(out, 0, o);
             S_OK
@@ -2526,12 +2704,28 @@ unsafe fn buffer_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usi
         9 => 0,
         10 => if iface == IF_VB { RT_VB } else { RT_IB },
         11 => {
-            let Some(Data::Buffer(b)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+            // Lock(offset, size (0: to the end), out, flags)
+            let Some(Data::Buffer(b)) = d.objs.get_mut(&this).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
             let off = a(1).min(b.len);
             wrp(a(3), 0, b.mem + off);
+            // (not D3DLOCK_READONLY: its page copy is to be sent again, `page_buffer`)
+            if a(4) & 0x10 == 0 {
+                let end = if a(2) == 0 { b.len } else { off.saturating_add(a(2)).min(b.len) };
+                b.dirty = Some(b.dirty.map_or((off, end), |(lo, hi)| (lo.min(off), hi.max(end))));
+                b.gen += 1;
+                b.locked = true;
+            }
             S_OK
         }
-        12 => S_OK,
+        12 => {
+            // (what it wrote while locked: sent at the next draw)
+            if let Some(Data::Buffer(b)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
+                if std::mem::take(&mut b.locked) {
+                    b.gen += 1;
+                }
+            }
+            S_OK
+        }
         13 => {
             let Some(Data::Buffer(b)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let desc = if iface == IF_VB {
@@ -3165,15 +3359,6 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let rts = dev.rt;
     // (the depth buffer's size, whether its tests are on or not: see depth_clip)
     let zsize = surface_gpu(d, dev.ds).map(|z| (z.2, z.3));
-    // the vertex layout
-    let (elems, fvf_stride) = if st.decl != 0 {
-        match d.objs.get(&st.decl).map(|o| &o.data) {
-            Some(Data::Decl(dc)) => (dc.elems.clone(), 0),
-            _ => return D3DERR_INVALIDCALL,
-        }
-    } else {
-        fvf_elems(st.fvf)
-    };
     let nverts = vertex_count(prim, prims);
     // where the vertices come from: (stream, data pointer of the first used vertex, stride, count)
     // (the vertices the indices name: Direct3D's hardware path reads BaseVertexIndex + index
@@ -3213,11 +3398,83 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let instances = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 { (st.freq[0] & 0x3fff_ffff).max(1) } else { 1 };
     let freq = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 { st.freq } else { [1; 16] };
     let divider = move |s: u32| -> Option<u32> { Some(freq[s as usize & 15]).filter(|f| f & 0x8000_0000 != 0).map(|f| (f & 0x3fff_ffff).max(1)) };
-    let mut streams: Vec<(u32, u32, u32)> = Vec::new(); // (stream, ptr, stride)
-    let mut used: Vec<u32> = elems.iter().map(|e| e.stream).collect();
-    used.sort();
-    used.dedup();
-    for &s in &used {
+    // the targets
+    let target = surface_gpu(d, rt);
+    // (one of another size too: the page draws with one of the target's size, render/d3d.rs depth_for)
+    let dsg = surface_gpu(d, ds);
+    // render targets 1-3 (in a row from 1, of the size of 0)
+    let more: Vec<(u32, (u32, u32, u32, u32, u32))> = match target {
+        Some(target) => rts[1..].iter().map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g))).collect(),
+        None => Vec::new(),
+    };
+    let topo = PRIM_TOPOLOGY[prim as usize];
+    // (WebGPU restarts an indexed strip at an index of all ones, Direct3D 9 never does: 16-bit
+    // strips with a 0xffff go out as 32-bit indices)
+    let widen = matches!(index, Some((iptr, 2, _)) if (topo == 2 || topo == 4) && (0..nverts).any(|k| *((iptr + 2 * k) as *const u16) == 0xffff));
+    // What the draw prepares from the state (#118): the last draw's, when no call since may have
+    // changed it (`stale`) and this draw is of the same kind
+    let mut more_fmts = [u32::MAX; 3];
+    for (m, (_, g)) in more_fmts.iter_mut().zip(&more) {
+        *m = g.4;
+    }
+    let pkey = PrepKey {
+        gen: dev.prep_gen,
+        prim,
+        kind: match src {
+            Src::Streams(_) => 0,
+            Src::Indexed { .. } => 1,
+            Src::Up { .. } => 2,
+            Src::UpIndexed { .. } => 3,
+        },
+        up_stride: match src {
+            Src::Up { stride, .. } | Src::UpIndexed { stride, .. } => stride,
+            _ => 0,
+        },
+        isize: index.map_or(0, |i| i.1),
+        widen,
+        target: target.map_or(u32::MAX, |t| t.4),
+        ds: dsg.is_some(),
+        more: more_fmts,
+    };
+    let trace = d.trace || no_prep_cache();
+    let hit = d.dev.as_mut().unwrap().prep.take().filter(|p| p.key == pkey && !trace);
+    let fresh = hit.is_none();
+    // (IPPAI_PREP_CHECK: a draw that reuses also prepares from scratch, and says what differs)
+    let check = !fresh && prep_check();
+    let st = &d.dev.as_ref().unwrap().st;
+    let layout = |d: &D3d, st: &State| -> Option<(Vec<Elem>, u32, Vec<u32>)> {
+        // the vertex layout
+        let (elems, fvf_stride) = if st.decl != 0 {
+            match d.objs.get(&st.decl).map(|o| &o.data) {
+                Some(Data::Decl(dc)) => (dc.elems.clone(), 0),
+                _ => return None,
+            }
+        } else {
+            fvf_elems(st.fvf)
+        };
+        let mut used: Vec<u32> = elems.iter().map(|e| e.stream).collect();
+        used.sort();
+        used.dedup();
+        Some((elems, fvf_stride, used))
+    };
+    let mut prep = match hit {
+        Some(p) => {
+            if check {
+                let now = layout(d, st);
+                if now.as_ref() != Some(&(p.elems.clone(), p.fvf_stride, p.used.clone())) {
+                    prep_differs("layout", &format!("{:?} kept, {now:?} now", (&p.elems, p.fvf_stride, &p.used)));
+                }
+            }
+            p
+        }
+        None => {
+            let Some((elems, fvf_stride, used)) = layout(d, st) else { return D3DERR_INVALIDCALL };
+            Box::new(Prep { key: pkey, elems, fvf_stride, used, ..Prep::default() })
+        }
+    };
+    let fvf_stride = prep.fvf_stride;
+    let mut streams: Vec<(u32, u32, u32)> = Vec::with_capacity(prep.used.len()); // (stream, ptr, stride)
+    for &s in &prep.used {
         let (ptr, stride) = match &src {
             Src::Up { data, stride } | Src::UpIndexed { data, stride, .. } => {
                 if s != 0 {
@@ -3240,6 +3497,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         };
         streams.push((s, ptr, stride));
     }
+    let elems = &prep.elems;
+    let used = &prep.used;
     if d.trace {
         let tex0 = st.textures[0];
         eprintln!("d3d9: draw prim {prim} x{prims} first {first} count {count} fvf {:#x} decl {} ps {} tex0 {tex0} blend {} {} {} tss0 {:?}", st.fvf, st.decl, st.ps, st.rs[27], st.rs[19], st.rs[20], &st.tss[0][1..7]);
@@ -3278,6 +3537,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             }
         }
     }
+    if fresh || check {
+    let (vs, ps, pretransformed, samplers, vs_consts, ps_consts, pipe, blend, wmask) = {
     // the shaders (pretransformed vertices skip the vertex shader, as on Windows)
     let pretransformed = elems.iter().any(|e| e.usage == shader::USAGE_POSITIONT);
     let vs = if st.vs != 0 && !pretransformed {
@@ -3296,14 +3557,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     } else {
         None
     };
-    let Some(target) = surface_gpu(d, rt) else { return S_OK };
-    // (one of another size too: the page draws with one of the target's size, render/d3d.rs depth_for)
-    let dsg = surface_gpu(d, ds);
-    // render targets 1-3 (in a row from 1, of the size of 0)
-    let more: Vec<(u32, (u32, u32, u32, u32, u32))> = rts[1..]
-        .iter()
-        .map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g)))
-        .collect();
+    let Some(target) = target else { return S_OK };
     let ntargets = 1 + more.len() as u32;
 
     // vertex inputs: (stream slot index, elem) -> location
@@ -3314,7 +3568,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let mut attrs: Vec<(u32, u32, u32, u32)> = Vec::new(); // (buffer slot, page format, offset, location)
     let mut vs_inputs: Vec<(u32, u32, u32)> = Vec::new(); // (register, location, kind)
     let mut ff_inputs: Vec<(u32, u32, u32, u32)> = Vec::new();
-    for e in &elems {
+    for e in elems.iter() {
         let Some((pf, kind)) = vertex_format(e.ty) else { continue };
         // (an FVF can declare more than the stride holds: QLIE draws TEX8 vertices with a
         // 32-byte stride; Direct3D reads past the vertex, WebGPU refuses the layout)
@@ -3481,11 +3735,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         3 => 1,
         _ => 0,
     };
-    let topo = PRIM_TOPOLOGY[prim as usize];
     let indexed = index.is_some() || prim == 6;
-    // (WebGPU restarts an indexed strip at an index of all ones, Direct3D 9 never does: 16-bit
-    // strips with a 0xffff go out as 32-bit indices)
-    let widen = matches!(index, Some((iptr, 2, _)) if (topo == 2 || topo == 4) && (0..nverts).any(|k| *((iptr + 2 * k) as *const u16) == 0xffff));
     let isize = if widen { 4 } else { index.map_or(if prim == 6 { 2 } else { 0 }, |i| i.1) };
     let strip_fmt = if indexed && (topo == 2 || topo == 4) { isize } else { 0 };
     let mut key: Vec<u32> = vec![
@@ -3548,21 +3798,44 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             id
         }
     };
+    (vs, ps, pretransformed, samplers, vs_consts, ps_consts, pipe, blend, wmask)
+    };
+    let now = (vs, ps, pretransformed, samplers, vs_consts, ps_consts, pipe, blend, wmask);
+    if check {
+        let kept = (prep.vs, prep.ps, prep.pretransformed, prep.samplers.clone(), prep.vs_consts, prep.ps_consts, prep.pipe, prep.blend, prep.wmask);
+        if kept != now {
+            prep_differs("preparation", &format!("{kept:?} kept, {now:?} now"));
+        }
+    } else {
+        (prep.vs, prep.ps, prep.pretransformed, prep.samplers, prep.vs_consts, prep.ps_consts, prep.pipe, prep.blend, prep.wmask) = now;
+    }
+    }
+    let Some(target) = target else { return S_OK };
+    let (vs, ps, pretransformed, vs_consts, ps_consts, pipe, blend, wmask) = (prep.vs, prep.ps, prep.pretransformed, prep.vs_consts, prep.ps_consts, prep.pipe, prep.blend, prep.wmask);
+    let elems = &prep.elems;
+    let samplers = &prep.samplers;
+    let dev = d.dev.as_mut().unwrap();
+    let st = &dev.st;
 
-    // uniforms
+    // uniforms: the last draw's, when no call since may have changed them (`stale`) and the
+    // preparation is the same (all but the alpha bits of the textures bound: each draw's own)
     let vp = st.viewport;
+    let ukey = (pkey, dev.uni_gen);
+    let mut uni = dev.uni.take().unwrap_or_default();
+    let kept = (uni.key == Some(ukey) && check).then(|| (uni.vsu.clone(), uni.psu.clone(), uni.hash));
+    if uni.key != Some(ukey) || trace || kept.is_some() {
     let (vpw, vph) = (vp[2].max(1) as f32, vp[3].max(1) as f32);
-    let mut vsu = std::mem::take(&mut dev.vs_scratch);
-    let mut psu = std::mem::take(&mut dev.ps_scratch);
+    let vsu = &mut uni.vsu;
+    let psu = &mut uni.psu;
     vsu.clear();
     psu.clear();
     vsu.resize(shader::uniform_size(vs_consts) as usize, 0);
     psu.resize(shader::uniform_size(ps_consts) as usize, 0);
     let put = |buf: &mut Vec<u8>, at: usize, v: u32| buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
-    put(&mut vsu, 0, f2u(1.0 / vpw));
-    put(&mut vsu, 4, f2u(1.0 / vph));
-    put(&mut vsu, 16, st.vsb);
-    put(&mut psu, 16, st.psb);
+    put(vsu, 0, f2u(1.0 / vpw));
+    put(vsu, 4, f2u(1.0 / vph));
+    put(vsu, 16, st.vsb);
+    put(psu, 16, st.psb);
     let ints = |buf: &mut Vec<u8>, regs: &[[i32; 4]; 16]| {
         for (i, r) in regs.iter().enumerate() {
             for (j, v) in r.iter().enumerate() {
@@ -3570,8 +3843,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             }
         }
     };
-    ints(&mut vsu, &st.vsi);
-    ints(&mut psu, &st.psi);
+    ints(vsu, &st.vsi);
+    ints(psu, &st.psi);
     let consts = |buf: &mut Vec<u8>, regs: &[[f32; 4]], n: u32| {
         for i in 0..(n as usize).min(regs.len()) {
             for j in 0..4 {
@@ -3580,12 +3853,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
     };
     if vs.is_some() {
-        consts(&mut vsu, &st.vsf, vs_consts);
+        consts(vsu, &st.vsf, vs_consts);
     } else {
-        put(&mut vsu, 32, f2u(vp[0] as f32));
-        put(&mut vsu, 36, f2u(vp[1] as f32));
-        put(&mut vsu, 40, f2u(2.0 / vpw));
-        put(&mut vsu, 44, f2u(2.0 / vph));
+        put(vsu, 32, f2u(vp[0] as f32));
+        put(vsu, 36, f2u(vp[1] as f32));
+        put(vsu, 40, f2u(2.0 / vpw));
+        put(vsu, 44, f2u(2.0 / vph));
         let get = |s: u32| st.transforms.get(&s).copied().unwrap_or(IDENT);
         let wvp = mul(&mul(&get(256), &get(2)), &get(3));
         let mut regs = [[0f32; 4]; ff::VS_CONSTS as usize];
@@ -3606,12 +3879,48 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             let lights: Vec<_> = on.into_iter().map(|l| l.1).collect();
             ff::lighting_regs(&mut regs, &st.material, st.rs[139], &get(256), &get(2), &lights);
         }
-        consts(&mut vsu, &regs, ff::VS_CONSTS);
+        consts(vsu, &regs, ff::VS_CONSTS);
+    }
+    put(psu, 12, f2u((st.rs[24] & 0xff) as f32 / 255.0));
+    // (a render target of fewer bits than the page's: the steps it keeps, dxwgsl's steps())
+    // (only overwrites: Windows rounds after genuine blending; the page's result otherwise
+    // stays a step finer. ONE/ZERO ADD is an overwrite even with blending enabled.)
+    let steps = draw_steps(st.rs[27] != 0, blend, target.4);
+    for (i, m) in steps.into_iter().enumerate() {
+        put(psu, 48 + 4 * i, m);
+    }
+    if ps.is_some() {
+        consts(psu, &st.psf, ps_consts);
+    } else {
+        let c = |v: u32| [((v >> 16) & 0xff) as f32 / 255.0, ((v >> 8) & 0xff) as f32 / 255.0, (v & 0xff) as f32 / 255.0, (v >> 24) as f32 / 255.0];
+        let mut regs = [[0f32; 4]; ff::PS_CONSTS as usize];
+        regs[0] = c(st.rs[60]);
+        for i in 0..8 {
+            regs[1 + i] = c(st.tss[i][32]);
+        }
+        consts(psu, &regs, ff::PS_CONSTS);
+    }
+    uni.hash = {
+        let mut h = DrawHash::default();
+        h.add(&uni.vsu);
+        h.add(&uni.psu);
+        std::hash::Hasher::finish(&h.0)
+    };
+    uni.key = Some(ukey);
+    }
+    if let Some((v, p, h)) = kept {
+        // (the alpha bits are each draw's: not compared)
+        let (mut p, mut q) = (p, uni.psu.clone());
+        p[8..12].fill(0);
+        q[8..12].fill(0);
+        if v != uni.vsu || p != q || h != uni.hash {
+            prep_differs("uniforms", &format!("vertex block same {}, pixel block same {}", v == uni.vsu, p == q));
+        }
     }
     // alpha-less textures and alpha ref
     let mut alpha_bits = 0u32;
     let mut texs: Vec<(u32, u32, u32)> = Vec::new(); // (binding slot, page texture, sampler key)
-    for &s in &samplers {
+    for &s in samplers.iter() {
         let t = st.textures.get(s as usize).copied().unwrap_or(0);
         let (gpu_tex, f, levels) = match d.objs.get(&t).map(|o| &o.data) {
             Some(Data::Texture(tx)) => (tx.gpu, tx.fmt, tx.level_count()),
@@ -3630,26 +3939,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         let skey = (am(ss[1]) & 7) | (am(ss[2]) & 7) << 3 | (ss[5] & 3) << 6 | (ss[6] & 3) << 8 | (mip & 3) << 10 | (am(ss[3]) & 7) << 12;
         texs.push((s, gpu_tex, skey));
     }
-    put(&mut psu, 8, alpha_bits);
-    put(&mut psu, 12, f2u((st.rs[24] & 0xff) as f32 / 255.0));
-    // (a render target of fewer bits than the page's: the steps it keeps, dxwgsl's steps())
-    // (only overwrites: Windows rounds after genuine blending; the page's result otherwise
-    // stays a step finer. ONE/ZERO ADD is an overwrite even with blending enabled.)
-    let steps = draw_steps(st.rs[27] != 0, blend, target.4);
-    for (i, m) in steps.into_iter().enumerate() {
-        put(&mut psu, 48 + 4 * i, m);
-    }
-    if ps.is_some() {
-        consts(&mut psu, &st.psf, ps_consts);
-    } else {
-        let c = |v: u32| [((v >> 16) & 0xff) as f32 / 255.0, ((v >> 8) & 0xff) as f32 / 255.0, (v & 0xff) as f32 / 255.0, (v >> 24) as f32 / 255.0];
-        let mut regs = [[0f32; 4]; ff::PS_CONSTS as usize];
-        regs[0] = c(st.rs[60]);
-        for i in 0..8 {
-            regs[1 + i] = c(st.tss[i][32]);
-        }
-        consts(&mut psu, &regs, ff::PS_CONSTS);
-    }
+    // (bits 8..12 of the pixel block)
+    uni.psu[8..12].copy_from_slice(&alpha_bits.to_le_bytes());
     let scissor = if st.rs[174] != 0 {
         st.scissor
     } else {
@@ -3662,18 +3953,61 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // where it draws when its vertices are in pixels already (XYZRHW): the page redraws only
     // the parts of a target that changed since the last frame (render/d3d.rs, segments).
     let mut h = DrawHash::default();
-    for &(sn, ptr, stride) in &streams {
+    // (#119: the streams and indices read from the page copies of their buffers, by buffer
+    // object and the bytes' generation; `page_buffer` makes them)
+    let from_buffer = matches!(src, Src::Streams(_) | Src::Indexed { .. });
+    let stream_res: Vec<Option<(u32, u32)>> = streams
+        .iter()
+        .map(|&(sn, _, stride)| {
+            let (vb, off, _) = st.streams[sn as usize];
+            let Some(Data::Buffer(b)) = d.objs.get(&vb).map(|o| &o.data) else { return None };
+            let at = off as u64 + first as u64 * stride as u64;
+            let fits = at % 4 == 0 && stride % 4 == 0 && at + count as u64 * stride as u64 <= b.len as u64;
+            (from_buffer && divider(sn).is_none() && fits && resident(b)).then_some((vb, at as u32))
+        })
+        .collect();
+    let index_res: Option<(u32, u32)> = match (&src, index) {
+        (Src::Indexed { start, .. }, Some((_, isz, _))) if prim != 6 && !widen => {
+            let Some(Data::Buffer(b)) = d.objs.get(&st.indices).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+            (resident(b) && (start * isz) % 4 == 0).then_some((st.indices, start * isz))
+        }
+        _ => None,
+    };
+    // (the page copies, made or brought up to date before the draw)
+    let stream_bufs: Vec<Option<(u32, u32, u64)>> = stream_res.iter().map(|r| r.map(|(vb, at)| {
+        let (g, cg) = page_buffer(&mut d.objs, vb);
+        (g, at, cg)
+    })).collect();
+    let index_buf = index_res.map(|(ib, at)| {
+        let (g, cg) = page_buffer(&mut d.objs, ib);
+        (g, at, cg)
+    });
+    for (k, &(sn, ptr, stride)) in streams.iter().enumerate() {
+        if let Some((g, at, cg)) = stream_bufs[k] {
+            for w in [g as u64, cg, at as u64, (count * stride) as u64] {
+                h.add(&w.to_le_bytes());
+            }
+            RESIDENT_READ.fetch_add((count * stride) as u64, std::sync::atomic::Ordering::Relaxed);
+            continue;
+        }
         match divider(sn) {
             Some(dv) => h.add(std::slice::from_raw_parts(ptr as *const u8, (instances.div_ceil(dv) * stride) as usize)),
             None => h.add(std::slice::from_raw_parts((ptr + first * stride) as *const u8, (count * stride) as usize)),
         }
     }
     h.add(&instances.to_le_bytes());
-    if let Some((iptr, isz, _)) = index {
-        h.add(std::slice::from_raw_parts(iptr as *const u8, (nverts * isz) as usize));
+    match (index, index_buf) {
+        (Some((_, isz, _)), Some(_)) => {
+            let (g, at, cg) = index_buf.unwrap();
+            for w in [g as u64, cg, at as u64, (nverts * isz) as u64] {
+                h.add(&w.to_le_bytes());
+            }
+        }
+        (Some((iptr, isz, _)), None) => h.add(std::slice::from_raw_parts(iptr as *const u8, (nverts * isz) as usize)),
+        _ => {}
     }
-    h.add(&vsu);
-    h.add(&psu);
+    h.add(&uni.hash.to_le_bytes());
+    h.add(&alpha_bits.to_le_bytes());
     let mut bbox = [u32::MAX; 4];
     if let (true, Some(e)) = (pretransformed, elems.iter().find(|e| e.usage == shader::USAGE_POSITIONT && e.stream == 0)) {
         if let Some(&(_, ptr, stride)) = streams.first() {
@@ -3704,8 +4038,15 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let same_batch = dev.uniform_gen == gpu::batch_gen();
     // data: vertices, indices, uniforms
     let ((cmd, ok), gen) = gpu::record_gen(|b| {
+        // (buffer, offset) a stream: the data block (DATA) or a page copy
         let mut offs = Vec::new();
-        for &(sn, ptr, stride) in &streams {
+        for (k, &(sn, ptr, stride)) in streams.iter().enumerate() {
+            if let Some((g, at, _)) = stream_bufs[k] {
+                offs.push(g);
+                offs.push(at);
+                continue;
+            }
+            offs.push(DATA);
             match divider(sn) {
                 // (instance i reads element i / divider: WebGPU steps once per instance, so
                 // each element goes `divider` times)
@@ -3740,6 +4081,13 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 let bytes: Vec<u8> = (0..nverts).flat_map(|k| (*((iptr + 2 * k) as *const u16) as u32).to_le_bytes()).collect();
                 (4, b.data(&bytes, 4), nverts, -(*min as i32))
             }
+            (Some((_, isz, min)), _) if index_buf.is_some() => {
+                // (from the index buffer's page copy: the last pair, its buffer marked)
+                let (g, at, _) = index_buf.unwrap();
+                offs.push(g | INDEX_PAIR);
+                offs.push(at);
+                (*isz, 0, nverts, -(*min as i32))
+            }
             (Some((iptr, isz, min)), _) => {
                 let len = (nverts * isz) as usize;
                 (*isz, b.data(std::slice::from_raw_parts(*iptr as *const u8, len), 4), nverts, -(*min as i32))
@@ -3755,8 +4103,9 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             (None, _) => (0, 0, count, 0),
         };
         // uniforms (the same block as the last draw's when nothing changed)
-        let vso = if dev.last_vs.0 == vsu && same_batch && !b.data.is_empty() { dev.last_vs.1 } else { b.data(&vsu, 256) };
-        let pso = if dev.last_ps.0 == psu && same_batch && !b.data.is_empty() { dev.last_ps.1 } else { b.data(&psu, 256) };
+        let (vsu, psu) = (&uni.vsu, &uni.psu);
+        let vso = if dev.last_vs.0 == *vsu && same_batch && !b.data.is_empty() { dev.last_vs.1 } else { b.data(vsu, 256) };
+        let pso = if dev.last_ps.0 == *psu && same_batch && !b.data.is_empty() { dev.last_ps.1 } else { b.data(psu, 256) };
         let mut c = vec![
             gpu::DRAW,
             pipe,
@@ -3791,8 +4140,15 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         ((vso, pso), true)
     });
     let _ = ok;
-    dev.vs_scratch = std::mem::replace(&mut dev.last_vs, (vsu, cmd.0)).0;
-    dev.ps_scratch = std::mem::replace(&mut dev.last_ps, (psu, cmd.1)).0;
+    for (last, now, off) in [(&mut dev.last_vs, &uni.vsu, cmd.0), (&mut dev.last_ps, &uni.psu, cmd.1)] {
+        if last.0 != *now {
+            last.0.clear();
+            last.0.extend_from_slice(now);
+        }
+        last.1 = off;
+    }
+    dev.uni = Some(uni);
+    dev.prep = Some(prep);
     dev.uniform_gen = gen;
     // mark the targets rendered
     mark_rendered(d, rt);
@@ -3809,6 +4165,94 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
     }
     S_OK
+}
+
+/// What a draw is of, besides the device's state: a draw of the same key with the same
+/// `prep_gen` prepares the same (#118).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct PrepKey {
+    gen: u64,
+    prim: u32,
+    /// 0 DrawPrimitive, 1 DrawIndexedPrimitive, 2 DrawPrimitiveUP, 3 DrawIndexedPrimitiveUP
+    kind: u8,
+    /// (UP: the stride is the call's)
+    up_stride: u32,
+    /// the index size (0: none)
+    isize: u32,
+    /// a 16-bit strip with a 0xffff, drawn with 32-bit indices
+    widen: bool,
+    /// the formats of the render targets (u32::MAX: none) and whether there is a depth buffer
+    target: u32,
+    ds: bool,
+    more: [u32; 3],
+}
+
+/// A draw's preparation from the device's state: its vertex layout and streams, shaders,
+/// samplers, pipeline.
+#[derive(Default)]
+struct Prep {
+    key: PrepKey,
+    elems: Vec<Elem>,
+    fvf_stride: u32,
+    used: Vec<u32>,
+    vs: Option<u32>,
+    ps: Option<u32>,
+    pretransformed: bool,
+    samplers: Vec<u32>,
+    vs_consts: u32,
+    ps_consts: u32,
+    pipe: u32,
+    blend: [u32; 7],
+    wmask: u32,
+}
+
+/// A draw's uniform blocks (the pixel block's alpha bits written by each draw) and their hash.
+#[derive(Default)]
+struct Uni {
+    key: Option<(PrepKey, u64)>,
+    vsu: Vec<u8>,
+    psu: Vec<u8>,
+    hash: u64,
+}
+
+/// IPPAI_NOPREP=1: every draw prepares from scratch (to compare with); IPPAI_PREP_CHECK=1: a
+/// draw that reuses the last preparation prepares from scratch too and says what differs (each
+/// a bug of `stale`). Tests set them with `set_prep_mode`.
+static PREP_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xff);
+/// the differences IPPAI_PREP_CHECK found
+pub static PREP_DIFFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn prep_mode() -> u8 {
+    use std::sync::atomic::Ordering::Relaxed;
+    let m = PREP_MODE.load(Relaxed);
+    if m != 0xff {
+        return m;
+    }
+    let on = |k: &str| std::env::var_os(k).is_some_and(|v| v != "0");
+    let m = on("IPPAI_NOPREP") as u8 | (on("IPPAI_PREP_CHECK") as u8) << 1;
+    PREP_MODE.store(m, Relaxed);
+    m
+}
+
+/// 1: no reuse, 2: checked reuse, 0: reuse
+#[cfg(test)]
+pub(crate) fn set_prep_mode(m: u8) {
+    PREP_MODE.store(m, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn no_prep_cache() -> bool {
+    prep_mode() & 1 != 0
+}
+
+fn prep_check() -> bool {
+    prep_mode() & 2 != 0
+}
+
+fn prep_differs(what: &str, how: &str) {
+    let n = PREP_DIFFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n < 20 {
+        eprintln!("d3d9: prep check: the {what} kept differs from the state's: {how}");
+    }
 }
 
 /// Internal draw-change fingerprint. Hash machine words, not one i64 multiply per

@@ -234,7 +234,8 @@ impl Gen {
         for t in &texs {
             c.extend_from_slice(t);
         }
-        c.extend_from_slice(&[1, vo]);
+        // (one stream from the data block: a (buffer, offset) pair)
+        c.extend_from_slice(&[2, DATA, vo]);
         c.extend_from_slice(&[if indexed { 2 } else { 0 }, io, nv, 0]);
         c.push(hash);
         c.extend_from_slice(&bbox);

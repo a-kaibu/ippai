@@ -374,6 +374,13 @@ unsafe fn shader_code(p: u32, regs: &[u32]) -> (Vec<u32>, Vec<u32>) {
 unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     let me = a(0);
     let dev = IF_DEVICE;
+    // (methods of Direct3D 8's own, not only forwarded to Direct3D 9's through device::call: what
+    // draws prepared may change, device::stale)
+    if !matches!(m, 3 | 4 | 6 | 9..=12 | 15..=19 | 29 | 32..=52 | 58..=64 | 66..=73 | 79 | 80 | 83 | 91 | 92) {
+        if let Some(dv) = d.dev.as_mut() {
+            dv.stale_all();
+        }
+    }
     // the same method in Direct3D 9, arguments unchanged
     let same = |d: &mut D3d, m9: u32, after: &mut After| {
         let args: Vec<u32> = (0..10).map(a).collect();

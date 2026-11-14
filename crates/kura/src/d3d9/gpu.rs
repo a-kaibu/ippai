@@ -23,7 +23,7 @@ pub const CREATE_SHADER: u32 = 4; // id blob_offset len (WGSL, UTF-8)
 pub const CREATE_PIPELINE: u32 = 5; // see Pipeline::encode
 pub const SET_TARGET: u32 = 6; // color_tex color_level depth_tex (0: none)
 pub const CLEAR: u32 = 7; // flags color(rgba f32 x4) z stencil x y w h (w=0: whole target)
-pub const DRAW: u32 = 8; // see Device::draw (ends with: hash of what it reads, x0 y0 x1 y1 it draws to or u32::MAX)
+pub const DRAW: u32 = 8; // see Device::draw (its streams as n words of (buffer, offset) pairs, buffer DATA the data block, INDEX_PAIR | buffer the indices'; ends with: hash of what it reads, x0 y0 x1 y1 it draws to or u32::MAX)
 pub const PRESENT: u32 = 9; // tex l t r b (screen rect the frame goes to) src_w src_h, or the part shown: l|t<<16 r|b<<16 (render/d3d.rs present_src) hwnd
 pub const COPY: u32 = 10; // src_tex src_level sx sy sw sh dst_tex dst_level dx dy dw dh filter
 pub const READBACK: u32 = 11; // request tex level x y w h dst_ptr pitch

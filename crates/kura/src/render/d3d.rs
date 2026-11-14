@@ -12,6 +12,8 @@ use crate::d3d9::gpu::*;
 
 /// buffer id of the batch's data block (DRAW2 vertex/index/uniform sources)
 const DATA: u32 = 0xffff_ffff;
+/// (a Direct3D 9 DRAW's pair of the indices: d3d9/device.rs INDEX_PAIR)
+const D9_INDEX_PAIR: u32 = 0x8000_0000;
 
 // (crates/kura/src/d3d11/format.rs P_*)
 pub(crate) const TEX_FORMATS: [&str; 41] = [
@@ -2277,9 +2279,11 @@ impl D3d {
         let mut p = i + 18;
         let texs: Vec<[u32; 3]> = (0..ntex).map(|t| [c[p + 3 * t], c[p + 3 * t + 1], c[p + 3 * t + 2]]).collect();
         p += 3 * ntex;
+        // (streams: (buffer, offset) pairs, DATA the data block; INDEX_PAIR | buffer: the indices
+        // from that buffer, d3d9/device.rs page_buffer)
         let nbuf = c[p] as usize;
         p += 1;
-        let offs = c[p..p + nbuf].to_vec();
+        let pairs = &c[p..p + nbuf];
         p += nbuf;
         let (ifmt, ioff, count, base) = (c[p], c[p + 1], c[p + 2], c[p + 3] as i32);
         // (instances above the index format)
@@ -2374,15 +2378,45 @@ impl D3d {
             }
         };
         gpu::set_bind_group(1, g1, &[]);
-        for (b, &o) in offs.iter().enumerate() {
-            gpu::set_vertex_buffer(b as u32, self.data_buf, o);
+        let mut index_from = None;
+        let mut slot = 0;
+        for pr in pairs.chunks_exact(2) {
+            let (b, o) = (pr[0], pr[1]);
+            if b != DATA && b & D9_INDEX_PAIR != 0 {
+                index_from = Some((b & !D9_INDEX_PAIR, o));
+                continue;
+            }
+            if b == DATA {
+                gpu::set_vertex_buffer(slot, self.data_buf, o);
+            } else {
+                if !self.bused.contains(&b) {
+                    self.bused.push(b);
+                }
+                match self.buffers.get(&b).copied() {
+                    Some((buf, size)) => gpu::set_vertex_buffer(slot, buf, o.min(size)),
+                    None => {
+                        let z = self.zero();
+                        gpu::set_vertex_buffer(slot, z, 0);
+                    }
+                }
+            }
+            slot += 1;
         }
         gpu::set_blend_constant(color_of(blend_factor));
         // (the model of WebGPU in the tests draws only inside the box the guest gave)
         #[cfg(test)]
         super::model::set_bounds(Some([c[p - 9], c[p - 8], c[p - 7], c[p - 6]]));
         if ifmt != 0 {
-            gpu::set_index_buffer(self.data_buf, ifmt == 4, ioff);
+            match index_from {
+                Some((b, o)) => {
+                    if !self.bused.contains(&b) {
+                        self.bused.push(b);
+                    }
+                    let Some((buf, size)) = self.buffers.get(&b).copied() else { return p };
+                    gpu::set_index_buffer(buf, ifmt == 4, o.min(size));
+                }
+                None => gpu::set_index_buffer(self.data_buf, ifmt == 4, ioff),
+            }
             gpu::draw_indexed(count, instances, 0, base, 0);
         } else {
             gpu::draw(count, 1, 0, 0);

@@ -41,6 +41,10 @@ mod tss_temp_tests;
 mod cube_tests;
 #[cfg(test)]
 mod caps8_tests;
+#[cfg(test)]
+mod cost_tests;
+#[cfg(test)]
+mod prep_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -277,7 +281,13 @@ impl D3d {
                     gpu::record(|b| b.cmd(&[gpu::DESTROY_TEXTURE, s.gpu]));
                 }
             }
-            Data::Buffer(b) => self.guest_free(b.mem),
+            Data::Buffer(b) => {
+                // (its page copy, device::page_buffer)
+                if b.gpu != 0 {
+                    gpu::record(|q| q.cmd(&[gpu::DESTROY_BUFFER, b.gpu]));
+                }
+                self.guest_free(b.mem)
+            }
             Data::Volume(v) => self.guest_free(v.mem),
             Data::Device => {
                 // (the device the calls went to, or one waiting: the others stay as they are,
@@ -412,7 +422,13 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
                 _ if iface > 16 => d3d8::call(d, iface - 16, method, this, args, &mut after),
                 0 => query_interface(d, this, iface, a(1) as *const u8, a(2) as *mut u32),
                 1 => d.add_ref(this),
-                2 => d.release(this),
+                2 => {
+                    // (conservative: what draws prepared, `device::stale`)
+                    if let Some(dev) = d.dev.as_mut() {
+                        dev.stale_all();
+                    }
+                    d.release(this)
+                }
                 _ => device::call(d, iface, method, this, args, &mut after),
             }
         };

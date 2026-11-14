@@ -92,11 +92,13 @@ pub fn has_feature(name: &str) -> bool {
 }
 /// Forgets object `i` (WebGPU frees it once unused).
 pub fn drop(i: Id) {
+    forget_set();
     unsafe { ffi::vngpu_drop(i) }
 }
 /// destroy() of a texture or buffer, then forgets it.
 pub fn destroy(i: Id) {
     if i != 0 {
+        forget_set();
         unsafe {
             ffi::vngpu_destroy(i);
             ffi::vngpu_drop(i);
@@ -286,36 +288,109 @@ pub fn copy_from_buffer(buf: Id, bpr: u32, tex: Id, mip: u32, x: u32, y: u32, z:
     unsafe { ffi::vngpu_copy_from_buffer(buf, bpr, tex, mip, x, y, z, w, h) }
 }
 
-// the render pass (one at a time)
+// The render pass (one at a time). Its state calls that would set what is set already are not
+// made (each a call into the page's JavaScript and WebGPU's validation): a render pass keeps its
+// state until it ends, so the draws see the same (#120, #121). What was set is forgotten when a
+// pass begins or ends and whenever an object is dropped (its index may come back).
+#[derive(Default, Clone, PartialEq)]
+struct PassSet {
+    pipeline: Option<Id>,
+    groups: [Option<(Id, [u32; 4], u32)>; 4],
+    vertex: [Option<(Id, u32)>; 8],
+    index: Option<(Id, bool, u32)>,
+    viewport: Option<[u32; 6]>,
+    scissor: Option<[u32; 4]>,
+    blend: Option<[u64; 4]>,
+    stencil: Option<u32>,
+}
+
+thread_local! {
+    static SET: std::cell::RefCell<PassSet> = std::cell::RefCell::new(PassSet::default());
+}
+
+/// IPPAI_NOSETOPT=1: every state call made
+fn no_set_opt() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("IPPAI_NOSETOPT").is_some_and(|v| v != "0"))
+}
+
+fn forget_set() {
+    SET.with(|s| *s.borrow_mut() = PassSet::default());
+}
+
+/// Whether the state `f` picks is to be set to `v` (it is not already)
+fn to_set<T: PartialEq + Copy>(f: impl FnOnce(&mut PassSet) -> &mut Option<T>, v: T) -> bool {
+    if no_set_opt() {
+        return true;
+    }
+    SET.with(|s| {
+        let mut s = s.borrow_mut();
+        let slot = f(&mut s);
+        if *slot == Some(v) {
+            STATE_CALLS_SAVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            false
+        } else {
+            *slot = Some(v);
+            true
+        }
+    })
+}
+
+/// The state calls not made since the start (`to_set`)
+pub static STATE_CALLS_SAVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn begin_pass(json: &str) {
+    forget_set();
     unsafe { ffi::vngpu_begin_pass(json.as_ptr(), json.len()) }
 }
 pub fn end_pass() {
+    forget_set();
     unsafe { ffi::vngpu_end_pass() }
 }
 pub fn set_pipeline(p: Id) {
-    unsafe { ffi::vngpu_set_pipeline(p) }
+    if to_set(|s| &mut s.pipeline, p) {
+        unsafe { ffi::vngpu_set_pipeline(p) }
+    }
 }
 pub fn set_bind_group(i: u32, g: Id, offsets: &[u32]) {
-    unsafe { ffi::vngpu_set_bind_group(i, g, offsets.as_ptr(), offsets.len() as u32) }
+    let key = (i < 4 && offsets.len() <= 4).then(|| {
+        let mut o = [0u32; 4];
+        o[..offsets.len()].copy_from_slice(offsets);
+        (g, o, offsets.len() as u32)
+    });
+    if key.is_none_or(|k| to_set(|s| &mut s.groups[i as usize], k)) {
+        unsafe { ffi::vngpu_set_bind_group(i, g, offsets.as_ptr(), offsets.len() as u32) }
+    }
 }
 pub fn set_vertex_buffer(slot: u32, buf: Id, off: u32) {
-    unsafe { ffi::vngpu_set_vertex_buffer(slot, buf, off) }
+    if slot >= 8 || to_set(|s| &mut s.vertex[slot as usize], (buf, off)) {
+        unsafe { ffi::vngpu_set_vertex_buffer(slot, buf, off) }
+    }
 }
 pub fn set_index_buffer(buf: Id, u32_: bool, off: u32) {
-    unsafe { ffi::vngpu_set_index_buffer(buf, u32_ as u32, off) }
+    if to_set(|s| &mut s.index, (buf, u32_, off)) {
+        unsafe { ffi::vngpu_set_index_buffer(buf, u32_ as u32, off) }
+    }
 }
 pub fn set_viewport(x: f32, y: f32, w: f32, h: f32, z0: f32, z1: f32) {
-    unsafe { ffi::vngpu_set_viewport(x, y, w, h, z0, z1) }
+    if to_set(|s| &mut s.viewport, [x, y, w, h, z0, z1].map(f32::to_bits)) {
+        unsafe { ffi::vngpu_set_viewport(x, y, w, h, z0, z1) }
+    }
 }
 pub fn set_scissor(x: u32, y: u32, w: u32, h: u32) {
-    unsafe { ffi::vngpu_set_scissor(x, y, w, h) }
+    if to_set(|s| &mut s.scissor, [x, y, w, h]) {
+        unsafe { ffi::vngpu_set_scissor(x, y, w, h) }
+    }
 }
 pub fn set_blend_constant(c: [f64; 4]) {
-    unsafe { ffi::vngpu_set_blend_constant(c[0], c[1], c[2], c[3]) }
+    if to_set(|s| &mut s.blend, c.map(f64::to_bits)) {
+        unsafe { ffi::vngpu_set_blend_constant(c[0], c[1], c[2], c[3]) }
+    }
 }
 pub fn set_stencil_ref(v: u32) {
-    unsafe { ffi::vngpu_set_stencil_ref(v) }
+    if to_set(|s| &mut s.stencil, v) {
+        unsafe { ffi::vngpu_set_stencil_ref(v) }
+    }
 }
 pub fn draw(n: u32, inst: u32, first: u32, first_inst: u32) {
     unsafe { ffi::vngpu_draw(n, inst, first, first_inst) }

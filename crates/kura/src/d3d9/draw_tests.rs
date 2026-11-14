@@ -100,9 +100,11 @@ fn run(seed: u64) {
     // two vertex buffers of random bytes (the position floats kept finite), two index buffers
     const VB: u32 = 8192;
     let mut vbs = Vec::new();
-    for _ in 0..2 {
+    // (one static: its page copy is drawn from, device::page_buffer; one dynamic)
+    for k in 0..2 {
         let o = out();
-        assert_eq!(call(IF_DEVICE, 26, &[dev, VB, 0, 0, 1, o, 0]), 0);
+        let (usage, pool) = if (seed + k) % 2 == 0 { (0, 1) } else { (0x208, 0) };
+        assert_eq!(call(IF_DEVICE, 26, &[dev, VB, usage, 0, pool, o, 0]), 0);
         let vb = rd(o);
         let p = out();
         assert_eq!(call(IF_VB, 11, &[vb, 0, 0, p, 0]), 0);
@@ -144,6 +146,42 @@ fn run(seed: u64) {
     let lays = layouts();
     let mut drawn = 0;
     for step in 0..120 {
+        // a vertex buffer written again in part (any offset and size, 0: to the end), as
+        // games do between draws: what the next draws read must be the new bytes
+        if r.chance(30) {
+            let k = r.below(2);
+            let off = r.below(VB as usize) as u32 & if r.chance(50) { !3 } else { !0 };
+            let size = if r.chance(20) { 0 } else { 1 + r.below((VB - off) as usize) as u32 };
+            let end = if size == 0 { VB } else { off + size };
+            let flags = [0u32, 0x2000, 0x1000, 0x800][r.below(4)];
+            let p = out();
+            assert_eq!(call(IF_VB, 11, &[vbs[k].0, off, size, p, flags]), 0);
+            let bytes: Vec<u8> = (off..end).map(|i| if i % 4 == 3 { 0x30 + (r.next() % 16) as u8 } else { r.next() as u8 }).collect();
+            put_bytes(rd(p), &bytes);
+            vbs[k].1[off as usize..end as usize].copy_from_slice(&bytes);
+            assert_eq!(call(IF_VB, 12, &[vbs[k].0]), 0);
+        }
+        // a vertex buffer let go and another made in its place (the old one goes when no
+        // stream holds it any more: its page copy with it)
+        if r.chance(5) {
+            let k = r.below(2);
+            let o = out();
+            assert_eq!(call(IF_DEVICE, 26, &[dev, VB, 0, 0, 1, o, 0]), 0);
+            let vb = rd(o);
+            let p = out();
+            assert_eq!(call(IF_VB, 11, &[vb, 0, 0, p, 0]), 0);
+            let bytes: Vec<u8> = (0..VB / 4).flat_map(|_| (((r.next() as u32) & 0x3fff_ffff) | 0x3000_0000).to_le_bytes()).collect();
+            put_bytes(rd(p), &bytes);
+            assert_eq!(call(IF_VB, 12, &[vb]), 0);
+            call(IF_VB, 2, &[vbs[k].0]);
+            vbs[k] = (vb, bytes);
+        }
+        // (a read-only lock changes nothing)
+        if r.chance(10) {
+            let (p, k) = (out(), r.below(2));
+            assert_eq!(call(IF_VB, 11, &[vbs[k].0, 0, 0, p, 0x10]), 0);
+            assert_eq!(call(IF_VB, 12, &[vbs[k].0]), 0);
+        }
         let li = r.below(lays.len());
         let l = &lays[li];
         if l.fvf != 0 {
@@ -295,7 +333,11 @@ fn d3d9_draws_read_what_direct3d_reads() {
         let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
         vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
     }
+    let (read, sent) = (device::RESIDENT_READ.load(std::sync::atomic::Ordering::Relaxed), device::RESIDENT_SENT.load(std::sync::atomic::Ordering::Relaxed));
     for seed in 0..8 {
         run(seed);
     }
+    // (the static buffers' draws read their page copies, #119)
+    assert!(device::RESIDENT_READ.load(std::sync::atomic::Ordering::Relaxed) > read);
+    assert!(device::RESIDENT_SENT.load(std::sync::atomic::Ordering::Relaxed) > sent);
 }
