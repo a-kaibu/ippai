@@ -79,11 +79,16 @@ pub fn exec(op: u32, a: &[u32], data: &[u8]) -> VmReply {
         QUERY => ok(crate::k32::query_r(arg(0)).to_vec()),
         READ => {
             // (a source that is not all readable copies nothing: ERROR_PARTIAL_COPY)
+            // (args[2] 1: only whether all of it can be read; the caller then reads it in
+            // pieces of READ_STEP, each a reply the shared kernel carries)
             let (p, n) = (arg(0), arg(1));
             if mem::accessible(p, n, false, false) < n {
                 return err(299);
             }
-            VmReply { status: 0, vals: vec![], data: mem::slice(p, n).to_vec() }
+            if arg(2) == 1 {
+                return ok(vec![]);
+            }
+            VmReply { status: 0, vals: vec![], data: mem::slice(p, n.min(READ_STEP)).to_vec() }
         }
         WRITE => {
             let (p, n) = (arg(0), data.len() as u32);
@@ -140,6 +145,17 @@ pub fn exec(op: u32, a: &[u32], data: &[u8]) -> VmReply {
     }
 }
 
+/// The most bytes one READ or WRITE between processes carries: a ReadProcessMemory of a large
+/// range went whole through the shared kernel's state (twice in sake's heap, and past the
+/// kernel's buffer the reply was dropped and the caller waited for good); larger ones are
+/// split ([`pieces`]).
+pub const READ_STEP: u32 = 1 << 20;
+
+/// (offset, length) of the pieces of `n` bytes, READ_STEP at most each.
+pub fn pieces(n: u32) -> impl Iterator<Item = (u32, u32)> {
+    (0..n.div_ceil(READ_STEP)).map(move |i| (i * READ_STEP, (n - i * READ_STEP).min(READ_STEP)))
+}
+
 /// Asks process `pid` to do `op`; None if it ended first.
 pub fn call(pid: u32, op: u32, args: Vec<u32>, data: Vec<u8>) -> Option<VmReply> {
     let id = kern::with(|k| k.put_vm(VmReq { id: 0, to: pid, op, args, data })).0;
@@ -167,5 +183,31 @@ mod tests {
     #[test]
     fn unknown_operation_is_invalid_parameter() {
         assert_eq!(exec(99, &[], &[]).status, 87);
+    }
+
+    #[test]
+    fn pieces_cover_the_range() {
+        assert_eq!(pieces(0).count(), 0);
+        assert_eq!(pieces(5).collect::<Vec<_>>(), vec![(0, 5)]);
+        assert_eq!(pieces(READ_STEP + 1).collect::<Vec<_>>(), vec![(0, READ_STEP), (READ_STEP, 1)]);
+    }
+
+    mod proptests {
+        use super::super::*;
+        use proptest::prelude::*;
+        proptest! {
+            /// review b11: the pieces of any count are back to back, cover it, each at most
+            /// READ_STEP and none empty
+            #[test]
+            fn pieces_are_back_to_back(n in prop_oneof![0u32..4 * READ_STEP, any::<u32>()]) {
+                let mut at = 0u64;
+                for (o, l) in pieces(n) {
+                    prop_assert_eq!(o as u64, at);
+                    prop_assert!(l > 0 && l <= READ_STEP);
+                    at += l as u64;
+                }
+                prop_assert_eq!(at, n as u64);
+            }
+        }
     }
 }

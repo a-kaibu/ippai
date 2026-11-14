@@ -24,7 +24,10 @@ addToLibrary({
         // (the worker ends once its answer is read: it lived on with its socket and 24 MiB buffer)
         const ok=Atomics.load(ctl,0)===1;if(ok)bytes=new Uint8Array(shared,8,Atomics.load(ctl,1)).slice();worker.terminate();if(!ok)return 0;
       }else{
-        const xhr=new XMLHttpRequest();xhr.open('POST',new URL('/request',relay).href,false);xhr.responseType='arraybuffer';xhr.setRequestHeader('Authorization','Bearer '+token);xhr.setRequestHeader('Content-Type','application/json');xhr.send(data);if(xhr.status!==200&&xhr.status!==502)return 0;bytes=new Uint8Array(xhr.response);
+        const xhr=new XMLHttpRequest();xhr.open('POST',new URL('/request',relay).href,false);xhr.responseType='arraybuffer';
+        // (a guest thread is a worker, where a synchronous request may have a time limit: a stalled
+        // relay no longer holds it for good)
+        try{xhr.timeout=130000;}catch{}xhr.setRequestHeader('Authorization','Bearer '+token);xhr.setRequestHeader('Content-Type','application/json');xhr.send(data);if(xhr.status!==200&&xhr.status!==502)return 0;bytes=new Uint8Array(xhr.response);
       }
       const p=_malloc(Math.max(bytes.length,1));if(!p)return 0;HEAPU8.set(bytes,p>>>0);HEAPU32[outLength>>>2]=bytes.length;return p;
     }catch{return 0;}

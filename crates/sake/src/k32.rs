@@ -3168,26 +3168,40 @@ fn is_bad(p: u32, n: u32) -> bool {
 /// Executable pages take writes, read-only data does not. The count is a SIZE_T.
 fn ReadProcessMemory(c: &mut Ctx) -> u32 {
     let (a, b, n, done) = (c.a(1), c.a(2), c.a(3), c.a(4));
-    let src = match remote_bytes(c.a(0), xmem::READ, vec![a, n], vec![]) {
+    // (another process's memory: first whether all of it can be read, then xmem::READ_STEP at a
+    // time into what the destination takes)
+    let remote = match remote_bytes(c.a(0), xmem::READ, vec![a, n, 1], vec![]) {
         None => {
             if mem::accessible(a, n, false, false) < n {
                 mem::putp(done, 0);
                 last_error(299);
                 return 0;
             }
-            None
+            false
         }
         Some(Err(e)) => {
             mem::putp(done, 0);
             last_error(e);
             return 0;
         }
-        Some(Ok((_, bytes))) => Some(bytes),
+        Some(Ok(_)) => true,
     };
     let k = mem::accessible(b, n, true, false);
-    match src {
-        None => mem::copy(b, a, k),
-        Some(bytes) => mem::write(b, &bytes[..(k as usize).min(bytes.len())]),
+    if !remote {
+        mem::copy(b, a, k);
+    } else {
+        for (off, len) in xmem::pieces(k) {
+            match remote_bytes(c.a(0), xmem::READ, vec![a.wrapping_add(off), len], vec![]) {
+                Some(Ok((_, bytes))) => mem::write(b + off, &bytes[..(len as usize).min(bytes.len())]),
+                Some(Err(e)) => {
+                    // (it changed meanwhile: what was copied so far)
+                    mem::putp(done, off);
+                    last_error(e);
+                    return 0;
+                }
+                None => break,
+            }
+        }
     }
     mem::putp(done, k);
     if k < n {
@@ -3201,15 +3215,26 @@ fn WriteProcessMemory(c: &mut Ctx) -> u32 {
     let readable = mem::accessible(b, n, false, false);
     let k = match xmem::target(c.a(0)) {
         xmem::Target::Other(_) => {
-            let data = mem::slice(b, readable).to_vec();
-            match remote(c.a(0), xmem::WRITE, vec![a], data) {
-                Some(Ok(v)) => v.first().copied().unwrap_or(0),
-                Some(Err(e)) => {
-                    last_error(e);
-                    return 0;
+            // (xmem::READ_STEP at a time, as reads; a piece the target took only part of ends it)
+            let mut done_n = 0u32;
+            for (off, len) in xmem::pieces(readable) {
+                let data = mem::slice(b + off, len).to_vec();
+                match remote(c.a(0), xmem::WRITE, vec![a.wrapping_add(off)], data) {
+                    Some(Ok(v)) => {
+                        let w = v.first().copied().unwrap_or(0);
+                        done_n += w;
+                        if w < len {
+                            break;
+                        }
+                    }
+                    Some(Err(e)) if done_n == 0 => {
+                        last_error(e);
+                        return 0;
+                    }
+                    Some(Err(_)) | None => break,
                 }
-                None => 0,
             }
+            done_n
         }
         _ => {
             let k = mem::accessible(a, n, true, true).min(readable);
