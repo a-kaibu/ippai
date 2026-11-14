@@ -801,6 +801,116 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Review b01: the save is stored once its row is; old revisions that cannot be forgotten
+    /// (here a trigger refuses every delete of objects) are logged, the write still answers
+    /// yes and the next one with the new revision goes through (a 502 here made the client's
+    /// next PUT, with the old revision, a 412).
+    #[tokio::test]
+    async fn a_failed_prune_is_no_failed_save() {
+        let (_f, s, dir) = serve(0).await;
+        let saves = saves_on(s);
+        saves.remote.as_ref().unwrap().db.connect().unwrap().execute_batch("CREATE TRIGGER no_forget BEFORE DELETE ON objects BEGIN SELECT RAISE(FAIL, 'refused'); END;").unwrap();
+        for rev in 0..SAVE_REVISIONS + 4 {
+            assert!(saves.write("game", rev, format!("save {rev}").as_bytes()).await.unwrap(), "rev {rev}");
+        }
+        let last = SAVE_REVISIONS + 4;
+        assert_eq!(saves.read("game").await.unwrap().unwrap(), (last, format!("save {}", last - 1).into_bytes()));
+        assert!(!saves.write("game", last - 1, b"stale").await.unwrap(), "the revision check still holds");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A store with one game ("sample", one tree) and its save written, in the Storage's dir.
+    async fn package_store(saves: &crate::saves::Saves, dir: &std::path::Path) -> Vec<u8> {
+        std::fs::create_dir_all(dir.join("games")).unwrap();
+        std::fs::create_dir_all(dir.join("trees")).unwrap();
+        let g = serde_json::json!({"id":"sample","run":"Z:\\game\\game.exe","mounts":["/game=sample"]});
+        std::fs::write(dir.join("games/sample.json"), serde_json::to_vec(&g).unwrap()).unwrap();
+        std::fs::write(dir.join("trees/sample.tsv"), "vnvm-tree\t1\t262144\nf\t0\t0\tgame.exe\t1\tabcd\n").unwrap();
+        let name = crate::portable::save_name_of(&g).unwrap();
+        assert!(saves.write(&name, 0, b"progress").await.unwrap());
+        crate::portable::export(dir, "sample", saves).await.unwrap()
+    }
+
+    /// `package` with its manifest changed by `edit`.
+    fn repackage(package: &[u8], edit: impl Fn(&mut serde_json::Value)) -> Vec<u8> {
+        use std::io::{Read, Write};
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(package)).unwrap();
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..z.len() {
+            let mut e = z.by_index(i).unwrap();
+            let name = e.name().to_string();
+            let mut data = vec![];
+            e.read_to_end(&mut data).unwrap();
+            if name == "manifest.json" {
+                let mut m: serde_json::Value = serde_json::from_slice(&data).unwrap();
+                edit(&mut m);
+                data = serde_json::to_vec(&m).unwrap();
+            }
+            out.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            out.write_all(&data).unwrap();
+        }
+        out.finish().unwrap().into_inner()
+    }
+
+    /// Review b01: a package refused for anything in its manifest (here: settings that are not
+    /// strings) is refused before a save goes to the bucket: no object is left behind.
+    #[tokio::test]
+    async fn a_refused_package_leaves_nothing_in_the_bucket() {
+        let (f, s, dir) = serve(0).await;
+        let saves = saves_on(s);
+        let package = package_store(&saves, &dir).await;
+        let before = names(&f);
+        for bad in [serde_json::json!([1]), serde_json::json!("x"), serde_json::json!([null])] {
+            for field in ["args", "env"] {
+                let p = repackage(&package, |m| m["game"][field] = bad.clone());
+                let e = crate::portable::import(&dir, "sample", p.into(), &saves).await.unwrap_err();
+                assert!(e.to_string().contains("invalid game settings"), "{e}");
+                assert_eq!(names(&f), before, "{field} = {bad}: objects written");
+            }
+        }
+        // (and the package itself goes in: two saves' new revisions)
+        crate::portable::import(&dir, "sample", package.into(), &saves).await.unwrap();
+        assert_eq!(names(&f).len(), before.len() + 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 24, ..Default::default() })]
+        /// Any manifest edit: the import goes in (objects for both saves) or is refused with
+        /// the bucket as it was.
+        #[test]
+        fn a_package_goes_in_whole_or_not_at_all(field in proptest::sample::select(vec!["args", "env", "mounts", "run", "version", "note", "sessions", "fingerprints"]), v in proptest::prop_oneof![
+            proptest::prelude::Just(serde_json::json!([])),
+            proptest::prelude::Just(serde_json::json!(["a"])),
+            proptest::prelude::Just(serde_json::json!([1])),
+            proptest::prelude::Just(serde_json::json!("x")),
+            proptest::prelude::Just(serde_json::json!(null)),
+            proptest::prelude::Just(serde_json::json!(["/game=sample"])),
+            proptest::prelude::Just(serde_json::json!(["/../x=sample"])),
+            proptest::prelude::Just(serde_json::json!(2)),
+        ]) {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let (f, s, dir) = serve(0).await;
+                let saves = saves_on(s);
+                let package = package_store(&saves, &dir).await;
+                let before = names(&f);
+                let p = repackage(&package, |m| match field {
+                    "version" => m["version"] = v.clone(),
+                    "note" => m["profile"]["note"] = v.clone(),
+                    "sessions" => m["sessions"] = v.clone(),
+                    "fingerprints" => m["fingerprints"] = v.clone(),
+                    _ => m["game"][field] = v.clone(),
+                });
+                match crate::portable::import(&dir, "sample", p.into(), &saves).await {
+                    Ok(()) => assert_eq!(names(&f).len(), before.len() + 2),
+                    Err(_) => assert_eq!(names(&f), before),
+                }
+                let _ = std::fs::remove_dir_all(dir);
+            });
+        }
+    }
+
     /// Save states with S3 (issue #90): the index of a slot saved again 12 times, each time a
     /// new file; the files the kept revisions of the index ([`SAVE_REVISIONS`]) name stay (a
     /// device may still list one of them), the older ones are forgotten and, after the grace
@@ -1841,6 +1951,8 @@ impl Storage {
             bucket = bucket.with_path_style();
         }
         let gib = config.cache_gib.unwrap_or(64);
+        // (review b01: gib << 30 wrapped for a typo'd huge value, to a tiny or zero limit)
+        anyhow::ensure!(gib <= 1 << 30, "storage.toml: cache_gib {gib} is more than any disk");
         let disk = if gib == 0 {
             None
         } else {

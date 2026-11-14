@@ -65,6 +65,11 @@ fn fingerprints(store: &Path, g: &Value) -> Result<Vec<String>> {
         .collect()
 }
 
+#[cfg(test)]
+pub(crate) fn save_name_of(g: &Value) -> Result<String> {
+    save_name(g)
+}
+
 fn save_name(g: &Value) -> Result<String> {
     let run = g["run"].as_str().context("missing run")?;
     let mounts = g["mounts"]
@@ -92,39 +97,57 @@ fn save_name(g: &Value) -> Result<String> {
 }
 
 pub async fn export(store: &Path, id: &str, saves: &Saves) -> Result<Vec<u8>> {
-    let mut g = game(store, id)?;
-    saves.db.apply_settings(&mut g)?;
-    let save = save_name(&g)?;
-    let m = Manifest {
-        version: 1,
-        fingerprints: fingerprints(store, &g)?,
-        game: g,
-        profile: saves.db.profile(id)?,
-        sessions: saves
-            .db
-            .sessions()?
-            .into_iter()
-            .filter(|s| s.game == id)
-            .collect(),
-    };
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    zip.start_file("manifest.json", options)?;
-    zip.write_all(&serde_json::to_vec(&m)?)?;
-    for (entry, name) in [
-        ("saves.bin", save.clone()),
-        ("web.bin", format!("{save}-web")),
-    ] {
+    // (files, SQLite and the zip's deflate on blocking threads, the saves read as they are:
+    // review b01, all of it ran on a request thread)
+    let (store, id, db) = (store.to_path_buf(), id.to_string(), saves.db.clone());
+    let (m, save) = tokio::task::spawn_blocking(move || -> Result<(Manifest, String)> {
+        let mut g = game(&store, &id)?;
+        db.apply_settings(&mut g)?;
+        let save = save_name(&g)?;
+        let m = Manifest {
+            version: 1,
+            fingerprints: fingerprints(&store, &g)?,
+            game: g,
+            profile: db.profile(&id)?,
+            sessions: db.sessions()?.into_iter().filter(|s| s.game == id).collect(),
+        };
+        Ok((m, save))
+    })
+    .await??;
+    let mut blobs = Vec::new();
+    for (entry, name) in [("saves.bin", save.clone()), ("web.bin", format!("{save}-web"))] {
         if let Some((_, data)) = saves.read(&name).await? {
+            blobs.push((entry, data));
+        }
+    }
+    tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("manifest.json", options)?;
+        zip.write_all(&serde_json::to_vec(&m)?)?;
+        for (entry, data) in blobs {
             zip.start_file(entry, options)?;
             zip.write_all(&data)?;
         }
-    }
-    Ok(zip.finish()?.into_inner())
+        Ok(zip.finish()?.into_inner())
+    })
+    .await?
 }
 
-pub async fn import(store: &Path, id: &str, bytes: &[u8], saves: &Saves) -> Result<()> {
+/// What a package brings, read and checked whole before anything is written.
+struct Package {
+    manifest: Manifest,
+    /// the game's settings as they are to be kept
+    restored: Value,
+    /// its save's name here
+    name: String,
+    entries: std::collections::HashMap<String, Vec<u8>>,
+}
+
+/// Reads and checks the package `bytes` for game `id` (blocking: inflates up to 512 MiB, reads
+/// the trees). Every check is done here, before a save is staged in the bucket (review b01: a
+/// package refused for its settings left its save objects behind).
+fn read_package(store: &Path, id: &str, bytes: &[u8]) -> Result<Package> {
     let target = game(store, id)?;
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
     ensure!(zip.len() <= 3, "too many package entries");
@@ -190,35 +213,6 @@ pub async fn import(store: &Path, id: &str, bytes: &[u8], saves: &Saves) -> Resu
         uuid::Uuid::parse_str(&s.id)?;
         ensure!(s.elapsed_ms >= 0, "invalid duration");
     }
-    let name = save_name(&restored)?;
-    // Stage remote blobs first; one SQLite transaction publishes all saves and profile data.
-    // (the two saves this writes, in name order as everywhere; other saves go on meanwhile)
-    let _guard = (saves.lock.lock(&name).await, saves.lock.lock(&format!("{name}-web")).await);
-    let mut staged = Vec::new();
-    for (entry, key) in [
-        ("saves.bin", name.clone()),
-        ("web.bin", format!("{name}-web")),
-    ] {
-        {
-            let data = entries.get(entry).map(Vec::as_slice).unwrap_or(&[]);
-            use rusqlite::OptionalExtension;
-            let revision: i64 = saves
-                .db
-                .connect()?
-                .query_row("SELECT revision FROM saves WHERE name=?", [&key], |r| {
-                    r.get(0)
-                })
-                .optional()?
-                .unwrap_or(0)
-                + 1;
-            if let Some(remote) = &saves.remote {
-                remote.put(&format!("saves/{key}/{revision}"), data).await?;
-            }
-            staged.push((key, revision, data));
-        }
-    }
-    let mut c = saves.db.connect()?;
-    let tx = c.transaction()?;
     for field in ["args", "env"] {
         if let Some(value) = m.game.get(field) {
             ensure!(
@@ -229,19 +223,62 @@ pub async fn import(store: &Path, id: &str, bytes: &[u8], saves: &Saves) -> Resu
             );
         }
     }
-    tx.execute("INSERT INTO game_settings(game,config) VALUES(?,?) ON CONFLICT(game) DO UPDATE SET config=excluded.config",rusqlite::params![id,serde_json::to_string(&restored)?])?;
-    for (key, revision, data) in staged {
-        tx.execute("INSERT INTO saves(name,revision,data) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data",rusqlite::params![key,revision,saves.remote.is_none().then_some(data)])?;
+    let name = save_name(&restored)?;
+    Ok(Package { manifest: m, restored, name, entries })
+}
+
+pub async fn import(store: &Path, id: &str, bytes: axum::body::Bytes, saves: &Saves) -> Result<()> {
+    let p = {
+        let (store, id) = (store.to_path_buf(), id.to_string());
+        tokio::task::spawn_blocking(move || read_package(&store, &id, &bytes)).await??
+    };
+    let Package { manifest: m, restored, name, mut entries } = p;
+    // Stage remote blobs first; one SQLite transaction publishes all saves and profile data.
+    // (the two saves this writes, in name order as everywhere; other saves go on meanwhile)
+    let _guard = (saves.lock.lock(&name).await, saves.lock.lock(&format!("{name}-web")).await);
+    let mut staged = Vec::new();
+    for (entry, key) in [
+        ("saves.bin", name.clone()),
+        ("web.bin", format!("{name}-web")),
+    ] {
+        let data = entries.remove(entry).unwrap_or_default();
+        let revision: i64 = {
+            let (db, key) = (saves.db.clone(), key.clone());
+            tokio::task::spawn_blocking(move || -> Result<i64> {
+                use rusqlite::OptionalExtension;
+                Ok(db.connect()?.query_row("SELECT revision FROM saves WHERE name=?", [&key], |r| r.get(0)).optional()?.unwrap_or(0) + 1)
+            })
+            .await??
+        };
+        if let Some(remote) = &saves.remote {
+            remote.put(&format!("saves/{key}/{revision}"), &data).await?;
+        }
+        staged.push((key, revision, data));
     }
-    tx.execute("INSERT INTO profiles(game,favorite,note) VALUES(?,?,?) ON CONFLICT(game) DO UPDATE SET favorite=excluded.favorite,note=excluded.note",rusqlite::params![id,m.profile.favorite,m.profile.note])?;
-    for s in m.sessions {
-        tx.execute("INSERT INTO sessions(id,game,started_ms,elapsed_ms) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET elapsed_ms=max(sessions.elapsed_ms,excluded.elapsed_ms) WHERE sessions.game=excluded.game AND sessions.started_ms=excluded.started_ms",rusqlite::params![s.id,id,s.started_ms,s.elapsed_ms])?;
-    }
-    tx.commit()?;
+    let (db, id2, local) = (saves.db.clone(), id.to_string(), saves.remote.is_none());
+    let revisions = tokio::task::spawn_blocking(move || -> Result<Vec<(String, i64)>> {
+        let id = id2.as_str();
+        let mut c = db.connect()?;
+        let tx = c.transaction()?;
+        tx.execute("INSERT INTO game_settings(game,config) VALUES(?,?) ON CONFLICT(game) DO UPDATE SET config=excluded.config",rusqlite::params![id,serde_json::to_string(&restored)?])?;
+        let mut revisions = Vec::new();
+        for (key, revision, data) in staged {
+            tx.execute("INSERT INTO saves(name,revision,data) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data",rusqlite::params![key,revision,local.then_some(data)])?;
+            revisions.push((key, revision));
+        }
+        tx.execute("INSERT INTO profiles(game,favorite,note) VALUES(?,?,?) ON CONFLICT(game) DO UPDATE SET favorite=excluded.favorite,note=excluded.note",rusqlite::params![id,m.profile.favorite,m.profile.note])?;
+        for s in m.sessions {
+            tx.execute("INSERT INTO sessions(id,game,started_ms,elapsed_ms) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET elapsed_ms=max(sessions.elapsed_ms,excluded.elapsed_ms) WHERE sessions.game=excluded.game AND sessions.started_ms=excluded.started_ms",rusqlite::params![s.id,id,s.started_ms,s.elapsed_ms])?;
+        }
+        tx.commit()?;
+        Ok(revisions)
+    })
+    .await??;
     if let Some(remote) = &saves.remote {
-        for key in [name.clone(), format!("{name}-web")] {
-            if let Some(rev) = rusqlite::OptionalExtension::optional(c.query_row("SELECT revision FROM saves WHERE name=?", [&key], |r| r.get::<_, i64>(0)))? {
-                remote.prune_save(&key, rev)?;
+        for (key, rev) in revisions {
+            // (stored: as Saves::write, old revisions that stay are no failure)
+            if let Err(e) = remote.prune_save(&key, rev) {
+                eprintln!("package import: {key}: forgetting old revisions: {e:#}");
             }
         }
     }
@@ -288,7 +325,7 @@ pub fn router(store: std::path::PathBuf, saves: Arc<Saves>) -> axum::Router {
         // once could take a small home server's memory)
         static ONE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
         let Ok(_one) = ONE.acquire().await else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
-        match import(&store, &id, &body, &saves).await {
+        match import(&store, &id, body, &saves).await {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(e) => {
                 eprintln!("package import: {e}");
@@ -334,7 +371,7 @@ mod tests {
             .unwrap();
         let bytes = export(&dir, "sample", &saves).await.unwrap();
         saves.write(&name, 1, b"other").await.unwrap();
-        import(&dir, "sample", &bytes, &saves).await.unwrap();
+        import(&dir, "sample", bytes.clone().into(), &saves).await.unwrap();
         assert_eq!(saves.read(&name).await.unwrap().unwrap().1, b"progress");
         assert!(saves.db.profile("sample").unwrap().favorite);
         assert!(!saves.write(&name, 1, b"stale").await.unwrap());
@@ -348,7 +385,7 @@ mod tests {
             serde_json::to_vec(&renamed).unwrap(),
         )
         .unwrap();
-        import(&dir, "renamed", &bytes, &saves).await.unwrap();
+        import(&dir, "renamed", bytes.clone().into(), &saves).await.unwrap();
         saves.db.apply_settings(&mut renamed).unwrap();
         assert_eq!(renamed["run"], g["run"]);
         assert_eq!(renamed["mounts"], serde_json::json!(["/game=renamed"]));
@@ -366,8 +403,8 @@ mod tests {
             "vnvm-tree\t1\t262144\nf\t0\t0\tgame.exe\t1\tdifferent\n",
         )
         .unwrap();
-        assert!(import(&dir, "sample", &bytes, &saves).await.is_err());
-        assert!(import(&dir, "sample", b"broken", &saves).await.is_err());
+        assert!(import(&dir, "sample", bytes.clone().into(), &saves).await.is_err());
+        assert!(import(&dir, "sample", axum::body::Bytes::from_static(b"broken"), &saves).await.is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -40,11 +40,38 @@ pub fn vnv_for(store: &Path, omv: &Path) -> Result<std::path::PathBuf> {
     let path = dir.join(format!("{h}.vp9.vnv"));
     if !path.exists() {
         fs::create_dir_all(&dir)?;
-        let tmp = dir.join(format!(".{h}.vp9.part"));
+        let tmp = part_path(&dir, &format!("{h}.vp9"));
         transcode(omv, &tmp)?;
         fs::rename(&tmp, &path)?;
     }
     Ok(path)
+}
+
+/// A name in `dir` no other process or thread writes at the same time (review b01: two
+/// `ippai add` of games sharing a movie wrote the same `.part` and its scratch dir; the
+/// renames then failed, or published a file the other was still writing).
+fn part_path(dir: &Path, stem: &str) -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.join(format!(".{stem}.{}.{n}.{}.part", std::process::id(), uuid::Uuid::new_v4().simple()))
+}
+
+/// The rows of the alpha picture's three planes below a movie `h` rows high (an .omv's alpha
+/// is its Y, U and V planes stacked): (rows of the first two, of the last). None when the
+/// picture is too small to hold them (h < 3 underflowed: review b01).
+fn alpha_rows(h: u32) -> Option<(u32, u32)> {
+    let a = h.div_ceil(3);
+    let last = h.checked_sub(2 * a)?;
+    (h >= 3 && last > 0).then_some((a, last))
+}
+
+/// The length in 100 ns units of `frames` frames at `rate` frames a second (n/d), saturated
+/// (review b01: a denominator near u32::MAX overflowed u64).
+fn frames_duration(frames: u64, rate: (u32, u32)) -> u64 {
+    if rate.0 == 0 {
+        return 0;
+    }
+    (frames as u128 * 10_000_000 * rate.1 as u128 / rate.0 as u128).min(u64::MAX as u128) as u64
 }
 
 /// The store's name of a file's content (read through, not held: movies are big).
@@ -85,8 +112,7 @@ pub fn transcode(omv: &Path, out: &Path) -> Result<()> {
         let rate = format!("1000000/{}", if frame_us == 0 { 33333 } else { frame_us });
         let mut tracks = vec![encode(&src, &tmp.join("c.ivf"), &format!("crop={w}:{h}:0:0,{pad},format=yuv420p"), &rate)?];
         if ph > h {
-            let a = h.div_ceil(3);
-            let last = h - 2 * a;
+            let (a, last) = alpha_rows(h).context("alpha: picture too small")?;
             let f = format!(
                 "crop={w}:{a}:0:{h},extractplanes=y+u+v[y][u][v];[y]null[y1];[u]null[u1];[v]crop={w}:{last}:0:0[v1];\
                  [y1][u1][v1]vstack=3,format=gray,{pad},format=yuv420p"
@@ -234,7 +260,7 @@ pub fn movie_vnv_for(store: &Path, src: &Path) -> Result<std::path::PathBuf> {
     let path = dir.join(format!("{h}.movie1.vnv"));
     if !path.exists() {
         fs::create_dir_all(&dir)?;
-        let tmp = dir.join(format!(".{h}.movie1.part"));
+        let tmp = part_path(&dir, &format!("{h}.movie1"));
         transcode_movie(src, &tmp, Codec::Vp9)?;
         fs::rename(&tmp, &path)?;
     }
@@ -345,7 +371,7 @@ pub fn transcode_movie(src: &Path, out: &Path, codec: Codec) -> Result<()> {
         };
         let frames = track.frames.len() as u64;
         // (the container's length; else the frames')
-        let from_frames = frames * 10_000_000 * p.rate.1 as u64 / p.rate.0 as u64;
+        let from_frames = frames_duration(frames, p.rate);
         let duration = if p.seconds > 0.0 { (p.seconds * 1e7).round() as u64 } else { from_frames };
         write_vnv(out, p.w, p.h, &[track], Some((p.rate, duration, audio.as_deref())))
     })();
@@ -356,6 +382,52 @@ pub fn transcode_movie(src: &Path, out: &Path, codec: Codec) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    proptest::proptest! {
+        /// The alpha planes' rows: 2a + last = h, last in 1..=a, a third of h rounded up.
+        #[test]
+        fn alpha_rows_fit(h in 0u32..20000) {
+            match alpha_rows(h) {
+                Some((a, last)) => {
+                    proptest::prop_assert_eq!(2 * a + last, h);
+                    proptest::prop_assert!(last >= 1 && last <= a);
+                    proptest::prop_assert_eq!(a, h.div_ceil(3));
+                }
+                None => proptest::prop_assert!(h < 3 || h == 4, "{}", h),
+            }
+        }
+
+        #[test]
+        fn frames_duration_never_overflows(frames in proptest::num::u64::ANY, n in proptest::num::u32::ANY, d in proptest::num::u32::ANY) {
+            let got = frames_duration(frames, (n, d));
+            if n > 0 {
+                let exact = frames as u128 * 10_000_000 * d as u128 / n as u128;
+                proptest::prop_assert_eq!(got as u128, exact.min(u64::MAX as u128));
+            }
+        }
+    }
+
+    /// Two writers of the same content never share a temporary name; one process's names
+    /// differ from call to call (threads too).
+    #[test]
+    fn part_names_are_never_shared() {
+        let dir = Path::new("/x");
+        let names: std::collections::HashSet<_> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8).map(|_| s.spawn(|| (0..100).map(|_| part_path(dir, "abc.vp9")).collect::<Vec<_>>())).collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(names.len(), 800);
+        assert!(names.iter().all(|p| p.file_name().unwrap().to_str().unwrap().starts_with(".abc.vp9.") && p.extension().unwrap() == "part"));
+    }
+
+    #[test]
+    fn alpha_rows_small() {
+        assert_eq!(alpha_rows(1), None);
+        assert_eq!(alpha_rows(2), None);
+        assert_eq!(alpha_rows(3), Some((1, 1)));
+        assert_eq!(alpha_rows(4), None, "2 + 2 leaves no V rows");
+        assert_eq!(alpha_rows(720), Some((240, 240)));
+    }
 
     #[test]
     fn movie_names() {

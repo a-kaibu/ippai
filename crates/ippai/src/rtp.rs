@@ -213,13 +213,8 @@ fn install_installshield(exe: &Path, from: &str, to: &str, drive_c: &Path, work:
     let mut n = 0;
     for e in &c.entries {
         let dir = e.dir.replace('\\', "/");
-        let rel = if dir.eq_ignore_ascii_case(from) {
-            String::new()
-        } else if dir.len() > from.len() && dir[..from.len()].eq_ignore_ascii_case(from) && dir.as_bytes()[from.len()] == b'/' {
-            dir[from.len() + 1..].to_string()
-        } else {
-            continue;
-        };
+        let Some(rel) = below(&dir, from) else { continue };
+        let rel = rel.to_string();
         if e.name.contains(['/', '\\', ':']) || rel.split('/').any(|s| s == "..") {
             bail!("odd path in the setup: {dir}/{}", e.name);
         }
@@ -229,6 +224,22 @@ fn install_installshield(exe: &Path, from: &str, to: &str, drive_c: &Path, work:
     }
     ensure!(n > 0, "{}: no files under {from}", exe.display());
     Ok(())
+}
+
+/// `dir` below `from` (ASCII case ignored): "" for `from` itself, the rest after "from/",
+/// None elsewhere. By `get`: a multi-byte character across `from`'s length in a name from the
+/// cabinet is no match, where slicing it panicked (review b01).
+fn below<'a>(dir: &'a str, from: &str) -> Option<&'a str> {
+    let head = dir.get(..from.len())?;
+    if !head.eq_ignore_ascii_case(from) {
+        return None;
+    }
+    let rest = &dir[from.len()..];
+    if rest.is_empty() {
+        Some("")
+    } else {
+        rest.strip_prefix('/')
+    }
 }
 
 /// The 2000 RTP's fixed pictures over the installed ones.
@@ -292,6 +303,36 @@ pub fn install_all(out: &Path, cache: &Path) -> Result<Vec<&'static str>> {
     Ok(done)
 }
 
+/// How long after an install that left packages out the server tries again (review b01: a
+/// package whose download always fails was fetched again, up to 4 times ~195 MB, and the
+/// others installed again, at every start).
+pub const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(86_400);
+
+/// Whether the server is to install the RTPs now: not all are in `out`, and the last try that
+/// left some out (its stamp, `out`.tried) is [`RETRY_AFTER`] old or more.
+pub fn due(out: &Path, now: std::time::SystemTime) -> bool {
+    !complete(out) && tried_at(out).is_none_or(|t| now.duration_since(t).map_or(true, |d| d >= RETRY_AFTER))
+}
+
+fn tried_path(out: &Path) -> PathBuf {
+    out.with_extension("tried")
+}
+
+fn tried_at(out: &Path) -> Option<std::time::SystemTime> {
+    let s = fs::read_to_string(tried_path(out)).ok()?;
+    Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(s.trim().parse().ok()?))
+}
+
+/// Records a try at `now` (called before it starts: a try cut short by a restart counts too).
+pub fn mark_tried(out: &Path, now: std::time::SystemTime) -> Result<()> {
+    let secs = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Some(p) = out.parent() {
+        fs::create_dir_all(p)?;
+    }
+    fs::write(tried_path(out), format!("{secs}\n"))?;
+    Ok(())
+}
+
 /// Whether `out` has every package installed (what `INSTALLED` lists).
 pub fn complete(out: &Path) -> bool {
     let Ok(s) = fs::read_to_string(out.join("INSTALLED")) else { return false };
@@ -301,6 +342,47 @@ pub fn complete(out: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn below_the_setup_folder() {
+        assert_eq!(below("Program Files/RTP", "program files/rtp"), Some(""));
+        assert_eq!(below("Program Files/RTP/System", "Program Files/RTP"), Some("System"));
+        assert_eq!(below("Program Files/RTPX", "Program Files/RTP"), None);
+        assert_eq!(below("Prog", "Program Files/RTP"), None);
+        // (a multi-byte character across the length: no match, no panic)
+        assert_eq!(below("ab日本", "abc"), None);
+        assert_eq!(below("日本語/x", "日本語"), Some("x"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn below_never_panics(dir in "\\PC{0,8}", from in "[a-zA-Z/]{0,6}") {
+            if let Some(rel) = below(&dir, &from) {
+                proptest::prop_assert!(dir.len() >= from.len() && dir[..from.len()].eq_ignore_ascii_case(&from));
+                proptest::prop_assert!(dir.ends_with(rel));
+                proptest::prop_assert!(rel.is_empty() && dir.len() == from.len() || dir.len() == from.len() + 1 + rel.len());
+            }
+        }
+
+        /// A try that left packages out waits RETRY_AFTER before the next, whatever the clock
+        /// says; a complete install is never due.
+        #[test]
+        fn retries_wait(after in 0u64..3 * 86_400, back in proptest::bool::ANY) {
+            let d = std::env::temp_dir().join(format!("ippai-rtp-due-{}", uuid::Uuid::new_v4()));
+            let out = d.join("rtp");
+            let t0 = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+            proptest::prop_assert!(due(&out, t0), "never tried");
+            mark_tried(&out, t0).unwrap();
+            let now = if back { t0 - std::time::Duration::from_secs(after) } else { t0 + std::time::Duration::from_secs(after) };
+            // (a clock set back: tried "in the future", so due now: never stuck)
+            let want = back && after > 0 || !back && after >= RETRY_AFTER.as_secs();
+            proptest::prop_assert_eq!(due(&out, now), want);
+            fs::create_dir_all(&out).unwrap();
+            fs::write(out.join("INSTALLED"), PACKAGES.iter().map(|p| p.id).collect::<Vec<_>>().join("\n")).unwrap();
+            proptest::prop_assert!(!due(&out, now + RETRY_AFTER));
+            let _ = fs::remove_dir_all(&d);
+        }
+    }
     use proptest::prelude::*;
 
     #[test]

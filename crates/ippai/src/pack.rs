@@ -198,6 +198,13 @@ fn game_trees(g: &GameEntry) -> impl Iterator<Item = &str> {
 }
 
 /// The chunks `trees/<name>.tsv` lists (none for a tree that is not there).
+/// A chunk's name as a tree lists it: hex digits, more than two (the first two name its
+/// folder). A hand-damaged list's other names are skipped, where `&h[..2]` of a non-ASCII one
+/// panicked (review b01).
+fn is_chunk_name(c: &str) -> bool {
+    c.len() > 2 && c.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn tree_chunks(store: &Path, name: &str) -> Result<std::collections::HashSet<String>> {
     let text = match fs::read_to_string(store.join("trees").join(format!("{name}.tsv"))) {
         Ok(t) => t,
@@ -210,7 +217,7 @@ fn tree_chunks(store: &Path, name: &str) -> Result<std::collections::HashSet<Str
         .filter_map(|l| l.split('\t').nth(5))
         .flat_map(|c| c.split(','))
         .map(|c| c.split_once(':').map_or(c, |(h, _)| h))
-        .filter(|c| c.len() > 2)
+        .filter(|c| is_chunk_name(c))
         .map(String::from)
         .collect())
 }
@@ -275,7 +282,7 @@ pub fn read_order(store: &Path, id: &str, list: &[u8]) -> Result<Vec<String>> {
                 .filter_map(|l| l.split('\t').nth(5))
                 .flat_map(|c| c.split(','))
                 .map(|c| c.split_once(':').map_or(c, |(h, _)| h))
-                .filter(|c| c.len() > 2)
+                .filter(|c| is_chunk_name(c))
                 .map(String::from),
         );
     }
@@ -692,10 +699,35 @@ fn write_chunk(dir: &Path, h: &str, buf: &[u8]) -> Result<()> {
         return Ok(());
     }
     fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{h}.{:?}.tmp", std::thread::current().id()));
+    let tmp = dir.join(chunk_tmp_name(h));
     fs::write(&tmp, zstd::bulk::compress(buf, zstd_level())?)?;
     fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// A temporary name for chunk `h` no other thread or process writes at once (review b01: by
+/// thread alone, the server's background C:\ pack and an `ippai add` of the same content
+/// wrote one file, and the loser's rename failed the whole pack).
+fn chunk_tmp_name(h: &str) -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!(".{h}.{}.{n}.tmp", std::process::id())
+}
+
+/// Removes a scratch folder (and its parent when that is left empty) when dropped: on every
+/// way out of [`pack_tree`], errors too (review b01: an error left up to 16 GiB of an unpacked
+/// NW.js app in the store).
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if self.0.exists() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+        if let Some(p) = self.0.parent() {
+            let _ = fs::remove_dir(p);
+        }
+    }
 }
 
 /// Escapes a path or link target for the tsv (tab, newline and backslash).
@@ -1056,14 +1088,18 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
     let root = root.canonicalize()?;
     let mut lines = Vec::new();
     let mut files = Vec::new();
-    // (path on disk, path in the tree)
-    let mut todo = vec![(root.clone(), String::new())];
+    // (path on disk, path in the tree, the folders on disk it is in: a followed link back to
+    // one of them is kept as a link, review b01, where the walk went round until ENAMETOOLONG)
+    let mut todo = vec![(root.clone(), String::new(), vec![root.clone()])];
+    // (movies to make playable copies of: done after the walk, several at once)
+    let mut movies: Vec<(usize, PathBuf, String, u32, i64, bool)> = Vec::new();
     // NW.js apps unpacked from their exe (see nwjs.rs), walked as if in the exe's folder; the
     // first of two same paths wins
     let unpacked = store.join("tmp").join(format!("nwjs-{name}-{}", std::process::id()));
+    let _scratch = Scratch(unpacked.clone());
     let mut apps = 0;
     let mut seen = std::collections::HashSet::new();
-    while let Some((dir, rel)) = todo.pop() {
+    while let Some((dir, rel, chain)) = todo.pop() {
         let mut ents: Vec<_> = fs::read_dir(&dir)?.collect::<std::io::Result<_>>()?;
         ents.sort_by_key(|e| e.file_name());
         let has_package = ents.iter().any(|e| e.file_name().eq_ignore_ascii_case("package.json"));
@@ -1079,7 +1115,7 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
                 if e.metadata()?.is_file() && (crate::nwjs::unpack(&e.path(), &to)? || lower.ends_with(".exe") && crate::evb::unpack(&e.path(), &to)?) {
                     eprintln!("{path}: NW.js app unpacked next to it");
                     apps += 1;
-                    todo.push((to, rel.clone()));
+                    todo.push((to.clone(), rel.clone(), vec![to]));
                 }
             }
             // Electron: resources/app.asar unpacked as resources/app (asar.rs)
@@ -1091,7 +1127,7 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
                     apps += 1;
                     lines.push(format!("d\t755\t{}\t{}", mtime(&e.metadata()?), esc(&app)));
                     seen.insert(app.clone());
-                    todo.push((to, app));
+                    todo.push((to.clone(), app, vec![to]));
                 }
             }
             let mut disk = e.path();
@@ -1100,7 +1136,8 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
                 let target = fs::read_link(&disk)?;
                 let resolved = fs::canonicalize(&disk).ok();
                 let inside = resolved.as_ref().is_some_and(|r| r.starts_with(&root));
-                if !follow || inside || target == Path::new("/") || resolved.is_none() {
+                let round = resolved.as_ref().is_some_and(|r| chain.iter().any(|c| c.starts_with(r)));
+                if !follow || inside || round || target == Path::new("/") || resolved.is_none() {
                     lines.push(format!("l\t{:o}\t{}\t{}\t{}", 0o777, mtime(&meta), esc(&path), esc(&target.to_string_lossy())));
                     continue;
                 }
@@ -1112,42 +1149,49 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
                 if first {
                     lines.push(format!("d\t{mode:o}\t{}\t{}", mtime(&meta), esc(&path)));
                 }
-                todo.push((disk, path));
+                let mut chain = chain.clone();
+                chain.push(disk.canonicalize().unwrap_or_else(|_| disk.clone()));
+                todo.push((disk, path, chain));
             } else if !first {
                 continue;
             } else if meta.is_file() {
                 lines.push(String::new());
                 files.push((lines.len() - 1, disk.clone(), path.clone(), mode, mtime(&meta), meta.len()));
                 // Siglus movies: a VP9 copy the browser decodes in hardware (see movie.rs)
-                if fname.to_ascii_lowercase().ends_with(".omv") && *MOVIES {
-                    match crate::movie::vnv_for(store, &disk) {
-                        Ok(v) => {
-                            let len = fs::metadata(&v)?.len();
-                            lines.push(String::new());
-                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, mtime(&meta), len));
-                        }
-                        Err(e) => eprintln!("{path}: no VP9 copy: {e:#}"),
-                    }
-                }
                 // other movies (DirectShow, Media Foundation): VP9 and Vorbis (see movie.rs)
                 // (by name, or by its first bytes when it is not an .omv)
-                let by_name = crate::movie::is_movie(&fname);
+                let omv = fname.to_ascii_lowercase().ends_with(".omv");
                 let sniffed = || {
                     let mut head = [0u8; 40];
                     let n = File::open(&disk).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
                     crate::movie::sniff(&head[..n])
                 };
-                if *MOVIES && !fname.to_ascii_lowercase().ends_with(".omv") && (by_name || sniffed()) {
-                    match crate::movie::movie_vnv_for(store, &disk) {
-                        Ok(v) => {
-                            let len = fs::metadata(&v)?.len();
-                            lines.push(String::new());
-                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, mtime(&meta), len));
-                        }
-                        Err(e) => eprintln!("{path}: not made playable: {e:#}"),
-                    }
+                if *MOVIES && (omv || crate::movie::is_movie(&fname) || sniffed()) {
+                    lines.push(String::new());
+                    movies.push((lines.len() - 1, disk.clone(), path.clone(), mode, mtime(&meta), omv));
                 }
             }
+        }
+    }
+    // (the transcodes, ffmpeg's slowest part of a pack, side by side: review b01, one at a
+    // time inside the walk before; a movie that fails leaves its line out)
+    let made: Vec<(usize, Option<(PathBuf, String, u32, i64, u64)>)> = movies
+        .par_iter()
+        .map(|(line, disk, path, mode, mtime, omv)| {
+            let v = if *omv { crate::movie::vnv_for(store, disk) } else { crate::movie::movie_vnv_for(store, disk) };
+            let v = v.and_then(|v| Ok((fs::metadata(&v)?.len(), v)));
+            match v {
+                Ok((len, v)) => (*line, Some((v, format!("{path}.vnv"), *mode, *mtime, len))),
+                Err(e) => {
+                    eprintln!("{path}: {}: {e:#}", if *omv { "no VP9 copy" } else { "not made playable" });
+                    (*line, None)
+                }
+            }
+        })
+        .collect();
+    for (line, m) in made {
+        if let Some((v, path, mode, mtime, len)) = m {
+            files.push((line, v, path, mode, mtime, len));
         }
     }
     let done: Vec<(usize, String)> = files
@@ -1179,15 +1223,12 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Para
         })
         .collect::<Result<_>>()?;
     let bytes: u64 = files.iter().map(|f| f.5).sum();
-    if apps > 0 {
-        fs::remove_dir_all(&unpacked)?;
-        let _ = fs::remove_dir(store.join("tmp"));
-    }
     for (line, text) in done {
         lines[line] = text;
     }
     let mut out = format!("vnvm-tree\t2\t{}\n", chunking.avg);
-    for l in lines {
+    // (the lines of movies left without a copy stay empty: not listed)
+    for l in lines.into_iter().filter(|l| !l.is_empty()) {
         out.push_str(&l);
         out.push('\n');
     }
@@ -1721,6 +1762,77 @@ mod tests {
         let tsv = pack_tree(&store, &dir, "t2", false, chunking(64)).unwrap();
         assert_eq!(paths(&tsv), ["d resources", "d resources/app", "f resources/app.asar", "f resources/app/package.json", "f tyranoproject.exe"]);
         let _ = fs::remove_dir_all(&t);
+    }
+
+    /// Review b01: a pack that fails after unpacking an app (here an Electron app.asar, then an
+    /// exe whose app zip is refused) leaves no scratch folder in the store.
+    #[test]
+    fn a_failed_pack_leaves_no_scratch() {
+        let t = std::env::temp_dir().join(format!("ippai-scratch-pack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, dir) = (t.join("store"), t.join("game"));
+        fs::create_dir_all(dir.join("resources")).unwrap();
+        let a = crate::asar::tests::asar(&[("package.json", b"{}"), ("index.html", b"<html>")]);
+        fs::write(dir.join("resources/app.asar"), &a).unwrap();
+        // (an end of central directory saying the directory takes more than nwjs.rs allows)
+        let size = (64u32 << 20) + 1;
+        let mut exe = vec![b'M'; size as usize];
+        exe.extend_from_slice(b"PK\x05\x06\0\0\0\0\xff\xff\xff\xff");
+        exe.extend_from_slice(&size.to_le_bytes());
+        exe.extend_from_slice(&[0; 6]);
+        fs::write(dir.join("resources/zz.exe"), &exe).unwrap();
+        let e = pack_tree(&store, &dir, "t", false, chunking(64)).unwrap_err();
+        assert!(format!("{e:#}").contains("directory takes"), "{e:#}");
+        assert!(!store.join("tmp").exists(), "scratch left: {:?}", fs::read_dir(store.join("tmp")).map(|d| d.count()));
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    /// Review b01: with --follow, a linked folder outside the game holding a link back to
+    /// itself (or to a folder above it) is walked once; the link back is kept as a link.
+    #[cfg(unix)]
+    #[test]
+    fn follow_stops_at_a_link_back() {
+        let t = std::env::temp_dir().join(format!("ippai-follow-loop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, dir, out) = (t.join("store"), t.join("game"), t.join("outside"));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::create_dir_all(out.join("a")).unwrap();
+        fs::write(out.join("a/data.bin"), b"data").unwrap();
+        std::os::unix::fs::symlink(&out, out.join("a/up")).unwrap();
+        std::os::unix::fs::symlink(out.join("a"), out.join("a/me")).unwrap();
+        std::os::unix::fs::symlink(&out, dir.join("sub/ext")).unwrap();
+        let tsv = pack_tree(&store, &dir, "t", true, chunking(64)).unwrap();
+        let mut paths: Vec<String> = tsv.lines().skip(1).map(|l| format!("{} {}", &l[..1], l.split('\t').nth(3).unwrap())).collect();
+        paths.sort();
+        assert_eq!(paths, ["d sub", "d sub/ext", "d sub/ext/a", "f sub/ext/a/data.bin", "l sub/ext/a/me", "l sub/ext/a/up"]);
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    /// Chunk temp names are never shared, between threads or calls.
+    #[test]
+    fn chunk_temp_names_are_unique() {
+        let names: std::collections::HashSet<String> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8).map(|_| s.spawn(|| (0..200).map(|_| chunk_tmp_name("ab12")).collect::<Vec<_>>())).collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(names.len(), 1600);
+        assert!(names.iter().all(|n| n.starts_with(&format!(".ab12.{}.", std::process::id())) && n.ends_with(".tmp")));
+    }
+
+    proptest::proptest! {
+        /// Any text in a tree's chunk column: the names kept are hex, and a path made of them
+        /// never panics (review b01: `&h[..2]` of a non-ASCII name did).
+        #[test]
+        fn chunk_names_from_a_damaged_tree(col in "\\PC{0,40}") {
+            let t = std::env::temp_dir().join(format!("ippai-damaged-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(t.join("trees")).unwrap();
+            fs::write(t.join("trees/x.tsv"), format!("vnvm-tree\t2\t65536\nf\t644\t0\ta.bin\t1\t{col}\n")).unwrap();
+            for c in tree_chunks(&t, "x").unwrap() {
+                proptest::prop_assert!(is_chunk_name(&c));
+                let _ = format!("chunks/{}/{c}", &c[..2]);
+            }
+            let _ = fs::remove_dir_all(&t);
+        }
     }
 
     /// An NW.js game boxed by Enigma Virtual Box (one exe holding package.json and www/) gets

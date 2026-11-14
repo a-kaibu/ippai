@@ -54,6 +54,58 @@ fn fetch(id: &str, gamedb: &std::path::Path) -> anyhow::Result<Fetched> {
 struct Api {
     db: Library,
     fetch: Fetcher,
+    jobs: Arc<std::sync::Mutex<Coalesce<String, (String, String)>>>,
+    slots: Arc<tokio::sync::Semaphore>,
+}
+
+/// Fetches running at once over all games (each one sleeps out ErogameScape's spacing in a
+/// blocking thread: review b01, PUTs sent again and again parked one blocking thread each).
+const META_JOBS: usize = 4;
+
+/// One running job per key, and at most the last one asked for waiting behind it: what is
+/// asked while a key's job runs replaces what waited (only the newest request of a game
+/// counts, `Library::finish_meta` drops the results of older ones anyway).
+#[derive(Debug)]
+pub struct Coalesce<K, V> {
+    waiting: std::collections::HashMap<K, Option<V>>,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> Default for Coalesce<K, V> {
+    fn default() -> Self {
+        Coalesce { waiting: Default::default() }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> Coalesce<K, V> {
+    /// `v` asked for `k`: `Some(v)` when it is to run now (no job of `k` runs), `None` when
+    /// it waits for the running one.
+    pub fn offer(&mut self, k: K, v: V) -> Option<V> {
+        match self.waiting.get_mut(&k) {
+            Some(next) => {
+                *next = Some(v);
+                None
+            }
+            None => {
+                self.waiting.insert(k, None);
+                Some(v)
+            }
+        }
+    }
+
+    /// The job of `k` ended: what is to run next for `k`, if anything waited.
+    pub fn done(&mut self, k: &K) -> Option<V> {
+        let next = self.waiting.get_mut(k).and_then(Option::take);
+        if next.is_none() {
+            self.waiting.remove(k);
+        }
+        next
+    }
+
+    /// Keys with a running job.
+    #[cfg(test)]
+    pub fn running(&self) -> usize {
+        self.waiting.len()
+    }
 }
 
 fn error(e: impl std::fmt::Display) -> StatusCode {
@@ -138,7 +190,7 @@ pub fn router_with(db: Library, fetch: Fetcher) -> Router {
         .route("/api/library/{game}/cover", get(cover))
         .route("/api/library/{game}/candidates", get(candidates))
         .route("/api/sessions", put(session).get(stats).delete(reset_stats))
-        .with_state(Api { db, fetch })
+        .with_state(Api { db, fetch, jobs: Default::default(), slots: Arc::new(tokio::sync::Semaphore::new(META_JOBS)) })
 }
 
 #[derive(Deserialize)]
@@ -153,7 +205,7 @@ async fn meta_state(State(Api { db, .. }): State<Api>, Path(game): Path<String>)
     tokio::task::spawn_blocking(move || db.meta_status(&game)).await.map_err(error)?.map(Json).map_err(error)
 }
 
-async fn meta_fetch(State(Api { db, fetch }): State<Api>, Path(game): Path<String>, Json(r): Json<MetaRequest>) -> Response {
+async fn meta_fetch(State(Api { db, fetch, jobs, slots }): State<Api>, Path(game): Path<String>, Json(r): Json<MetaRequest>) -> Response {
     if !valid(&game) {
         return StatusCode::BAD_REQUEST.into_response();
     }
@@ -179,15 +231,35 @@ async fn meta_fetch(State(Api { db, fetch }): State<Api>, Path(game): Path<Strin
         Ok(Err(e)) => return error(e).into_response(),
         Err(e) => return error(e).into_response(),
     };
-    tokio::task::spawn_blocking(move || {
-        let result = fetch(&id).and_then(|f| Ok((serde_json::to_string(&f.info)?, f.cover))).map_err(|e| format!("{e:#}"));
-        if let Err(e) = &result {
-            eprintln!("meta {game} ({id}): {e}");
-        }
-        if let Err(e) = db.finish_meta(&game, &job, result) {
-            eprintln!("meta {game}: {e:#}");
-        }
-    });
+    // (a game's fetch already running: this one waits behind it, replacing any that waited)
+    let first = jobs.lock().unwrap_or_else(|e| e.into_inner()).offer(game.clone(), (id, job));
+    if let Some(first) = first {
+        tokio::spawn(async move {
+            let mut next = Some(first);
+            while let Some((id, job)) = next.take() {
+                let permit = slots.clone().acquire_owned().await;
+                let (db2, fetch, game2, job2) = (db.clone(), fetch.clone(), game.clone(), job.clone());
+                let ran = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    let result = fetch(&id).and_then(|f| Ok((serde_json::to_string(&f.info)?, f.cover))).map_err(|e| format!("{e:#}"));
+                    if let Err(e) = &result {
+                        eprintln!("meta {game2} ({id}): {e}");
+                    }
+                    if let Err(e) = db2.finish_meta(&game2, &job2, result) {
+                        eprintln!("meta {game2}: {e:#}");
+                    }
+                })
+                .await;
+                if let Err(e) = ran {
+                    // (a fetch that panicked: the state says so instead of staying pending)
+                    eprintln!("meta {game}: {e}");
+                    let (db, game) = (db.clone(), game.clone());
+                    let _ = tokio::task::spawn_blocking(move || db.finish_meta(&game, &job, Err(format!("取得に失敗しました：{e}")))).await;
+                }
+                next = jobs.lock().unwrap_or_else(|e| e.into_inner()).done(&game);
+            }
+        });
+    }
     (StatusCode::ACCEPTED, Json(status)).into_response()
 }
 
@@ -475,5 +547,117 @@ mod tests {
         assert_eq!(get("/api/library/nothere/candidates").await.0, StatusCode::NOT_FOUND);
         assert_eq!(get("/api/library/.x/candidates").await.0, StatusCode::BAD_REQUEST);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Review b01: a PUT sent again and again while the game's fetch runs starts no more
+    /// fetches (each one held a blocking thread): the one running finishes, then only the
+    /// newest that waited runs, and its result is the game's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_requests_wait_behind_the_running_one() {
+        let dir = store();
+        let db = Library::new(&dir).unwrap();
+        let seen = Arc::new(Mutex::new(vec![]));
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let fetch: Fetcher = {
+            let (seen, gate) = (seen.clone(), gate.clone());
+            Arc::new(move |id: &str| {
+                let first = seen.lock().unwrap().is_empty();
+                seen.lock().unwrap().push(id.to_string());
+                if first {
+                    gate.wait();
+                }
+                Ok(Fetched { info: info(id), cover: None })
+            })
+        };
+        let app = router_with(db.clone(), fetch);
+        for n in 1..=20 {
+            let (s, _, _) = call(&app, "PUT", "/api/library/anemoi/meta", Some(&serde_json::json!({ "url": format!("https://vndb.org/v{n}") }).to_string())).await;
+            assert_eq!(s, StatusCode::ACCEPTED);
+        }
+        // (the first is inside fetch: no second one started meanwhile)
+        for _ in 0..50 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(*seen.lock().unwrap(), ["vndb:v1"]);
+        tokio::task::spawn_blocking(move || gate.wait()).await.unwrap();
+        let done = settled(&app, "anemoi").await;
+        assert_eq!((done["state"].as_str(), done["url"].as_str()), (Some("ok"), Some("https://vndb.org/v20")), "{done}");
+        assert_eq!(*seen.lock().unwrap(), ["vndb:v1", "vndb:v20"]);
+        assert_eq!(listed(&db)["meta"]["title"], "vndb:v20");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A fetch that panics ends the game's state in an error, not pending for ever, and the
+    /// next request runs.
+    #[tokio::test]
+    async fn a_panicking_fetch_is_an_error() {
+        let dir = store();
+        let db = Library::new(&dir).unwrap();
+        let n = Arc::new(Mutex::new(0));
+        let fetch: Fetcher = {
+            let n = n.clone();
+            Arc::new(move |_: &str| {
+                *n.lock().unwrap() += 1;
+                if *n.lock().unwrap() == 1 {
+                    panic!("boom");
+                }
+                Ok(Fetched { info: info("二回目"), cover: None })
+            })
+        };
+        let app = router_with(db, fetch);
+        let put = || call(&app, "PUT", "/api/library/anemoi/meta", Some(r#"{"url":"https://vndb.org/v5"}"#));
+        assert_eq!(put().await.0, StatusCode::ACCEPTED);
+        assert_eq!(settled(&app, "anemoi").await["state"], "error");
+        assert_eq!(put().await.0, StatusCode::ACCEPTED);
+        assert_eq!(settled(&app, "anemoi").await["state"], "ok");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    proptest::proptest! {
+        /// Coalesce against a model: for any interleaving of requests and job ends over a few
+        /// keys, at most one job runs per key, a request is never lost unless a newer one of
+        /// its key replaced it before it ran, and every key's newest request runs.
+        #[test]
+        fn coalesce_runs_the_newest(ops in proptest::collection::vec((0u8..3, proptest::bool::ANY), 0..200)) {
+            let mut c = Coalesce::<u8, u32>::default();
+            let mut running: std::collections::HashMap<u8, u32> = Default::default();
+            let mut last: std::collections::HashMap<u8, u32> = Default::default();
+            let mut ran: Vec<(u8, u32)> = vec![];
+            for (i, (k, request)) in ops.iter().copied().enumerate() {
+                let i = i as u32;
+                if request {
+                    last.insert(k, i);
+                    if let Some(v) = c.offer(k, i) {
+                        proptest::prop_assert!(!running.contains_key(&k), "two jobs of {}", k);
+                        running.insert(k, v);
+                        ran.push((k, v));
+                    }
+                } else if running.remove(&k).is_some() {
+                    if let Some(v) = c.done(&k) {
+                        proptest::prop_assert_eq!(Some(&v), last.get(&k), "not the newest");
+                        running.insert(k, v);
+                        ran.push((k, v));
+                    }
+                }
+                proptest::prop_assert_eq!(c.running(), running.len());
+            }
+            // (drain: every key ends on its newest request)
+            for k in 0..3u8 {
+                while running.remove(&k).is_some() {
+                    if let Some(v) = c.done(&k) {
+                        running.insert(k, v);
+                        ran.push((k, v));
+                    }
+                }
+                if let Some(l) = last.get(&k) {
+                    proptest::prop_assert_eq!(ran.iter().rev().find(|r| r.0 == k).map(|r| r.1), Some(*l));
+                }
+            }
+            proptest::prop_assert_eq!(c.running(), 0);
+        }
     }
 }

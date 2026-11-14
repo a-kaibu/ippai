@@ -76,15 +76,12 @@ impl Saves {
         }))
     }
     pub async fn read(&self, name: &str) -> anyhow::Result<Option<(i64, Vec<u8>)>> {
-        let row: Option<(i64, Option<Vec<u8>>)> = self
-            .db
-            .connect()?
-            .query_row(
-                "SELECT revision,data FROM saves WHERE name=?",
-                [name],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
+        // (the row, a blob of up to 256 MiB, read on a blocking thread: review b01)
+        let (db, n) = (self.db.clone(), name.to_string());
+        let row: Option<(i64, Option<Vec<u8>>)> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            Ok(db.connect()?.query_row("SELECT revision,data FROM saves WHERE name=?", [n], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
+        })
+        .await??;
         let Some((revision, data)) = row else {
             return Ok(None);
         };
@@ -101,27 +98,41 @@ impl Saves {
         };
         Ok(Some((revision, data)))
     }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn write(&self, name: &str, expected: i64, data: &[u8]) -> anyhow::Result<bool> {
+        self.write_bytes(name, expected, Bytes::copy_from_slice(data)).await
+    }
+
+    /// [`Saves::write`] of a request's body (not copied). The database's parts run on blocking
+    /// threads (a 256 MiB blob held a request thread for its whole write: review b01).
+    pub async fn write_bytes(&self, name: &str, expected: i64, data: Bytes) -> anyhow::Result<bool> {
         let _guard = self.lock.lock(name).await;
-        let revision: i64 = self
-            .db
-            .connect()?
-            .query_row("SELECT revision FROM saves WHERE name=?", [name], |r| {
-                r.get(0)
-            })
-            .optional()?
-            .unwrap_or(0);
+        let (db, n) = (self.db.clone(), name.to_string());
+        let revision: i64 = tokio::task::spawn_blocking(move || -> anyhow::Result<i64> {
+            Ok(db.connect()?.query_row("SELECT revision FROM saves WHERE name=?", [n], |r| r.get(0)).optional()?.unwrap_or(0))
+        })
+        .await??;
         if revision != expected {
             return Ok(false);
         }
         let next = revision + 1;
         if let Some(remote) = &self.remote {
-            remote.put(&format!("saves/{name}/{next}"), data).await?;
+            remote.put(&format!("saves/{name}/{next}"), &data).await?;
         }
         let local = self.remote.is_none().then_some(data);
-        self.db.connect()?.execute("INSERT INTO saves(name,revision,data,written_ms) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data,written_ms=excluded.written_ms", rusqlite::params![name,next,local,now_ms()])?;
+        let (db, n) = (self.db.clone(), name.to_string());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            db.connect()?.execute("INSERT INTO saves(name,revision,data,written_ms) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data,written_ms=excluded.written_ms", rusqlite::params![n,next,local.as_deref(),now_ms()])?;
+            Ok(())
+        })
+        .await??;
         if let Some(remote) = &self.remote {
-            remote.prune_save(name, next)?;
+            // (the save is stored: a failure to forget old revisions is no failure of the write,
+            // or the client's next PUT with the old revision gets 412: review b01)
+            if let Err(e) = remote.prune_save(name, next) {
+                eprintln!("saves: {name}: forgetting old revisions: {e:#}");
+            }
         }
         Ok(true)
     }
@@ -288,7 +299,7 @@ async fn put_save(
     else {
         return StatusCode::PRECONDITION_REQUIRED.into_response();
     };
-    match s.write(&name, expected, &body).await {
+    match s.write_bytes(&name, expected, body).await {
         Ok(true) => (
             StatusCode::NO_CONTENT,
             [(header::ETAG, format!("\"{}\"", expected + 1))],

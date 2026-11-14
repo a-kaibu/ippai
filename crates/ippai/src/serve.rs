@@ -251,7 +251,7 @@ async fn save_trace(jit: &Jit, name: &str, body: &[u8]) -> StatusCode {
 /// Merges a run's regions into `name`'s: those not saved already (same roots and code) go after
 /// the others.
 async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes) -> StatusCode {
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+    if name.is_empty() || name.len() > JIT_NAME_MAX || name.starts_with('.') || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
         return StatusCode::BAD_REQUEST;
     }
     // a run's read trace (kura vfs/trace.rs: what it read when, what was foreseen), whole each
@@ -287,7 +287,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         // again each time from the programs' lists: what no program reads any more (fonts
         // replaced, old DLLs) goes.
         let shared_name = format!("{SHARED}.chunks");
-        let mut lists: std::collections::BTreeMap<String, (std::time::SystemTime, Vec<u8>)> = Default::default();
+        let mut lists: std::collections::BTreeMap<String, (std::time::SystemTime, Arc<Vec<u8>>)> = Default::default();
         if let Ok(mut d) = tokio::fs::read_dir(&jit.0).await {
             while let Ok(Some(e)) = d.next_entry().await {
                 let f = e.file_name().to_string_lossy().into_owned();
@@ -299,12 +299,13 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
                 if lists.get(&prog).is_some_and(|l| l.0 >= t) {
                     continue;
                 }
-                if let Ok(b) = tokio::fs::read(jit.0.join(&f)).await {
+                let len = e.metadata().await.map_or(0, |m| m.len());
+                if let Some(b) = chunk_list(&jit.0.join(&f), t, len).await {
                     lists.insert(prog, (t, b));
                 }
             }
         }
-        let lists: Vec<Vec<u8>> = lists.into_values().map(|l| l.1).collect();
+        let lists: Vec<Arc<Vec<u8>>> = lists.into_values().map(|l| l.1).collect();
         let mut count: std::collections::HashMap<[u8; 16], u32> = Default::default();
         for b in &lists {
             let mut once = std::collections::HashSet::new();
@@ -330,6 +331,9 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
         return StatusCode::NO_CONTENT;
+    }
+    if !regions_name(&name) {
+        return StatusCode::BAD_REQUEST;
     }
     let Some(n) = body.get(..4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize) else {
         return StatusCode::BAD_REQUEST;
@@ -409,6 +413,20 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
     status
 }
 
+/// The parts (`<name>.<k.><version>`) wasm-opt failed on, this server run.
+static OPT_FAILED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+
+/// A save's name at most (bytes).
+const JIT_NAME_MAX: usize = 200;
+
+/// Whether `name` can be a program's saved regions: `<program>-<build>`, the build letters and
+/// digits only. Others would land on the server's own files (review b01): `sake-x-v1.1` is
+/// part 1 of `sake-x-v1`, and `.parts`, `.opt`, `.idx`, `.next`, `.tmp` its lists and copies.
+fn regions_name(name: &str) -> bool {
+    let Some((prog, ver)) = name.rsplit_once('-') else { return false };
+    !prog.is_empty() && !ver.is_empty() && ver.bytes().all(|b| b.is_ascii_alphanumeric()) && name.len() <= JIT_NAME_MAX && !name.starts_with('.')
+}
+
 /// Optimizes the saved regions of `names` on the server, where there is time to (binaryen's
 /// `wasm-opt -O2`, IPPAI_WASM_OPT, beside the server or on the PATH; nothing without it): each part's module gets
 /// an optimized copy `<name>.<k.><version>.opt.wasm` that `<name>.parts` lists instead. The
@@ -432,6 +450,11 @@ async fn optimize(jit: Jit, names: Vec<String>) {
             if wasm.ends_with(".opt.wasm") {
                 continue;
             }
+            // (one wasm-opt failed on stays failed: not run again at every save, review b01)
+            let key = format!("{stem}{v}");
+            if OPT_FAILED.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
+                continue;
+            }
             let (out, tmp) = (jit.0.join(format!("{stem}{v}.opt.wasm")), jit.0.join(format!("{stem}{v}.opt.tmp")));
             let t0 = std::time::Instant::now();
             // (multivalue: the function-level translator's adapters return several values)
@@ -452,8 +475,12 @@ async fn optimize(jit: Jit, names: Vec<String>) {
             } else {
                 let _ = tokio::fs::remove_file(&tmp).await;
                 // (only the first lines: a validation error dumps the whole module)
+                let ran = run.is_ok();
                 let err = run.map(|o| String::from_utf8_lossy(&o.stderr).lines().take(3).collect::<Vec<_>>().join(" | ")).unwrap_or_default();
                 eprintln!("jit {wasm}: {} failed: {}", opt.display(), err.chars().take(400).collect::<String>());
+                if ran {
+                    OPT_FAILED.lock().unwrap_or_else(|e| e.into_inner()).insert(key);
+                }
                 return;
             }
         }
@@ -532,6 +559,24 @@ fn entry_key(e: &saved::Entry) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
+/// A program's chunk list as on the disk (modified `t`, `len` bytes): read once and kept until
+/// the file changes (review b01: each list saved re-read every program's list, up to 512 KiB
+/// each, under the jit lock).
+async fn chunk_list(path: &std::path::Path, t: std::time::SystemTime, len: u64) -> Option<Arc<Vec<u8>>> {
+    type Kept = std::collections::HashMap<PathBuf, (std::time::SystemTime, u64, Arc<Vec<u8>>)>;
+    static KEPT: std::sync::LazyLock<std::sync::Mutex<Kept>> = std::sync::LazyLock::new(Default::default);
+    if let Some((kt, kl, b)) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        if *kt == t && *kl == len {
+            return Some(b.clone());
+        }
+    }
+    let b = Arc::new(tokio::fs::read(path).await.ok()?);
+    if b.len() as u64 == len {
+        KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_path_buf(), (t, len, b.clone()));
+    }
+    Some(b)
+}
+
 /// The [`same_key`]s of `name`'s parts, read from their indexes alone (review C-10: every save
 /// read every other program's modules too, ~15 MB each, to compare only the indexes).
 async fn part_keys(dir: &std::path::Path, name: &str, into: &mut std::collections::HashSet<[u8; 32]>) {
@@ -553,19 +598,33 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 }
 
 /// The parts of `name` (the base <name>.wasm/.idx, then <name>.<k>.wasm/.idx).
+/// A part whose module and index are not the pair the list published (a crash or a full disk
+/// between the two renames of a write: review b01) ends the parts there: the next save writes
+/// it again instead of merging against a mismatched pair for good.
 async fn read_parts(dir: &std::path::Path, name: &str) -> Vec<(Vec<u8>, Vec<saved::Entry>)> {
+    let listed: Option<Vec<String>> = tokio::fs::read_to_string(dir.join(format!("{name}.parts"))).await.ok().map(|l| listed_versions(&l));
     let mut parts = Vec::new();
     for k in 0..PARTS_MAX {
         let stem = if k == 0 { String::new() } else { format!("{k}.") };
-        let (Ok(w), Some(e)) = (
+        let (Ok(w), Ok(i)) = (
             tokio::fs::read(dir.join(format!("{name}.{stem}wasm"))).await,
-            tokio::fs::read(dir.join(format!("{name}.{stem}idx"))).await.ok().and_then(|b| saved::decode(&b)),
+            tokio::fs::read(dir.join(format!("{name}.{stem}idx"))).await,
         ) else {
             break;
         };
+        if listed.as_ref().is_some_and(|l| l.get(k).is_none_or(|v| *v != version(&w, &i))) {
+            eprintln!("jit {name}: part {k} is not the one listed: written again");
+            break;
+        }
+        let Some(e) = saved::decode(&i) else { break };
         parts.push((w, e));
     }
     parts
+}
+
+/// The versions a `.parts` list names, part by part.
+fn listed_versions(list: &str) -> Vec<String> {
+    list.lines().filter_map(|l| l.split(' ').nth(2)).map(String::from).collect()
 }
 
 /// Adds the regions `new_idx` (the functions of `new_wasm`) to `name`'s parts, those not saved
@@ -712,12 +771,40 @@ async fn bench_log(State(jit): State<Jit>, body: Bytes) -> StatusCode {
         }
     };
     let _lock = jit.1.lock().await;
-    match tokio::fs::OpenOptions::new().create(true).append(true).open(jit.0.join(name)).await {
+    let path = jit.0.join(name);
+    let r = match tokio::fs::OpenOptions::new().create(true).append(true).open(&path).await {
         Ok(mut f) => match f.write_all(line.as_bytes()).await {
             Ok(()) => StatusCode::NO_CONTENT,
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
         },
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    // (no longer than BENCH_FILE_MAX: the newest half of it kept, whole lines; review b01, it
+    // grew for ever and every GET read all of it)
+    if tokio::fs::metadata(&path).await.is_ok_and(|m| m.len() > BENCH_FILE_MAX) {
+        if let Ok(all) = tokio::fs::read(&path).await {
+            let tmp = path.with_extension("trim.tmp");
+            if tokio::fs::write(&tmp, newest_lines(&all, (BENCH_FILE_MAX / 2) as usize)).await.is_ok() {
+                let _ = tokio::fs::rename(&tmp, &path).await;
+            }
+        }
+    }
+    r
+}
+
+/// A bench results file at most (bytes).
+const BENCH_FILE_MAX: u64 = 32 << 20;
+
+/// The end of `text` at most `keep` bytes long that starts at a line's start (after a newline;
+/// all of it when it fits).
+fn newest_lines(text: &[u8], keep: usize) -> &[u8] {
+    if text.len() <= keep {
+        return text;
+    }
+    let from = text.len() - keep;
+    match text[from..].iter().position(|&b| b == b'\n') {
+        Some(i) => &text[from + i + 1..],
+        None => &[],
     }
 }
 
@@ -734,6 +821,24 @@ const BENCH_RUNS_MAX: usize = 1000;
 /// Logs kept at most (the oldest go).
 const LOGS_MAX: usize = 2000;
 
+/// All the logs' bytes at most (the oldest go; review b01: LOGS_MAX logs of LOG_MAX each was
+/// 64 GiB).
+const LOGS_BYTES: u64 = 2 << 30;
+
+/// Which of the logs `list` (newest first: name, size, time) go so that at most `count` stay,
+/// `bytes` in all; the newest always stays.
+fn logs_to_drop(list: &[(String, u64, u64)], count: usize, bytes: u64) -> Vec<&str> {
+    let mut total = 0u64;
+    let mut out = Vec::new();
+    for (i, (name, size, _)) in list.iter().enumerate() {
+        total = total.saturating_add(*size);
+        if i > 0 && (i >= count || total > bytes) {
+            out.push(name.as_str());
+        }
+    }
+    out
+}
+
 /// Stores a page's log as `<logs>/<name>.txt`.
 async fn save_log(State(dir): State<Arc<PathBuf>>, Path(name): Path<String>, body: Bytes) -> StatusCode {
     if name.is_empty() || name.len() > 200 || name.starts_with('.') || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)) {
@@ -749,8 +854,8 @@ async fn save_log(State(dir): State<Arc<PathBuf>>, Path(name): Path<String>, bod
     let text = String::from_utf8_lossy(&body[..body.len().min(4096)]);
     let reason = text.lines().find_map(|l| l.strip_prefix("reason: ")).unwrap_or("");
     eprintln!("log {}: {} KB, {reason}", path.display(), body.len() / 1024);
-    let mut list = list_logs(&dir).await;
-    for (old, _, _) in list.drain(..).skip(LOGS_MAX) {
+    let list = list_logs(&dir).await;
+    for old in logs_to_drop(&list, LOGS_MAX, LOGS_BYTES) {
         let _ = tokio::fs::remove_file(dir.join(old)).await;
     }
     StatusCode::NO_CONTENT
@@ -850,6 +955,10 @@ async fn prerun_games(p: Arc<Prerun>) {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        // (its own process group: what is left of it at the end goes too, GPU and zygote
+        // children included; review b01)
+        #[cfg(unix)]
+        cmd.process_group(0);
         // (Chromium's sandbox refuses to run as root)
         #[cfg(unix)]
         if std::fs::metadata("/proc/self").is_ok_and(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0) {
@@ -860,6 +969,11 @@ async fn prerun_games(p: Arc<Prerun>) {
         match cmd.spawn() {
             Ok(mut child) => {
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(PRERUN_SECS), child.wait()).await;
+                #[cfg(unix)]
+                if let Some(pid) = child.id() {
+                    // SAFETY: a signal to the group this child leads
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                }
                 let _ = child.kill().await;
             }
             Err(e) => {
@@ -1019,10 +1133,14 @@ fn precompress(dir: &std::path::Path, write: bool) {
         }
         // (an old one must not be served meanwhile)
         let _ = std::fs::remove_file(&zst);
-        if !write {
+        if !write || !settled(&meta, std::time::SystemTime::now()) {
             continue;
         }
         let Ok(data) = std::fs::read(&p) else { continue };
+        // (changed while read: a deploy writing it; the next pass makes it)
+        if std::fs::metadata(&p).ok().is_none_or(|m| m.len() != data.len() as u64 || m.modified().ok() != meta.modified().ok()) {
+            continue;
+        }
         match zstd::encode_all(&data[..], 19) {
             Ok(z) if z.len() < data.len() => {
                 let tmp = zst.with_extension("zst.tmp");
@@ -1034,6 +1152,16 @@ fn precompress(dir: &std::path::Path, write: bool) {
         }
     }
 }
+
+/// Whether a file last written at `meta`'s time can be compressed `now`: written
+/// PRECOMPRESS_SETTLE ago at least. A file a deploy is still writing changes its time with
+/// each write: one caught half written was compressed and, its .zst as new as it, served
+/// truncated for good (review b01).
+fn settled(meta: &std::fs::Metadata, now: std::time::SystemTime) -> bool {
+    meta.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|d| d >= PRECOMPRESS_SETTLE)
+}
+
+const PRECOMPRESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 
 use axum::serve::ListenerExt;
 
@@ -1078,7 +1206,11 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
         eprintln!("sake's C:\\ ({}) made from {}", crate::pack::PREFIX_TREE, dirs.fonts.display());
     }
     // RPG Maker's RTPs, from their publisher, while the server runs (rtp.rs; IPPAI_RTP=0: not)
-    if !crate::rtp::complete(&dirs.rtp) && std::env::var("IPPAI_RTP").as_deref() != Ok("0") {
+    // (a try that left some out: again a day later, not at every start)
+    if crate::rtp::due(&dirs.rtp, std::time::SystemTime::now()) && std::env::var("IPPAI_RTP").as_deref() != Ok("0") {
+        if let Err(e) = crate::rtp::mark_tried(&dirs.rtp, std::time::SystemTime::now()) {
+            eprintln!("RPG Maker RTPs: {e:#}");
+        }
         let (store, fonts, rtp, cache) = (dirs.store.clone(), dirs.fonts.clone(), dirs.rtp.clone(), dirs.cache.join("rtp"));
         std::thread::spawn(move || match crate::rtp::install_all(&rtp, &cache) {
             Ok(done) => {
@@ -1299,7 +1431,11 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     // (before anything can replace it: /api/update)
     let exe = std::env::current_exe()?;
     if let Some(storage) = crate::storage::Storage::configured(crate::library::Library::new(&store)?)? {
-        storage.hydrate_catalog(&store).await?;
+        // (a bucket that cannot be reached at the start: the catalog on the disk serves, review
+        // b01; the server ended here before)
+        if let Err(e) = storage.hydrate_catalog(&store).await {
+            eprintln!("ippai: the bucket's catalog not fetched ({e:#}): serving the store on the disk");
+        }
     }
     let auth = crate::auth::Auth::load(&dirs.token, args.strict_auth)?;
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
@@ -1960,6 +2096,10 @@ mod tests {
         };
         assert_eq!(zst(&d), vec![d.join("sub/b.wasm.zst")], "and nothing is written yet");
 
+        // (review b01: a file written just now may still be being written: not yet)
+        super::precompress(&d, true);
+        assert!(!d.join("a.js.zst").exists(), "a.js was written less than PRECOMPRESS_SETTLE ago");
+        fs::File::options().write(true).open(d.join("a.js")).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(10)).unwrap();
         super::precompress(&d, true);
         assert_eq!(zstd::decode_all(&fs::read(d.join("a.js.zst")).unwrap()[..]).unwrap(), big.as_bytes());
         assert_eq!(fs::read(d.join("sub/b.wasm.zst")).unwrap(), b"kept");
@@ -2033,4 +2173,89 @@ mod tests {
             proptest::prop_assert!(super::same(&a, &a.clone()));
         }
     }
+
+    proptest::proptest! {
+        /// The newest lines: a suffix, at most `keep` long, starting at a line, whole when it fits.
+        #[test]
+        fn newest_lines_are_a_suffix_of_whole_lines(text in proptest::collection::vec(proptest::prop_oneof![proptest::prelude::Just(b'\n'), proptest::prelude::any::<u8>()], 0..300), keep in 0usize..320) {
+            let got = super::newest_lines(&text, keep);
+            proptest::prop_assert!(text.ends_with(got));
+            proptest::prop_assert!(got.len() <= keep);
+            if text.len() <= keep {
+                proptest::prop_assert_eq!(got, &text[..]);
+            } else if !got.is_empty() {
+                proptest::prop_assert_eq!(text[text.len() - got.len() - 1], b'\n');
+            }
+        }
+
+        /// The logs kept: the newest first, at most `count`, at most `bytes` (the newest always).
+        #[test]
+        fn logs_kept_within_the_budget(sizes in proptest::collection::vec(0u64..100, 0..40), count in 1usize..20, bytes in 0u64..2000) {
+            let list: Vec<(String, u64, u64)> = sizes.iter().enumerate().map(|(i, s)| (format!("{i}.txt"), *s, 1000 - i as u64)).collect();
+            let drop: std::collections::HashSet<&str> = super::logs_to_drop(&list, count, bytes).into_iter().collect();
+            let kept: Vec<&(String, u64, u64)> = list.iter().filter(|l| !drop.contains(l.0.as_str())).collect();
+            proptest::prop_assert!(kept.len() <= count.max(1));
+            if kept.len() > 1 {
+                proptest::prop_assert!(kept.iter().map(|k| k.1).sum::<u64>() <= bytes);
+            }
+            // (a prefix of the newest: nothing newer than a dropped log is dropped after it)
+            let k = kept.len();
+            proptest::prop_assert!(kept.iter().zip(&list).all(|(a, b)| a.0 == b.0));
+            proptest::prop_assert_eq!(drop.len(), list.len() - k);
+        }
+
+        /// Names a regions save may have: none of them lands on a server file of another name.
+        #[test]
+        fn regions_names_never_collide(prog in "[A-Za-z0-9_.-]{1,20}", ver in "[A-Za-z0-9.]{1,10}") {
+            let name = format!("{prog}-{ver}");
+            if super::regions_name(&name) {
+                for ext in ["parts", "wasm", "idx", "tmp", "opt", "next", "chunks"] {
+                    let suffix = format!(".{}", ext);
+                    proptest::prop_assert!(!name.ends_with(&suffix));
+                }
+                // (not part k of another program: <other>.<k>)
+                proptest::prop_assert!(name.rsplit_once('.').is_none_or(|(_, k)| k.parse::<u32>().is_err() || !super::regions_name(name.rsplit_once('.').unwrap().0)));
+            }
+        }
+    }
+
+    #[test]
+    fn regions_names() {
+        for ok in ["sake-a-v1", "sake-SiglusEngine.exe-1a2b3c4d", "_shared-v1"] {
+            assert!(super::regions_name(ok), "{ok}");
+        }
+        for bad in ["sake-a-v1.1", "sake-a-v1.parts", "x-v1.opt", "noversion", "-v1", "sake-", ".x-v1", &format!("{}-v1", "a".repeat(300))] {
+            assert!(!super::regions_name(bad), "{bad}");
+        }
+    }
+
+    /// Review b01: a part whose module is not the one its index was listed with (a crash between
+    /// the two renames) is not merged against: the parts end before it and the next save writes
+    /// it again, so the list's versions match the files again.
+    #[tokio::test]
+    async fn a_torn_part_is_written_again() {
+        let d = scratch("torn-part");
+        std::fs::create_dir_all(&d).unwrap();
+        let a = regions(4, 0x1000);
+        assert_eq!(super::add_part(&d, "sake-t-v1", module(4, 1), a.clone()).await, axum::http::StatusCode::NO_CONTENT);
+        let b = regions(2, 0x9000);
+        assert_eq!(super::add_part(&d, "sake-t-v1", module(2, 2), b.clone()).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(super::read_parts(&d, "sake-t-v1").await.len(), 2);
+        // (part 1's module replaced, its index not: torn)
+        std::fs::write(d.join("sake-t-v1.1.wasm"), module(2, 3)).unwrap();
+        assert_eq!(super::read_parts(&d, "sake-t-v1").await.len(), 1, "the torn part is not taken");
+        assert_eq!(super::add_part(&d, "sake-t-v1", module(2, 2), b.clone()).await, axum::http::StatusCode::NO_CONTENT);
+        let parts = super::read_parts(&d, "sake-t-v1").await;
+        assert_eq!(parts.len(), 2);
+        assert!(parts[1].1 == b && parts[1].0 == module(2, 2));
+        let list = std::fs::read_to_string(d.join("sake-t-v1.parts")).unwrap();
+        for (k, v) in super::listed_versions(&list).iter().enumerate() {
+            let stem = if k == 0 { String::new() } else { format!("{k}.") };
+            let w = std::fs::read(d.join(format!("sake-t-v1.{stem}wasm"))).unwrap();
+            let i = std::fs::read(d.join(format!("sake-t-v1.{stem}idx"))).unwrap();
+            assert_eq!(*v, super::version(&w, &i));
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
 }

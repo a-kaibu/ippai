@@ -125,7 +125,7 @@ fn same_origin(headers: &HeaderMap) -> bool {
 }
 /// Reject local, reserved and transition addresses. Resolve once and connect
 /// to the checked SocketAddr; TcpStream must not perform a second DNS lookup.
-fn public_address(ip: IpAddr) -> bool {
+pub(crate) fn public_address(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [a, b, c, _] = ip.octets();

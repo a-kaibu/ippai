@@ -172,8 +172,8 @@ enum StorageCmd {
         /// ippai serve's saved regions and read-order lists [default: ~/.cache/ippai/jit]
         #[arg(long)]
         jit: Option<PathBuf>,
-        #[arg(long, default_value_t = storage::PACK_BYTES >> 20)]
-        mib: usize,
+        #[arg(long, default_value_t = (storage::PACK_BYTES >> 20) as u64, value_parser = clap::value_parser!(u64).range(1..=4096))]
+        mib: u64,
         /// At most this many Mbit/s on average, so the server on the same line keeps serving
         #[arg(long)]
         mbps: Option<f64>,
@@ -192,12 +192,21 @@ enum StorageCmd {
     /// Delete objects no longer named (replaced, old save revisions, save states' files no
     /// state index names) that no kept backup refers to, once retired for the grace period.
     Gc {
-        #[arg(long, default_value_t = 7)]
+        #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(u64).range(0..=GRACE_DAYS_MAX))]
         grace_days: u64,
         /// Keep only the newest N backups (the others are deleted first).
         #[arg(long)]
         keep_backups: Option<usize>,
     },
+}
+
+/// `storage gc --grace-days` at most (a century: review b01, days x 86400 wrapped to a tiny
+/// grace for absurd values, and objects went early).
+const GRACE_DAYS_MAX: u64 = 36_500;
+
+fn grace_period(days: u64) -> anyhow::Result<std::time::Duration> {
+    anyhow::ensure!(days <= GRACE_DAYS_MAX, "--grace-days: at most {GRACE_DAYS_MAX}");
+    Ok(std::time::Duration::from_secs(days.checked_mul(86_400).ok_or_else(|| anyhow::anyhow!("--grace-days too large"))?))
 }
 
 fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: StorageCmd) -> anyhow::Result<()> {
@@ -226,7 +235,7 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
                     let list = pack::read_order_list(store, &jit, &id);
                     let order = pack::read_order(store, &id, &list)?;
                     // (one game failing leaves the others: run again to retry, what was packed stays)
-                    match storage.pack_objects_paced(&id, &order, mib << 20, mbps.map(|m| (m * 125_000.0) as u64)).await {
+                    match storage.pack_objects_paced(&id, &order, (mib << 20) as usize, mbps.map(|m| (m * 125_000.0) as u64)).await {
                         Ok(p) => println!("{id}: {} packs, {} objects, {} MiB ({} chunks in read order first; {} in a pack already)", p.packs, p.objects, p.bytes >> 20, list.len() / 16, p.skipped),
                         Err(e) => {
                             eprintln!("{id}: {e:#}");
@@ -263,10 +272,11 @@ fn storage_command(store: &std::path::Path, cache: &std::path::Path, action: Sto
                 Ok(())
             }
             StorageCmd::Gc { grace_days, keep_backups } => {
+                let grace = grace_period(grace_days)?;
                 // (save states' files no index names: forgotten, their objects retired)
-                let n = saves::Saves::new(store)?.prune_states(std::time::Duration::from_secs(grace_days * 86400)).await?;
+                let n = saves::Saves::new(store)?.prune_states(grace).await?;
                 println!("forgot {n} save state files no index names");
-                let r = storage.gc(std::time::Duration::from_secs(grace_days * 86400), keep_backups).await?;
+                let r = storage.gc(grace, keep_backups).await?;
                 println!("deleted {} objects, kept {} retired, dropped {} backups", r.deleted, r.kept, r.backups_dropped);
                 Ok(())
             }
@@ -330,6 +340,34 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("sake's C:\\ ({}) has them", crate::pack::PREFIX_TREE);
             }
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review b01: the grace period is days x 86400 exactly, or an error, never a wrapped one.
+    #[test]
+    fn grace_days_on_the_command_line() {
+        let gc = |d: &str| Cli::try_parse_from(["ippai", "storage", "gc", "--grace-days", d]).map(|c| matches!(c.cmd, Cmd::Storage { action: StorageCmd::Gc { .. } }));
+        assert!(gc("7").unwrap());
+        assert!(gc("36500").unwrap());
+        assert!(gc("36501").is_err());
+        assert!(gc("213503982334601").is_err(), "u64::MAX / 86400 + 1 wrapped before");
+        let packs = |m: &str| Cli::try_parse_from(["ippai", "storage", "packs", "--mib", m]).is_ok();
+        assert!(packs("64") && packs("4096"));
+        assert!(!packs("0") && !packs("4097") && !packs("17592186044416"), "mib << 20 wrapped before");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn grace_period_never_wraps(days in proptest::num::u64::ANY) {
+            match grace_period(days) {
+                Ok(d) => proptest::prop_assert_eq!(d.as_secs() as u128, days as u128 * 86_400),
+                Err(_) => proptest::prop_assert!(days > GRACE_DAYS_MAX),
+            }
         }
     }
 }

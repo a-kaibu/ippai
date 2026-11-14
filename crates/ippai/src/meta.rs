@@ -6,7 +6,7 @@
 //! Copyright (c) 2025 minuspiral): one SQL form endpoint, hex-encoded UTF-8 literals for
 //! Japanese keywords, and at least 2.5 s between requests.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -85,21 +85,60 @@ fn agent() -> &'static ureq::Agent {
     &A
 }
 
+/// The agent for covers: it connects to public addresses only (`PublicOnly`), unless a proxy
+/// is set (the proxy connects, and decides) or IPPAI_META_COVER_LOCAL is set (tests).
+fn cover_agent() -> &'static ureq::Agent {
+    static A: LazyLock<ureq::Agent> = LazyLock::new(|| {
+        let proxied = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"].iter().any(|v| std::env::var_os(v).is_some_and(|v| !v.is_empty()));
+        let b = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).user_agent(UA).try_proxy_from_env(true);
+        if proxied || std::env::var_os("IPPAI_META_COVER_LOCAL").is_some() { b.build() } else { b.resolver(PublicOnly).build() }
+    });
+    &A
+}
+
+/// Resolves as the system does and keeps the public addresses (tls_relay's test).
+struct PublicOnly;
+
+impl ureq::Resolver for PublicOnly {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        use std::net::ToSocketAddrs;
+        public_only(netloc.to_socket_addrs()?.collect(), netloc)
+    }
+}
+
+fn public_only(addrs: Vec<std::net::SocketAddr>, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    let kept: Vec<_> = addrs.into_iter().filter(|a| crate::tls_relay::public_address(a.ip())).collect();
+    if kept.is_empty() {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{netloc}: not a public address")));
+    }
+    Ok(kept)
+}
+
 // ---- ErogameScape
 
 /// Runs one SQL statement on ErogameScape's form; rows keyed by column name.
 fn egs_query(sql: &str) -> Result<Vec<Vec<(String, String)>>> {
-    static NEXT: Mutex<Option<Instant>> = Mutex::new(None);
-    {
-        let mut next = NEXT.lock().unwrap();
-        if let Some(t) = *next {
-            std::thread::sleep(t.saturating_duration_since(Instant::now()));
-        }
-        *next = Some(Instant::now() + Duration::from_millis(2500));
-    }
+    std::thread::sleep(egs_slot(Instant::now()));
     let page = agent().post(&endpoint("IPPAI_META_EGS_SQL", EGS_SQL)).send_form(&[("sql", sql)])?.into_string()?;
     Ok(parse_table(&page))
 }
+
+/// How long a query asked at `now` waits for its turn: each one takes the next free slot,
+/// 2.5 s after the one before (ErogameScape asks for spacing). The slot is taken under the
+/// lock, the wait is outside it (review b01: callers queued on the mutex, 2.5 s each).
+fn egs_slot(now: Instant) -> Duration {
+    static NEXT: Mutex<Option<Instant>> = Mutex::new(None);
+    egs_slot_in(&NEXT, now)
+}
+
+fn egs_slot_in(next: &Mutex<Option<Instant>>, now: Instant) -> Duration {
+    let mut next = next.lock().unwrap_or_else(|e| e.into_inner());
+    let at = next.map_or(now, |t| t.max(now));
+    *next = Some(at + EGS_SPACING);
+    at - now
+}
+
+const EGS_SPACING: Duration = Duration::from_millis(2500);
 
 fn col<'a>(row: &'a [(String, String)], name: &str) -> &'a str {
     row.iter().find(|(k, _)| k == name).map_or("", |(_, v)| v)
@@ -264,7 +303,8 @@ pub fn egs_info(r: &[(String, String)], more: &[Row]) -> Result<Info> {
         ..Default::default()
     };
     let d = col(r, "sellday");
-    if d.len() >= 4 && &d[..4] < "2030" {
+    // (by bytes: a remote "未定" or other text is no year, and slicing it panicked: review b01)
+    if d.get(..4).is_some_and(|y| y.bytes().all(|b| b.is_ascii_digit()) && y < "2030") {
         // 2030+ means "not yet decided"
         in_.release = d.into();
     }
@@ -594,7 +634,9 @@ pub fn search(keyword: &str) -> Result<Vec<Candidate>> {
 
 /// Downloads an image; returns its bytes and extension.
 pub fn download_cover(url: &str) -> Result<(Vec<u8>, &'static str)> {
-    let r = agent().get(url).timeout(Duration::from_secs(30)).call()?;
+    // (the address comes from the metadata: a public web server only, redirects too: review b01)
+    ensure!(url.starts_with("https://") || url.starts_with("http://"), "cover {url}: not a web address");
+    let r = cover_agent().get(url).timeout(Duration::from_secs(30)).call()?;
     let ext = match r.content_type() {
         "image/jpeg" => "jpg",
         "image/png" => "png",
@@ -629,6 +671,91 @@ fn rfc3339(s: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(sellday: &str) -> Vec<(String, String)> {
+        vec![("id".into(), "35435".into()), ("gamename".into(), "アネモイ".into()), ("sellday".into(), sellday.into())]
+    }
+
+    /// Review b01: a sellday that is not a date (non-ASCII text from the remote table) is no
+    /// release date, not a panic.
+    #[test]
+    fn sellday_text_is_no_date() {
+        assert_eq!(egs_info(&row("2024-05-31"), &[]).unwrap().release, "2024-05-31");
+        assert_eq!(egs_info(&row("2030-01-01"), &[]).unwrap().release, "", "2030+: not decided");
+        for d in ["未定", "未定です", "2未定", "20２4-01-01", "", "abc"] {
+            assert_eq!(egs_info(&row(d), &[]).unwrap().release, "", "{d}");
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn egs_info_never_panics_on_a_sellday(d in "\\PC{0,12}") {
+            let i = egs_info(&row(&d), &[]).unwrap();
+            proptest::prop_assert!(i.release.is_empty() || i.release == d);
+            if !i.release.is_empty() {
+                proptest::prop_assert!(d.as_bytes()[..4].iter().all(u8::is_ascii_digit) && &d[..4] < "2030");
+            }
+        }
+
+        /// Slots asked in any order of times come 2.5 s apart at least, and no later than
+        /// needed: each one starts when the one before ends, or at once when free.
+        #[test]
+        fn egs_slots_are_spaced(gaps in proptest::collection::vec(0u64..6000, 1..40)) {
+            let next = Mutex::new(None);
+            let t0 = Instant::now();
+            let (mut now, mut prev): (Instant, Option<Instant>) = (t0, None);
+            for g in gaps {
+                now += Duration::from_millis(g);
+                let at = now + egs_slot_in(&next, now);
+                if let Some(p) = prev {
+                    proptest::prop_assert_eq!(at, (p + EGS_SPACING).max(now));
+                } else {
+                    proptest::prop_assert_eq!(at, now);
+                }
+                prev = Some(at);
+            }
+        }
+    }
+
+    /// Callers on several threads at once each get their own slot and wait outside the lock:
+    /// 8 threads asking together are all answered at once (none waits on another's sleep).
+    #[test]
+    fn egs_slots_from_threads() {
+        let next = std::sync::Arc::new(Mutex::new(None));
+        let now = Instant::now();
+        let mut waits: Vec<Duration> = (0..8)
+            .map(|_| {
+                let next = next.clone();
+                std::thread::spawn(move || egs_slot_in(&next, now))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        waits.sort();
+        let want: Vec<Duration> = (0..8).map(|k| EGS_SPACING * k).collect();
+        assert_eq!(waits, want);
+    }
+
+    /// Covers: only web addresses, only public hosts.
+    #[test]
+    fn covers_from_public_hosts_only() {
+        let a = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        assert!(public_only(vec![a("127.0.0.1:80")], "localhost").is_err());
+        assert!(public_only(vec![a("10.1.2.3:80"), a("[::1]:80"), a("169.254.169.254:80")], "x").is_err());
+        assert_eq!(public_only(vec![a("192.168.1.1:443"), a("93.184.216.34:443")], "x").unwrap(), vec![a("93.184.216.34:443")]);
+        assert!(PublicOnly.resolve_check("127.0.0.1:9"));
+        for u in ["file:///etc/passwd", "ftp://x/y.jpg", "gopher://127.0.0.1/", ""] {
+            assert!(download_cover(u).is_err(), "{u}");
+        }
+    }
+
+    impl PublicOnly {
+        fn resolve_check(&self, netloc: &str) -> bool {
+            use ureq::Resolver;
+            self.resolve(netloc).is_err()
+        }
+    }
 
     #[test]
     fn keys() {
