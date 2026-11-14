@@ -155,13 +155,25 @@ impl Parser {
 
     fn template_num(&mut self) -> R<u32> {
         match self.peek() {
-            Some(Tok::Int(v, _)) => {
+            // (not `as u32`: 2^32 + 1 is not 1)
+            Some(Tok::Int(v, _)) if *v <= u32::MAX as u64 => {
                 let v = *v as u32;
                 self.p += 1;
                 Ok(v)
             }
             _ => self.err("expected a number"),
         }
+    }
+
+    /// A vector size or matrix row/column count: 1 to 4 (fxc X3052). The lowering keeps at
+    /// most 4 components a vector, 16 a matrix; `vector<float, 9>` or `matrix<float, 200, 200>`
+    /// (wrapping `as u8`) indexed past them and aborted the VM (review A-6).
+    fn dim_num(&mut self) -> R<u32> {
+        let n = self.template_num()?;
+        if !(1..=4).contains(&n) {
+            return self.err("vector and matrix dimensions must be between 1 and 4");
+        }
+        Ok(n)
     }
 
     /// A type at the current position.
@@ -209,7 +221,7 @@ impl Parser {
                 if self.eat("<") {
                     let b = self.ty()?.base();
                     self.expect(",")?;
-                    let n = self.template_num()?;
+                    let n = self.dim_num()?;
                     self.expect(">")?;
                     Ty::vec(b, n as usize)
                 } else {
@@ -220,9 +232,9 @@ impl Parser {
                 if self.eat("<") {
                     let b = self.ty()?.base();
                     self.expect(",")?;
-                    let r = self.template_num()?;
+                    let r = self.dim_num()?;
                     self.expect(",")?;
-                    let c = self.template_num()?;
+                    let c = self.dim_num()?;
                     self.expect(">")?;
                     Ty::Mat(b, r as u8, c as u8)
                 } else {

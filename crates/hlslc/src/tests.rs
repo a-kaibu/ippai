@@ -826,3 +826,73 @@ fn sm3_temporary_budget() {
         }
     }
 }
+
+/// Review A-6: shaders fxc rejects (X3013 no overload, X3052 dimensions, a void or mismatched
+/// condition) panicked in the lowering, and a panic is the whole VM under panic=abort: each
+/// must be an error. Also run on every target, with each source cut at every byte (a
+/// truncated shader file), none of which may panic.
+#[test]
+fn shaders_fxc_rejects_are_errors_not_panics() {
+    let srcs = [
+        "sampler2D s;\nfloat4 ps(float2 uv : TEXCOORD0) : COLOR { return tex2D(s); }\n",
+        "sampler2D s;\nfloat4 ps(float2 uv : TEXCOORD0) : COLOR { return tex2D(s, uv, uv); }\n",
+        "sampler2D s;\nfloat4 ps(float2 uv : TEXCOORD0) : COLOR { return tex2Dgrad(s, uv); }\n",
+        "sampler2D s;\nfloat4 ps(float2 uv : TEXCOORD0) : COLOR { return tex2Dlod(s, uv); }\n",
+        "sampler2D s;\nfloat4 ps(float3 uv : TEXCOORD0) : COLOR { return tex2Dlod(s, uv); }\n",
+        "sampler2D s;\nfloat4 ps(float3 uv : TEXCOORD0) : COLOR { return tex2Dbias(s, uv); }\n",
+        "sampler2D s;\nfloat4 ps(float4 uv : TEXCOORD0) : COLOR { return tex2Dproj(s, uv.xyw); }\n",
+        "sampler3D s;\nfloat4 ps(float2 uv : TEXCOORD0) : COLOR { return tex3D(s, uv); }\n",
+        "sampler2D s;\nfloat4 ps(float2 uv : TEXCOORD0) : COLOR { return tex2D(s, uv.x); }\n",
+        "sampler2D s;\nfloat4 ps() : COLOR { return tex2D(); }\n",
+        "float4 ps() : COLOR { vector<float, 9> v = 0; return v.x; }\n",
+        "float4 ps() : COLOR { vector<float, 0> v = 0; return 1; }\n",
+        "float4 ps() : COLOR { matrix<float, 1, 9> m = 0; return m._m00; }\n",
+        "float4 ps() : COLOR { matrix<float, 200, 200> m = 0; return 1; }\n",
+        "float4 ps() : COLOR { vector<float, 4294967297> v = 0; return 1; }\n",
+    ];
+    for src in srcs {
+        for t in ["ps_2_0", "ps_3_0", "ps_4_0", "ps_5_0"] {
+            let mut inc = |_: &str, _: bool| None;
+            assert!(super::compile(src, &[], &mut inc, "ps", t, 0).is_err(), "{t}: {src}");
+        }
+    }
+    // sizes 1 to 4 still compile
+    for src in [
+        "float4 ps() : COLOR { vector<float, 1> a = 1; vector<float, 4> b = a.xxxx; return b; }\n",
+        "float4 ps() : COLOR { matrix<float, 4, 4> m = 1; matrix<float, 1, 4> n = 2; return m[0] + n[0]; }\n",
+        "sampler2D s;\nfloat4 ps(float4 uv : TEXCOORD0) : COLOR { return tex2Dlod(s, uv) + tex2Dbias(s, uv) + tex2Dproj(s, uv) + tex2D(s, uv.xy, uv.xy, uv.zw) + tex2Dgrad(s, uv.xy, uv.xy, uv.zw); }\n",
+    ] {
+        let mut inc = |_: &str, _: bool| None;
+        assert!(super::compile(src, &[], &mut inc, "ps", "ps_3_0", 0).is_ok(), "{src}");
+    }
+    for src in srcs {
+        for cut in 0..src.len() {
+            let mut inc = |_: &str, _: bool| None;
+            let _ = super::compile(&src[..cut], &[], &mut inc, "ps", "ps_3_0", 0);
+        }
+    }
+}
+
+/// The lowering cases of review A-6 (lower.rs): a matrix chosen by a vector condition and a
+/// condition of type void. fxc refuses both; they must not panic.
+#[test]
+fn mismatched_conditions_are_errors_not_panics() {
+    for src in [
+"void f() {}\nfloat4 ps() : COLOR { if (f() ? 1 : 2) return 1; return 0; }\n",
+        "void f() {}\nfloat4 ps() : COLOR { return f() ? 1 : 2; }\n",
+        "void f() {}\nfloat4 ps() : COLOR { if (f()) return 1; return 0; }\n",
+    ] {
+        for t in ["ps_3_0", "ps_4_0"] {
+            let mut inc = |_: &str, _: bool| None;
+            let r = super::compile(src, &[], &mut inc, "ps", t, 0);
+            assert!(r.is_err(), "{t}: {src}");
+        }
+    }
+    // (the lowering compiles this one, its components as the condition's; what matters is that
+    // the matrix has its four components after it)
+    let src = "float2x2 a; float2x2 b; bool2 c;\nfloat4 ps() : COLOR { float2x2 m = c ? a : b; return m._m11 + m[1].y + mul(m, float2(1, 2)).x; }\n";
+    for t in ["ps_3_0", "ps_4_0"] {
+        let mut inc = |_: &str, _: bool| None;
+        let _ = super::compile(src, &[], &mut inc, "ps", t, 0);
+    }
+}

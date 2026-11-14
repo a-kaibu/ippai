@@ -1650,10 +1650,10 @@ impl<'a> L<'a> {
     }
 
     fn truth(&mut self, v: Val) -> R<C> {
-        if !v.ty.numeric() {
+        // (a void value has no components: `if (voidfn())`, review A-6)
+        let Some(&c) = v.c.first().filter(|_| v.ty.numeric()) else {
             return Err("a condition must be a scalar".into());
-        }
-        let c = v.c[0];
+        };
         Ok(match v.ty.base() {
             B::Bool => c,
             B::Float => self.alu(sm4::NE, B::Bool, &[&[c], &[C::I(0)]])[0],
@@ -2025,6 +2025,9 @@ impl<'a> L<'a> {
             }
             Expr::Cond(c, a, b) => {
                 let cv = self.expr(c)?;
+                if !cv.ty.numeric() || cv.c.is_empty() {
+                    return Err("the condition of ?: must be a number".into());
+                }
                 let x = self.expr(a)?;
                 let y = self.expr(b)?;
                 let t = if x.ty.numeric() && y.ty.numeric() { self.common(&x.ty, &y.ty)? } else { x.ty.clone() };
@@ -2040,6 +2043,11 @@ impl<'a> L<'a> {
                 let cb = self.cast(cv.clone(), &cv.ty.with_base(B::Bool))?;
                 let n = x.c.len();
                 let cc: Vec<C> = if cb.c.len() == 1 { vec![cb.c[0]; n] } else { cb.c[..n.min(cb.c.len())].to_vec() };
+                // (a vector condition for a matrix: as many components as the values, or the
+                // result would be typed with more components than it has, review A-6)
+                if cc.len() != n {
+                    return Err("the condition of ?: and its values differ in size".into());
+                }
                 if let Some(C::I(v)) = cc.first().filter(|_| cc.iter().all(|c| *c == cc[0])) {
                     return Ok(if *v != 0 { x } else { y });
                 }

@@ -258,6 +258,17 @@ impl L<'_> {
             None => return Ok(None),
         };
         let _ = base;
+        // (fxc X3013: no overload with this many arguments; these indexed `args` and the
+        // fourth coordinate unchecked and aborted the VM, review A-6)
+        let ok = match rest {
+            "" => args.len() == 2 || args.len() == 4,
+            "grad" => args.len() == 4,
+            "lod" | "bias" | "proj" => args.len() == 2,
+            _ => return Ok(None),
+        };
+        if !ok {
+            return Err(format!("{name}: no overload takes {} arguments", args.len()));
+        }
         let s = self.expr(&args[0])?;
         let t = self.texture_of(&s)?;
         let sm = self.sampler_of(&s)?;
@@ -268,6 +279,9 @@ impl L<'_> {
         };
         let coord = self.expr(&args[1])?;
         let coord = self.float(coord)?;
+        if coord.c.len() < if matches!(rest, "lod" | "bias" | "proj") { 4 } else { n } {
+            return Err(format!("{name}: the coordinate has {} components", coord.c.len()));
+        }
         let pick = |v: &Val, k: usize| -> Vec<C> { v.c[..k.min(v.c.len())].to_vec() };
         let r = match rest {
             "" if args.len() == 4 => {
