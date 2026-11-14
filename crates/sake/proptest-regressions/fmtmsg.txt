@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 816b7aed3b729536d7ea0fd56f4b3bcf727d735f2045f206a6739ce5bc08d36f # shrinks to flags = [], width = None, prec = Some(11), conv = 'u', v = 0, star = false
+cc eeebf9d518c7af129cc8930300f065903650f35edb759c3727efa5a68b722974 # shrinks to flags = ['#'], width = None, prec = Some(3), conv = 'o', v = 1, star = false
+cc 68a7a550d0865a46425eb948706d0acd1424e871b8be6d4a9b116a7508d11b9f # shrinks to flags = ['0', '#'], width = Some(11), prec = None, conv = 'x', v = 1, star = false

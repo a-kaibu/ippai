@@ -35,8 +35,9 @@ pub struct List {
     pub files: BTreeMap<String, (u32, i64)>,
 }
 
+/// `n` bytes rounded up to whole clusters (saturating: an installer's LONGLONG may be anything)
 fn clusters(n: i64) -> i64 {
-    (n.max(0) + CLUSTER - 1) / CLUSTER * CLUSTER
+    n.max(0).saturating_add(CLUSTER - 1) / CLUSTER * CLUSTER
 }
 
 /// The key of a path (its full path, lower case) or the error for a name it refuses
@@ -64,7 +65,7 @@ impl List {
         if op == FILEOP_DELETE && self.files.get(&key).is_some_and(|e| e.0 == FILEOP_COPY) {
             return Ok(());
         }
-        let space = if op == FILEOP_COPY { clusters(size) - have } else { -have };
+        let space = if op == FILEOP_COPY { clusters(size).saturating_sub(have) } else { -have };
         self.files.insert(key, (op, space));
         Ok(())
     }
@@ -82,7 +83,7 @@ impl List {
         if d.len() != 2 || !d.as_bytes()[0].is_ascii_alphabetic() || d.as_bytes()[1] != b':' || !self.drives().contains(&d) {
             return Err(ERROR_INVALID_DRIVE);
         }
-        Ok(self.files.iter().filter(|(k, _)| k.starts_with(&d)).map(|(_, v)| v.1).sum())
+        Ok(self.files.iter().filter(|(k, _)| k.starts_with(&d)).fold(0i64, |a, (_, v)| a.saturating_add(v.1)))
     }
 }
 
@@ -188,7 +189,8 @@ fn query(c: &mut Ctx, wide: bool) -> u32 {
         return fail(ERROR_INVALID_PARAMETER);
     }
     let d = crate::k32::arg_str(drive, wide);
-    match with(|m| m[&h].required(&d)) {
+    // (the list may have gone on another thread since the check above)
+    match with(|m| m.get(&h).map_or(Err(ERROR_INVALID_HANDLE), |l| l.required(&d))) {
         Ok(s) => {
             if out != 0 {
                 mem::w64(out, s as u64);
@@ -309,6 +311,29 @@ mod tests {
             prop_assert_eq!(t % CLUSTER, 0);
             prop_assert!(l.files.len() <= 4);
             prop_assert_eq!(l.drives(), vec!["c:".to_string()]);
+        }
+
+        /// Any LONGLONG an installer passes (i64::MAX, negative, existing sizes past the new one):
+        /// no overflow (the tests run with overflow checks), each file's space is its clusters
+        /// minus what it has, and a drive whose files all need space (or all free it) totals
+        /// their exact sum, saturated.
+        #[test]
+        fn any_sizes_saturate(ops in proptest::collection::vec((0u8..6, any::<i64>(), any::<bool>(), proptest::option::of(any::<i64>()), any::<bool>()), 1..30)) {
+            let mut l = List::default();
+            for (f, size, copy, existing, ignore) in &ops {
+                l.flags = if *ignore { SPDSL_IGNORE_DISK } else { 0 };
+                let _ = l.add(format!("c:\\f{f}"), *size, if *copy { FILEOP_COPY } else { FILEOP_DELETE }, *existing);
+            }
+            let c128 = |n: i64| (n.max(0) as i128 + 4095) / 4096 * 4096;
+            for (op, space) in l.files.values() {
+                prop_assert!(*op == FILEOP_COPY || *space <= 0);
+            }
+            let sum: i128 = l.files.values().map(|v| v.1 as i128).sum();
+            let t = l.required("c:").unwrap();
+            if l.files.values().all(|v| v.1 >= 0) || l.files.values().all(|v| v.1 <= 0) {
+                prop_assert_eq!(t as i128, sum.clamp(i64::MIN as i128, i64::MAX as i128));
+            }
+            prop_assert_eq!(clusters(i64::MAX) as i128, c128(i64::MAX) - 4096);
         }
     }
 }

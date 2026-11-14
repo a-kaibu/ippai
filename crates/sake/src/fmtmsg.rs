@@ -78,7 +78,7 @@ fn system_message(id: u32) -> Option<&'static str> {
 fn table_message(module: u32, id: u32) -> Option<Vec<u16>> {
     let m = if module == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map_or(0, |m| m.base) } else { module };
     let e = crate::pe::find_resource(m, &crate::pe::ResId::Int(11), &crate::pe::ResId::Int(1))?;
-    let (p, _) = crate::pe::resource_data(m, e);
+    let (p, size) = crate::pe::resource_data(m, e);
     let blocks = r32(p);
     for b in 0..blocks.min(4096) {
         let blk = p + 4 + 12 * b;
@@ -86,11 +86,23 @@ fn table_message(module: u32, id: u32) -> Option<Vec<u16>> {
         if !(lo..=hi).contains(&id) {
             continue;
         }
-        let mut q = p + off;
+        // (entries of a table that is not well formed: one of length 0, or past the resource, ends it)
+        let end = p as u64 + size as u64;
+        let mut q = p as u64 + off as u64;
         for _ in lo..id {
-            q += r16(q) as u32;
+            if q + 4 > end {
+                return None;
+            }
+            match r16(q as u32) {
+                0 => return None,
+                n => q += n as u64,
+            }
         }
-        let (len, flags) = (r16(q) as u32, r16(q + 2));
+        if q + 4 > end {
+            return None;
+        }
+        let q = q as u32;
+        let (len, flags) = ((r16(q) as u32).min((end - q as u64) as u32), r16(q + 2));
         let body = q + 4;
         let text: Vec<u16> = if flags & 1 != 0 {
             (0..(len.saturating_sub(4)) / 2).map(|i| r16(body + 2 * i)).take_while(|&c| c != 0).collect()
@@ -116,7 +128,12 @@ impl Args {
     }
 }
 
+/// The widest field and the longest precision an insert takes (FormatMessage's whole output is
+/// limited to 64K): a garbage `*` argument or digits are not gigabytes of padding.
+pub const MAX_FIELD: usize = 0x1_0000;
+
 /// One printf conversion of an insert: `spec` is what is between the '!'s (default "s").
+
 fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u16> {
     let s = String::from_utf16_lossy(spec);
     let mut it = s.chars().peekable();
@@ -137,14 +154,24 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
             it.next();
             let v = args.get(*slot) as i32;
             *slot += 1;
-            return Some(v.max(0) as usize);
+            return Some((v.max(0) as usize).min(MAX_FIELD));
         }
         let mut n = None;
         while let Some(d) = it.peek().and_then(|c| c.to_digit(10)) {
-            n = Some(n.unwrap_or(0) * 10 + d as usize);
+            n = Some((n.unwrap_or(0usize).saturating_mul(10).saturating_add(d as usize)).min(MAX_FIELD));
             it.next();
         }
         n
+    };
+    // zeros in front up to precision `p`, in one step
+    // (and a precision of 0 prints no digits for 0, as printf)
+    let zeros = |t: &mut String, p: Option<usize>| {
+        if p == Some(0) && t == "0" {
+            t.clear();
+        }
+        if let Some(p) = p.filter(|&p| p > t.len()) {
+            t.insert_str(0, &"0".repeat(p - t.len()));
+        }
     };
     let width = num(&mut it, slot).unwrap_or(0);
     let prec = if it.peek() == Some(&'.') {
@@ -185,15 +212,16 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
         'd' | 'i' => {
             let n = if long64 { v as i64 } else { v as u32 as i32 as i64 };
             let mut t = n.unsigned_abs().to_string();
-            if let Some(p) = prec {
-                while t.len() < p {
-                    t.insert(0, '0');
-                }
-            }
+            zeros(&mut t, prec);
             let sign = if n < 0 { "-" } else if plus { "+" } else if space { " " } else { "" };
             ((sign.to_string() + &t).encode_utf16().collect(), true)
         }
-        'u' => (v.to_string().encode_utf16().collect(), true),
+        'u' => {
+            // (a precision pads with zeros, as printf: the C library check found it ignored)
+            let mut t = v.to_string();
+            zeros(&mut t, prec);
+            (t.encode_utf16().collect(), true)
+        }
         'x' | 'X' | 'o' | 'p' => {
             let mut t = match conv {
                 'x' => format!("{v:x}"),
@@ -201,13 +229,12 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
                 'o' => format!("{v:o}"),
                 _ => format!("{:0w$X}", v, w = 2 * mem::ps() as usize),
             };
-            if let Some(p) = prec {
-                while t.len() < p {
-                    t.insert(0, '0');
-                }
-            }
-            if alt && v != 0 && conv != 'p' {
-                t.insert_str(0, if conv == 'o' { "0" } else if conv == 'x' { "0x" } else { "0X" });
+            zeros(&mut t, prec);
+            // ('#': octal's first digit is a 0, the precision's zeros count; hex gets 0x unless 0)
+            if alt && conv == 'o' && !t.starts_with('0') {
+                t.insert(0, '0');
+            } else if alt && v != 0 && (conv == 'x' || conv == 'X') {
+                t.insert_str(0, if conv == 'x' { "0x" } else { "0X" });
             }
             (t.encode_utf16().collect(), true)
         }
@@ -236,7 +263,14 @@ fn printf_insert(spec: &[u16], args: &Args, slot: &mut u32, wide: bool) -> Vec<u
         b
     } else if zero && numeric && prec.is_none() {
         // zeros after the sign
-        let sign = body.first().is_some_and(|&c| c == b'-' as u16 || c == b'+' as u16 || c == b' ' as u16) as usize;
+        // (zeros after the sign, or after a 0x prefix)
+        let sign = if body.first().is_some_and(|&c| c == b'-' as u16 || c == b'+' as u16 || c == b' ' as u16) {
+            1
+        } else if body.len() >= 2 && body[0] == b'0' as u16 && (body[1] == b'x' as u16 || body[1] == b'X' as u16) {
+            2
+        } else {
+            0
+        };
         let mut b = body[..sign].to_vec();
         b.extend(std::iter::repeat(b'0' as u16).take(pad));
         b.extend(&body[sign..]);
@@ -474,6 +508,69 @@ mod tests {
             }
             let strip = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>();
             assert_eq!(strip(&out), strip(&s));
+        }
+    }
+
+    /// Inserts with widths and precisions from `*` arguments or digits: a garbage argument
+    /// (2^31-1, as a wrong va_list gives) is clamped to MAX_FIELD instead of 4 GiB of padding
+    /// or an O(p^2) loop, and long digit strings do not overflow.
+    #[test]
+    fn huge_widths_are_clamped() {
+        let _g = crate::test_guest::enter();
+        let a = mem::heap_alloc(16, true);
+        mem::w32(a, 0x7fff_ffff);
+        mem::w32(a + 4, 7);
+        let args = Args { base: a };
+        for spec in ["*d", ".*d", "-*x", "099999999999999999999999d", ".99999999999999999999999u", "*.*d"] {
+            let w: Vec<u16> = spec.encode_utf16().collect();
+            let t = std::time::Instant::now();
+            let out = printf_insert(&w, &args, &mut 0, true);
+            assert!(out.len() <= MAX_FIELD + 2, "{spec}: {}", out.len());
+            assert!(out.len() >= MAX_FIELD.min(64), "{spec}");
+            assert!(t.elapsed() < std::time::Duration::from_secs(2), "{spec}");
+        }
+        mem::heap_free(a);
+    }
+
+    proptest::proptest! {
+        /// Differential: numeric inserts (d i u x X o, flags - + space 0 #, width, precision)
+        /// against the C library's printf (FormatMessage formats inserts with the CRT's
+        /// printf); within MAX_FIELD the two agree character for character.
+        #[test]
+        fn numeric_inserts_are_printfs(flags in proptest::collection::vec(proptest::sample::select(vec!['-', '+', ' ', '0', '#']), 0..4),
+                                       width in proptest::option::of(0usize..40), prec in proptest::option::of(0usize..40),
+                                       conv in proptest::sample::select(vec!['d', 'i', 'u', 'x', 'X', 'o']),
+                                       v in proptest::prop_oneof![proptest::prelude::any::<u32>(), 0u32..20, proptest::prelude::Just(0x8000_0000u32)],
+                                       star in proptest::prelude::any::<bool>()) {
+            let _g = crate::test_guest::enter();
+            let a = mem::heap_alloc(16, true);
+            let mut spec: String = flags.iter().collect();
+            let mut slots = vec![];
+            if let Some(w) = width {
+                if star { spec.push('*'); slots.push(w as u32); } else { spec += &w.to_string(); }
+            }
+            if let Some(p) = prec {
+                if star { spec += ".*"; slots.push(p as u32); } else { spec += &format!(".{p}"); }
+            }
+            spec.push(conv);
+            slots.push(v);
+            for (i, x) in slots.iter().enumerate() {
+                mem::w32(a + 4 * i as u32, *x);
+            }
+            let w: Vec<u16> = spec.encode_utf16().collect();
+            let got = String::from_utf16_lossy(&printf_insert(&w, &Args { base: a }, &mut 0, true));
+            mem::heap_free(a);
+            let mut buf = [0u8; 256];
+            let fmt = std::ffi::CString::new(format!("%{spec}")).unwrap();
+            let n = unsafe {
+                match (width.is_some() && star, prec.is_some() && star) {
+                    (true, true) => libc::snprintf(buf.as_mut_ptr() as *mut _, 256, fmt.as_ptr(), slots[0] as i32, slots[1] as i32, v),
+                    (true, false) | (false, true) => libc::snprintf(buf.as_mut_ptr() as *mut _, 256, fmt.as_ptr(), slots[0] as i32, v),
+                    _ => libc::snprintf(buf.as_mut_ptr() as *mut _, 256, fmt.as_ptr(), v),
+                }
+            };
+            let want = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
+            proptest::prop_assert_eq!(got, want, "%{}", spec);
         }
     }
 }

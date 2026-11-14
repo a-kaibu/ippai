@@ -186,6 +186,9 @@ struct Segment {
     length: u32,
     start: u32,
     loop_points: (u32, u32),
+    /// a clone's original (whose samples it plays): the clone holds a reference on it, given
+    /// back when the clone goes
+    parent: u32,
 }
 
 struct Perf {
@@ -204,7 +207,7 @@ struct World {
     /// segment state -> (performance, info)
     states: crate::HashMap<u32, (u32, StateInfo)>,
     /// loader -> (search directory, cache on, cache: full path lowercased -> segment)
-    loaders: crate::HashMap<u32, (String, bool, Vec<(String, u32)>)>,
+    loaders: crate::HashMap<u32, (String, bool, crate::HashMap<String, u32>)>,
 }
 
 static WORLD: Mutex<Option<World>> = Mutex::new(None);
@@ -305,7 +308,17 @@ pub fn release_count(refs: u32) -> (u32, bool) {
     }
 }
 
+/// The object block of `o` goes: its kind word is spoiled first (a call through a stale pointer
+/// finds no object), and the block is freed after com.rs's quarantine of recent frees.
+fn retire(o: u32) {
+    mem::w32(o + 2 * mem::ps(), 0xff);
+    crate::com::free_later(o);
+}
+
 fn release_obj(o: u32) -> u32 {
+    if kind_of(o).is_none() {
+        return 0;
+    }
     let p = o + mem::ps();
     let (n, gone) = release_count(mem::r32(p));
     mem::w32(p, n);
@@ -325,21 +338,40 @@ fn release_obj(o: u32) -> u32 {
                 });
                 for s in states {
                     crate::sound::music_stop(s);
+                    // (the performance's reference on the state)
+                    release_obj(s);
                 }
-                if let Some(s) = seg.filter(|s| s.file != 0) {
-                    mem::heap_free(s.file);
+                if let Some(s) = &seg {
+                    if s.file != 0 {
+                        mem::heap_free(s.file);
+                    }
+                    if s.parent != 0 {
+                        release_obj(s.parent);
+                    }
                 }
             }
-            Some(Kind::Performance) => close_down(o),
+            Some(Kind::Performance) => {
+                close_down(o);
+                with(|w| w.perfs.remove(&o));
+            }
             Some(Kind::Loader) => {
                 let cache = with(|w| w.loaders.remove(&o)).map(|l| l.2).unwrap_or_default();
                 for (_, seg) in cache {
                     release_obj(seg);
                 }
             }
-            _ => {}
+            Some(Kind::State) => {
+                with(|w| w.states.remove(&o));
+            }
+            Some(Kind::AudioPath) => with(|w| {
+                w.paths.remove(&o);
+                for p in w.perfs.values_mut().filter(|p| p.path == o) {
+                    p.path = 0;
+                }
+            }),
+            None => return n,
         }
-        // (the object block stays: a game may still hold a state or path pointer it got)
+        retire(o);
     }
     n
 }
@@ -553,9 +585,14 @@ fn play(perf: u32, seg: u32, flags: u32, path: u32, out: u32) -> u32 {
         let s = w.segments.get(&seg)?;
         Some((stop, gone, s.sound, s.repeats, volume))
     });
-    let Some((stop, gone, sound, repeats, volume)) = r else { return E_INVALIDARG };
+    let Some((stop, gone, sound, repeats, volume)) = r else {
+        release_obj(state);
+        return E_INVALIDARG;
+    };
+    // (a state the performance lets go of: its reference goes, the block with the last one)
     for s in stop.into_iter().chain(gone) {
         crate::sound::music_stop(s);
+        release_obj(s);
     }
     if let Some(s) = sound {
         let fmt = Fmt { rate: s.rate, channels: s.channels, bits: s.bits, float: s.float, law: 0 };
@@ -590,6 +627,7 @@ fn stop(perf: u32, obj: u32) -> u32 {
     });
     for s in stop {
         crate::sound::music_stop(s);
+        release_obj(s);
     }
     0
 }
@@ -830,7 +868,7 @@ fn segment_vtbl() -> u32 {
 fn new_segment(sound: Option<Sound>, file: u32) -> u32 {
     let o = new_object(segment_vtbl(), Kind::Segment);
     let length = sound.map_or(0, |s| s.length());
-    with(|w| w.segments.insert(o, Segment { sound, file, repeats: 0, length, start: 0, loop_points: (0, 0) }));
+    with(|w| w.segments.insert(o, Segment { sound, file, repeats: 0, length, start: 0, loop_points: (0, 0), parent: 0 }));
     o
 }
 
@@ -905,8 +943,11 @@ fn seg_clone(c: &mut Ctx) -> u32 {
     let sound = seg_field(this, |s| (s.sound, s.repeats));
     let Some((sound, repeats)) = sound else { return E_INVALIDARG };
     let o = new_segment(sound, 0);
-    seg_field(o, |s| s.repeats = repeats);
     add_ref_obj(this);
+    seg_field(o, |s| {
+        s.repeats = repeats;
+        s.parent = this;
+    });
     mem::putp(out, o);
     0
 }
@@ -1004,7 +1045,7 @@ fn loader_vtbl() -> u32 {
 
 fn new_loader() -> u32 {
     let o = new_object(loader_vtbl(), Kind::Loader);
-    with(|w| w.loaders.insert(o, (String::new(), true, Vec::new())));
+    with(|w| w.loaders.insert(o, (String::new(), true, crate::HashMap::default())));
     o
 }
 
@@ -1060,8 +1101,8 @@ fn l_release_object(c: &mut Ctx) -> u32 {
     let (this, obj) = (c.a(0), c.a(1));
     let found = with(|w| {
         let l = w.loaders.get_mut(&this)?;
-        let i = l.2.iter().position(|e| e.1 == obj)?;
-        Some(l.2.remove(i).1)
+        let k = l.2.iter().find(|e| *e.1 == obj)?.0.clone();
+        l.2.remove(&k)
     });
     match found {
         Some(s) => {
@@ -1075,9 +1116,18 @@ fn l_release_object(c: &mut Ctx) -> u32 {
 /// A segment of the file's bytes: the samples copied into guest memory for a PCM wave, a
 /// silent segment for anything else.
 fn segment_of_bytes(b: &[u8]) -> u32 {
-    match wave_pcm(b) {
+    segment_of_pcm(b, wave_pcm(b))
+}
+/// segment_of_bytes with the wave already parsed (`pcm`: wave_pcm's answer); a wave the guest
+/// heap has no room for is a silent segment.
+fn segment_of_pcm(b: &[u8], pcm: Option<(u32, u32, u32, u32, u32, bool)>) -> u32 {
+    match pcm {
         Some((off, size, rate, channels, bits, float)) => {
             let file = mem::heap_alloc(size.max(1), false);
+            if file == 0 {
+                eprintln!("sake: dmime: no guest memory for a wave of {size} bytes (a silent segment)");
+                return new_segment(None, 0);
+            }
             mem::slice_mut(file, size).copy_from_slice(&b[off as usize..(off + size) as usize]);
             new_segment(Some(Sound { data: file, size, rate, channels, bits, float }), file)
         }
@@ -1089,20 +1139,22 @@ fn segment_of_bytes(b: &[u8]) -> u32 {
 /// the caller.
 fn load_file(this: u32, path: &str) -> Result<u32, u32> {
     let key = crate::files::full_path(path).to_lowercase();
-    let cached = with(|w| w.loaders.get(&this).and_then(|l| if l.1 { l.2.iter().find(|e| e.0 == key).map(|e| e.1) } else { None }));
+    let cached = with(|w| w.loaders.get(&this).and_then(|l| if l.1 { l.2.get(&key).copied() } else { None }));
     if let Some(s) = cached {
         add_ref_obj(s);
         return Ok(s);
     }
     let f = crate::files::open(path, 0x8000_0000, 3).map_err(|_| DMUS_E_LOADER_FAILEDOPEN)?;
     let bytes = f.read_vec(f.size() as usize);
-    if wave_pcm(&bytes).is_none() {
+    // (parsed once: the log line and the segment)
+    let pcm = wave_pcm(&bytes);
+    if pcm.is_none() {
         eprintln!("sake: dmime: {path}: no sound (not a PCM wave; a silent segment)");
     }
-    let s = segment_of_bytes(&bytes);
+    let s = segment_of_pcm(&bytes, pcm);
     let caching = with(|w| {
         let l = w.loaders.get_mut(&this)?;
-        l.1.then(|| l.2.push((key, s)))
+        l.1.then(|| l.2.insert(key, s))
     });
     if caching.is_some() {
         add_ref_obj(s);
@@ -1441,4 +1493,99 @@ mod tests {
         }
     }
 
+    /// Clones and plays in any order (as engines that Clone a segment per voice line): a
+    /// clone holds its original, whose samples stay exactly while it or any clone of it lives;
+    /// a state lives while the performance plays it or the game holds it, and its object goes
+    /// with the last of the two; a performance's released states leave nothing in the tables.
+    mod lifetimes {
+        use super::super::*;
+        use super::wav;
+        use crate::test_guest::{call, enter};
+        use proptest::prelude::*;
+
+        fn guid(v: &[u8; 16]) -> u32 {
+            let p = mem::heap_alloc(16, false);
+            mem::write(p, v);
+            p
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+            #[test]
+            fn clones_and_states_as_a_model(ops in proptest::collection::vec((0u8..6, any::<prop::sample::Index>()), 0..50)) {
+                let _g = enter();
+                unsafe { std::env::set_var("SAKE_NO_MIXER", "1") };
+                let out = mem::heap_alloc(16, true);
+                prop_assert_eq!(create_instance(guid(&CLSID_PERFORMANCE), 0, guid(&PERF_IIDS[2]), out), Some(0));
+                let perf = mem::r32(out);
+                let orig = segment_of_bytes(&wav(22050, 1, 16, 400));
+                let file = with(|w| w.segments[&orig].file);
+                // (segment, its original or 0, the game's references)
+                let mut segs: Vec<(u32, u32, u32)> = vec![(orig, 0, 1)];
+                // (state, held by the game)
+                let mut states: Vec<(u32, u32)> = vec![];
+                let mut dead = vec![];
+                for (op, k) in ops {
+                    let live: Vec<usize> = (0..segs.len()).filter(|&i| segs[i].2 > 0).collect();
+                    match op {
+                        0 if !live.is_empty() => {
+                            let (o, ..) = segs[live[k.index(live.len())]];
+                            prop_assert_eq!(call(seg_clone, &[o, 0, 0, out]), 0);
+                            segs.push((mem::r32(out), o, 1));
+                        }
+                        1 if !live.is_empty() => {
+                            let i = live[k.index(live.len())];
+                            segs[i].2 -= 1;
+                            call(release, &[segs[i].0]);
+                        }
+                        2 | 3 if !live.is_empty() => {
+                            let (o, ..) = segs[live[k.index(live.len())]];
+                            let st = if op == 2 { out } else { 0 };
+                            prop_assert_eq!(call(p_play_segment_ex, &[perf, o, 0, 0, SEGF_SECONDARY, 0, 0, st, 0, 0]), 0);
+                            if op == 2 {
+                                states.push((mem::r32(out), 1));
+                            }
+                        }
+                        4 if !states.is_empty() => {
+                            let i = k.index(states.len());
+                            let (st, _) = states.swap_remove(i);
+                            call(release, &[st]);
+                            dead.push(st);
+                        }
+                        _ => {
+                            call(p_stop_ex, &[perf, 0, 0, 0, 0]);
+                        }
+                    }
+                    // a segment's object is there while the game, a clone or a playing state
+                    // holds it; the original's samples while any segment of its family lives
+                    let family_alive = segs.iter().any(|s| s.2 > 0);
+                    prop_assert_eq!(mem::heap_owns(file), family_alive || with(|w| w.segments.contains_key(&orig)));
+                    for &st in &dead {
+                        // (a state the game let go: gone once the performance did too)
+                        let playing = with(|w| w.perfs[&perf].plays.states.iter().any(|s| s.0 == st));
+                        prop_assert_eq!(kind_of(st).is_some(), playing, "state {:#x}", st);
+                    }
+                    for &(st, _) in &states {
+                        prop_assert_eq!(kind_of(st), Some(Kind::State));
+                    }
+                }
+                call(p_stop_ex, &[perf, 0, 0, 0, 0]);
+                for (o, _, n) in segs.iter().copied() {
+                    for _ in 0..n {
+                        call(release, &[o]);
+                    }
+                }
+                for (st, _) in states {
+                    call(release, &[st]);
+                    prop_assert!(kind_of(st).is_none());
+                }
+                prop_assert!(!mem::heap_owns(file), "the wave outlived every segment");
+                prop_assert!(segs.iter().all(|s| kind_of(s.0).is_none()));
+                call(release, &[perf]);
+                prop_assert!(kind_of(perf).is_none());
+                prop_assert!(!with(|w| w.perfs.contains_key(&perf)));
+                mem::heap_free(out);
+            }
+        }
+    }
 }

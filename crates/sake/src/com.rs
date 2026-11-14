@@ -160,16 +160,22 @@ pub fn release_obj(this: u32) -> u32 {
             if let Some(f) = free {
                 f(this);
             }
-            let old = {
-                let mut q = FREED.lock().unwrap();
-                q.push_back(this);
-                if q.len() > QUARANTINE { q.pop_front() } else { None }
-            };
-            if let Some(p) = old {
-                mem::heap_free(p);
-            }
+            free_later(this);
             0
         }
+    }
+}
+
+/// Frees guest heap block `p` after the quarantine (QUARANTINE later frees): for objects of
+/// modules with their own reference counts (dmime) that go the same way.
+pub fn free_later(p: u32) {
+    let old = {
+        let mut q = FREED.lock().unwrap_or_else(|e| e.into_inner());
+        q.push_back(p);
+        if q.len() > QUARANTINE { q.pop_front() } else { None }
+    };
+    if let Some(p) = old {
+        mem::heap_free(p);
     }
 }
 

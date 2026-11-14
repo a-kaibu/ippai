@@ -55,6 +55,9 @@ int main(void) {
     fa("%1!s! %2!.3s! %3!5s!|", 0, 64, "abc", "abcdef", "ab");
     fa("%1!*d!|", 0, 64, 6, 12);
     fa("%1!c! %2!u! %3!ld!", 0, 64, 'Z', -1, 5L);
+    /* precisions, '#' and zero padding after 0x, a precision of 0 for 0, widths from '*' */
+    fa("%1!.5u! %2!#.3o! %3!#o! %4!0#11x! %5!.0d!|%6!#X!", 0, 64, 42, 1, 8, 1, 0, 0);
+    fa("%1!-+8d!|%2! 05d!|%3!+.4i!|%4!*.*d!|", 0, 64, 42, -42, 7, 9, 4, 3);
     fa("line1%nline2%r%t|%0 after zero", 0, 64);
     fa("percent %% dot %. bang %!", 0, 64);
     fa("end\r\n", 0, 64);

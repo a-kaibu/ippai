@@ -155,13 +155,35 @@ pub struct Log {
     pub recs: Vec<Rec>,
     /// the number the next record gets
     pub next: u32,
+    /// rec_bytes of `recs`
+    pub bytes: usize,
+}
+
+/// How much of the guest's memory a log keeps (sake's heap): Windows' default log size is 20 MB,
+/// overwriting the oldest records as needed; this keeps the newest records within LOG_BYTES.
+pub const LOG_BYTES: usize = 16 << 20;
+/// The most data one record takes (larger dwDataSize: ERROR_INVALID_PARAMETER); a record has
+/// to fit in the log
+pub const MAX_DATA: u32 = 0x3_ffff;
+
+/// What a record costs to keep (about its wide on-disk size)
+pub fn rec_bytes(r: &Rec) -> usize {
+    56 + r.sid.len() + r.data.len() + 2 * (r.source.len() + r.computer.len() + r.strings.iter().map(|s| s.len() + 1).sum::<usize>())
 }
 
 impl Log {
     pub fn report(&mut self, mut r: Rec) {
         r.number = self.next.max(1);
         self.next = r.number + 1;
+        self.bytes += rec_bytes(&r);
         self.recs.push(r);
+        // (the oldest go first, as a log that overwrites as needed)
+        let mut drop = 0;
+        while self.bytes > LOG_BYTES && drop + 1 < self.recs.len() {
+            self.bytes -= rec_bytes(&self.recs[drop]);
+            drop += 1;
+        }
+        self.recs.drain(..drop);
     }
     pub fn oldest(&self) -> u32 {
         self.recs.first().map_or(0, |r| r.number)
@@ -169,6 +191,7 @@ impl Log {
     pub fn clear(&mut self) {
         self.next = self.next.max(1);
         self.recs.clear();
+        self.bytes = 0;
     }
 
     /// The .evt file BackupEventLog writes: header, the records (wide), the end-of-file record
@@ -195,7 +218,7 @@ impl Log {
         if d(0)? != 0x30 || d(4)? != SIGNATURE || d(44)? != 0x30 {
             return None;
         }
-        let mut log = Log { recs: vec![], next: d(24)? };
+        let mut log = Log { recs: vec![], next: d(24)?, bytes: 0 };
         let mut at = 0x30;
         loop {
             if d(at)? == 0x28 && d(at + 4)? == 0x1111_1111 && d(at + 36)? == 0x28 {
@@ -203,6 +226,7 @@ impl Log {
             }
             let r = Rec::decode(&b[at..])?;
             at += d(at)? as usize;
+            log.bytes += rec_bytes(&r);
             log.recs.push(r);
         }
     }
@@ -421,7 +445,7 @@ fn report(c: &mut Ctx, wide: bool) -> u32 {
     if !type_ok(ty) {
         return fail(ERROR_CRC);
     }
-    if ns != 0 && strs == 0 || dsize != 0 && data == 0 {
+    if ns != 0 && strs == 0 || dsize != 0 && data == 0 || dsize > MAX_DATA {
         return fail(ERROR_INVALID_PARAMETER);
     }
     let strings = (0..ns).map(|i| arg_str(mem::rp(strs + i * mem::ps()), wide)).collect();
@@ -790,6 +814,25 @@ mod tests {
             for i in 1..=n { prop_assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | FORWARDS, 0, one, true).unwrap()), i as u32); }
             prop_assert_eq!(read(&l, &mut c, SEQUENTIAL | FORWARDS, 0, one, true), Err((ERROR_HANDLE_EOF, 0)));
             for i in (1..=n).rev() { prop_assert_eq!(num(&read(&l, &mut c, SEQUENTIAL | BACKWARDS, 0, one, true).unwrap()), i as u32); }
+        }
+
+        /// A guest logging in a loop: the log keeps the newest records within LOG_BYTES,
+        /// numbered on (oldest() moves up), and never drops the record just written
+        #[test]
+        fn logs_keep_the_newest(sizes in proptest::collection::vec(0usize..2_000_000, 1..60)) {
+            let mut l = Log::default();
+            for (i, &n) in sizes.iter().enumerate() {
+                l.report(Rec { data: vec![0; n], strings: vec!["x".into()], source: "s".into(), ..Default::default() });
+                prop_assert_eq!(l.bytes, l.recs.iter().map(rec_bytes).sum::<usize>());
+                prop_assert!(l.bytes <= LOG_BYTES || l.recs.len() == 1);
+                prop_assert_eq!(l.recs.last().unwrap().number, i as u32 + 1);
+                prop_assert_eq!(l.oldest() as usize, i + 2 - l.recs.len());
+                // as many as fit: the newest record dropped would not have
+                if l.recs.len() <= i {
+                    let dropped = 56 + sizes[i - l.recs.len()] + 2 * (1 + 2);
+                    prop_assert!(l.bytes + dropped > LOG_BYTES);
+                }
+            }
         }
     }
 }

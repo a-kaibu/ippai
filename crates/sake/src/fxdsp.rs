@@ -15,11 +15,22 @@ fn db(v: f32) -> f32 {
     10f32.powf(v / 20.0)
 }
 
+/// XAudio2's limits (XAUDIO2_MAX_AUDIO_CHANNELS, XAUDIO2_MIN/MAX_SAMPLE_RATE): a format outside
+/// them is passed through untouched (no channels: nothing to do; an absurd rate or channel
+/// count: no delay lines of hundreds of MB on the audio thread)
+pub const MAX_CHANNELS: usize = 64;
+pub const RATES: std::ops::RangeInclusive<u32> = 1000..=200_000;
+pub fn sane(ch: usize, rate: u32) -> bool {
+    (1..=MAX_CHANNELS).contains(&ch) && RATES.contains(&rate)
+}
+
 /// One biquad section per channel (direct form I)
 #[derive(Clone, Default)]
 struct Biquad {
     c: [f64; 5],
     z: Vec<[f64; 4]>,
+    /// what `c` was computed for (rate, f0, gain, bw as bits): kept while they stay
+    key: Option<(u32, u32, u32, u32)>,
 }
 
 impl Biquad {
@@ -27,6 +38,11 @@ impl Biquad {
     /// In f64: at 20 Hz with a narrow band the poles are within 1e-4 of 1, where f32 coefficients
     /// and state lose the response
     fn peaking(&mut self, rate: f32, f0: f32, gain: f32, bw: f32) {
+        let key = Some((rate.to_bits(), f0.to_bits(), gain.to_bits(), bw.to_bits()));
+        if self.key == key {
+            return;
+        }
+        self.key = key;
         let (rate, f0, gain, bw) = (rate as f64, f0 as f64, gain as f64, bw as f64);
         let a = gain.sqrt();
         let w0 = 2.0 * std::f64::consts::PI * f0 / rate;
@@ -60,6 +76,9 @@ pub const EQ_CENTRES: [f32; 4] = [100.0, 800.0, 2000.0, 10000.0];
 
 impl Eq {
     pub fn run(&mut self, p: &[u8], buf: &mut [f32], ch: usize, rate: u32) {
+        if !sane(ch, rate) {
+            return;
+        }
         let fs = rate as f32;
         for (i, b) in self.bands.iter_mut().enumerate() {
             let f0 = f(p, 3 * i, EQ_CENTRES[i]).clamp(20.0, 20000.0).min(fs * 0.49);
@@ -89,6 +108,9 @@ impl Default for Limiter {
 }
 impl Limiter {
     pub fn run(&mut self, p: &[u8], buf: &mut [f32], ch: usize, rate: u32) {
+        if !sane(ch, rate) {
+            return;
+        }
         let release = u(p, 0, 6).clamp(1, 20) as f32 * 0.01;
         let loud = u(p, 1, 1000).clamp(1, 1800) as f32 / 1000.0;
         let k = (-1.0 / (release * rate as f32)).exp();
@@ -116,6 +138,9 @@ impl Echo {
         Echo { max_delay_ms, ..Default::default() }
     }
     pub fn run(&mut self, p: &[u8], buf: &mut [f32], ch: usize, rate: u32) {
+        if !sane(ch, rate) {
+            return;
+        }
         let max = if self.max_delay_ms > 0.0 { self.max_delay_ms.clamp(1.0, 2000.0) } else { 2000.0 };
         let wet = f(p, 0, 0.5).clamp(0.0, 1.0);
         let fb = f(p, 1, 0.5).clamp(0.0, 1.0);
@@ -137,10 +162,13 @@ impl Echo {
     }
 }
 
-/// A delay line of one comb or all-pass
+/// A delay line of one comb or all-pass: `len` samples of `buf` (made for the longest the
+/// room size can ask for, so that a room size the game animates changes the length without
+/// a new, empty line: no click, no allocation per change)
 #[derive(Clone, Default)]
 struct Line {
     buf: Vec<f32>,
+    len: usize,
     at: usize,
     lp: f32,
 }
@@ -155,8 +183,15 @@ const SPREAD: usize = 23;
 pub struct Reverb {
     combs: Vec<Vec<Line>>,
     alls: Vec<Vec<Line>>,
-    key: (usize, u32, u32),
+    /// (channels, rate) the lines were made for
+    key: (usize, u32),
+    /// the lengths' scale (bits) and decay the comb feedbacks `fbs` are of
+    shape: (u32, u32),
+    fbs: Vec<Vec<f32>>,
 }
+
+/// The largest comb scale a shape gives (fx: 0.5 + RoomSize 1; audio: 1)
+const MAX_SCALE: f32 = 1.5;
 
 /// What a reverb pass needs: the comb lengths' scale, the decay (feedback per comb from it),
 /// damping, all-pass gain, and the dry / wet levels
@@ -195,33 +230,52 @@ impl ReverbShape {
 
 impl Reverb {
     pub fn run(&mut self, s: &ReverbShape, buf: &mut [f32], ch: usize, rate: u32) {
-        let sc = s.scale * rate as f32 / 44100.0;
-        let key = (ch, rate, (s.scale * 1000.0) as u32);
-        if self.key != key || self.combs.len() != ch {
-            let len = |n: usize, c: usize| (((n + SPREAD * (c % 2)) as f32 * sc) as usize).max(1);
-            self.combs = (0..ch).map(|c| COMBS.iter().map(|&n| Line { buf: vec![0.0; len(n, c)], at: 0, lp: 0.0 }).collect()).collect();
-            self.alls = (0..ch).map(|c| ALLPASSES.iter().map(|&n| Line { buf: vec![0.0; len(n, c)], at: 0, lp: 0.0 }).collect()).collect();
-            self.key = key;
+        if !sane(ch, rate) {
+            return;
+        }
+        let scale = s.scale.clamp(0.01, MAX_SCALE);
+        let len = |n: usize, c: usize, scale: f32| (((n + SPREAD * (c % 2)) as f32 * (scale * rate as f32 / 44100.0)) as usize).max(1);
+        if self.key != (ch, rate) || self.combs.len() != ch {
+            let line = |n: usize, c: usize| Line { buf: vec![0.0; len(n, c, MAX_SCALE)], len: 1, at: 0, lp: 0.0 };
+            self.combs = (0..ch).map(|c| COMBS.iter().map(|&n| line(n, c)).collect()).collect();
+            self.alls = (0..ch).map(|c| ALLPASSES.iter().map(|&n| line(n, c)).collect()).collect();
+            self.key = (ch, rate);
+            self.shape = (u32::MAX, 0);
+        }
+        if self.shape != (scale.to_bits(), s.decay_s.to_bits()) {
+            self.shape = (scale.to_bits(), s.decay_s.to_bits());
+            for (c, (cs, als)) in self.combs.iter_mut().zip(self.alls.iter_mut()).enumerate() {
+                for (l, &n) in cs.iter_mut().zip(&COMBS).chain(als.iter_mut().zip(&ALLPASSES)) {
+                    l.len = len(n, c, scale).min(l.buf.len());
+                    l.at %= l.len;
+                }
+            }
+            // a comb of n samples falls by 60 dB over the decay time
+            self.fbs = self.combs.iter().map(|cs| cs.iter().map(|l| 10f32.powf(-3.0 * l.len as f32 / (s.decay_s * rate as f32)).min(0.98)).collect()).collect();
         }
         let ap = 0.3 + 0.4 * s.diffusion;
-        // a comb of n samples falls by 60 dB over the decay time
-        let fbs: Vec<Vec<f32>> = self.combs.iter().map(|cs| cs.iter().map(|l| 10f32.powf(-3.0 * l.buf.len() as f32 / (s.decay_s * rate as f32)).min(0.98)).collect()).collect();
         for fr in buf.chunks_exact_mut(ch) {
             for (c, x) in fr.iter_mut().enumerate() {
                 let input = *x * 0.015;
                 let mut out = 0.0;
-                for (l, &fb) in self.combs[c].iter_mut().zip(&fbs[c]) {
+                for (l, &fb) in self.combs[c].iter_mut().zip(&self.fbs[c]) {
                     let y = l.buf[l.at];
                     l.lp = y * (1.0 - s.damp) + l.lp * s.damp;
                     l.buf[l.at] = input + l.lp * fb;
-                    l.at = (l.at + 1) % l.buf.len();
+                    l.at += 1;
+                    if l.at >= l.len {
+                        l.at = 0;
+                    }
                     out += y;
                 }
                 for l in self.alls[c].iter_mut() {
                     let b = l.buf[l.at];
                     let y = b - out;
                     l.buf[l.at] = out + b * ap;
-                    l.at = (l.at + 1) % l.buf.len();
+                    l.at += 1;
+                    if l.at >= l.len {
+                        l.at = 0;
+                    }
                     out = y;
                 }
                 *x = *x * s.dry + out * 3.0 * s.wet;
@@ -409,6 +463,111 @@ mod tests {
             e.run(&p, l, 2, 1000);
             e.run(&p, r, 2, 1000);
             prop_assert_eq!(a, b);
+        }
+
+        /// Any channel count and rate a voice may claim (0 channels, 0 Hz, 4 GHz, 1000
+        /// channels): no panic, no division by zero, nothing allocated past XAudio2's limits,
+        /// and a format outside them passes through unchanged
+        #[test]
+        fn any_format_is_safe(ps in proptest::collection::vec(any::<f32>(), 0..14), n in 0usize..300, ch in prop_oneof![Just(0usize), 1usize..9, Just(64), Just(65), Just(1000)],
+                              rate in prop_oneof![Just(0u32), Just(1), Just(999), 1000u32..200_001, Just(200_001), any::<u32>()], max_delay in any::<f32>()) {
+            let p = params(&ps);
+            let x: Vec<f32> = (0..n).map(|i| ((i * 37 % 200) as f32 / 100.0) - 1.0).collect();
+            let ok = sane(ch, rate);
+            let mut ys = vec![x.clone(); 5];
+            Eq::default().run(&p, &mut ys[0], ch, rate);
+            Limiter::default().run(&p, &mut ys[1], ch, rate);
+            let mut e = Echo::with_max(max_delay);
+            e.run(&p, &mut ys[2], ch, rate);
+            prop_assert!(e.line.len() <= (2 * *RATES.end() as usize + 1) * MAX_CHANNELS);
+            let mut r = Reverb::default();
+            r.run(&ReverbShape::fx(&p), &mut ys[3], ch, rate);
+            r.run(&ReverbShape::audio(&p), &mut ys[4], ch, rate);
+            let samples: usize = r.combs.iter().chain(&r.alls).flatten().map(|l| l.buf.len()).sum();
+            prop_assert!(samples <= MAX_CHANNELS * 12 * 1700 * 5);
+            for y in &ys {
+                if !ok {
+                    prop_assert_eq!(y, &x);
+                }
+                prop_assert!(y.iter().all(|v| v.is_finite()));
+            }
+        }
+
+        /// With a room size that stays, the reverb gives exactly what it gave before its lines
+        /// were made for the largest room (the implementation before, kept here as the model);
+        /// a room size that changes keeps the tail ringing (it used to start from silence,
+        /// a click) and allocates nothing
+        #[test]
+        fn reverb_as_before_and_room_changes_keep_the_tail(xs in proptest::collection::vec(-1f32..1.0, 2..2000), room in 0.0001f32..1.0, room2 in 0.0001f32..1.0, rate in prop_oneof![Just(44100u32), Just(48000), Just(22050), 8000u32..96000]) {
+            let n = xs.len() / 2 * 2;
+            let shape = ReverbShape::fx(&params(&[0.9, room]));
+            let mut a = xs[..n].to_vec();
+            Reverb::default().run(&shape, &mut a, 2, rate);
+            let mut b = xs[..n].to_vec();
+            old::Reverb::default().run(&shape, &mut b, 2, rate);
+            prop_assert_eq!(&a, &b);
+            let mut r = Reverb::default();
+            let mut imp = vec![0f32; 2 * 4000];
+            imp[0] = 1.0;
+            imp[1] = 1.0;
+            r.run(&shape, &mut imp, 2, rate);
+            let bufs: Vec<*const f32> = r.combs.iter().flatten().map(|l| l.buf.as_ptr()).collect();
+            let mut z = vec![0f32; 2 * 2000];
+            r.run(&ReverbShape::fx(&params(&[0.9, room2])), &mut z, 2, rate);
+            prop_assert!(z.iter().any(|v| v.abs() > 1e-7), "the tail went silent at the room change");
+            prop_assert_eq!(bufs, r.combs.iter().flatten().map(|l| l.buf.as_ptr()).collect::<Vec<_>>());
+        }
+    }
+
+    /// The reverberator as it was (lines remade per room size, feedbacks per pass)
+    mod old {
+        use super::super::{ReverbShape, ALLPASSES, COMBS, SPREAD};
+        #[derive(Clone, Default)]
+        struct Line {
+            buf: Vec<f32>,
+            at: usize,
+            lp: f32,
+        }
+        #[derive(Default)]
+        pub struct Reverb {
+            combs: Vec<Vec<Line>>,
+            alls: Vec<Vec<Line>>,
+            key: (usize, u32, u32),
+        }
+        impl Reverb {
+            pub fn run(&mut self, s: &ReverbShape, buf: &mut [f32], ch: usize, rate: u32) {
+                let sc = s.scale * rate as f32 / 44100.0;
+                let key = (ch, rate, (s.scale * 1000.0) as u32);
+                if self.key != key || self.combs.len() != ch {
+                    let len = |n: usize, c: usize| (((n + SPREAD * (c % 2)) as f32 * sc) as usize).max(1);
+                    self.combs = (0..ch).map(|c| COMBS.iter().map(|&n| Line { buf: vec![0.0; len(n, c)], at: 0, lp: 0.0 }).collect()).collect();
+                    self.alls = (0..ch).map(|c| ALLPASSES.iter().map(|&n| Line { buf: vec![0.0; len(n, c)], at: 0, lp: 0.0 }).collect()).collect();
+                    self.key = key;
+                }
+                let ap = 0.3 + 0.4 * s.diffusion;
+                let fbs: Vec<Vec<f32>> = self.combs.iter().map(|cs| cs.iter().map(|l| 10f32.powf(-3.0 * l.buf.len() as f32 / (s.decay_s * rate as f32)).min(0.98)).collect()).collect();
+                for fr in buf.chunks_exact_mut(ch) {
+                    for (c, x) in fr.iter_mut().enumerate() {
+                        let input = *x * 0.015;
+                        let mut out = 0.0;
+                        for (l, &fb) in self.combs[c].iter_mut().zip(&fbs[c]) {
+                            let y = l.buf[l.at];
+                            l.lp = y * (1.0 - s.damp) + l.lp * s.damp;
+                            l.buf[l.at] = input + l.lp * fb;
+                            l.at = (l.at + 1) % l.buf.len();
+                            out += y;
+                        }
+                        for l in self.alls[c].iter_mut() {
+                            let b = l.buf[l.at];
+                            let y = b - out;
+                            l.buf[l.at] = out + b * ap;
+                            l.at = (l.at + 1) % l.buf.len();
+                            out = y;
+                        }
+                        *x = *x * s.dry + out * 3.0 * s.wet;
+                    }
+                }
+            }
         }
     }
 }
