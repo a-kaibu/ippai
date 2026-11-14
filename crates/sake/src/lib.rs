@@ -19,7 +19,7 @@ macro_rules! env_on {
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use koji::{Cpu, EAX, ESP};
+use koji::{Cpu, EAX, EBP, ESP};
 
 pub mod acm;
 #[cfg(test)]
@@ -717,9 +717,29 @@ pub(crate) fn thread_start(t: &mut Thread, start: u32, param: u32) {
     if mem::x64() {
         return setup64(cpu, start, param);
     }
-    let sp = cpu.regs[ESP] - 8;
+    start32(cpu, start, param);
+}
+
+/// The outermost frame a 32-bit thread's EBP chain ends in: saved EBP 0 and return address 0,
+/// as ntdll's _RtlUserThreadStart pushes a 0 return address before it jumps on. Code that walks
+/// frames by EBP until a 0 return address (Unity 5's stack capture, its crash handler) stops
+/// there instead of reading [0 + 4].
+pub(crate) fn chain_end32(top: u32) -> u32 {
+    let f = top - 8;
+    w32(f, 0);
+    w32(f + 4, 0);
+    f
+}
+
+/// 32-bit: the registers and stack for `start(param)`, called from kernel32 (its return
+/// address) with EBP at the end of the frame chain (chain_end32), as BaseThreadInitThunk calls
+/// it.
+fn start32(cpu: &mut Cpu, start: u32, param: u32) {
+    let f = chain_end32(cpu.regs[ESP]);
+    let sp = f - 8;
     w32(sp, pe::exit_return());
     w32(sp + 4, param);
+    cpu.regs[EBP] = f;
     cpu.regs[ESP] = sp;
     cpu.eip = start;
 }
@@ -953,11 +973,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     if x64 {
         start64(cpu, entry, peb);
     }
-    let sp = cpu.regs[ESP] - 8;
-    w32(sp, pe::exit_return());
-    w32(sp + 4, peb);
-    cpu.regs[ESP] = sp;
-    cpu.eip = entry;
+    start32(cpu, entry, peb);
     run(cpu, 0);
     unsafe { libc::exit(0) }
 }

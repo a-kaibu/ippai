@@ -61,9 +61,9 @@ fn system_information(class: u32, ptr: u32) -> Option<Vec<u8>> {
         // kernel (idle included, as Windows counts it), user, DPC, interrupt, interrupts. The
         // processors share the elapsed time: half idle, a quarter user, a quarter kernel.
         8 => {
-            let t = ticks_ms() as u64 * 10_000;
             for _ in 0..ncpu() {
-                for x in [t / 2, t / 2 + t / 4, t / 4, 0, 0] {
+                let (idle, kernel, user) = processor_times(ticks_ms());
+                for x in [idle, kernel, user, 0, 0] {
                     v.extend_from_slice(&x.to_le_bytes());
                 }
                 u(&mut v, ticks_ms());
@@ -78,6 +78,32 @@ fn system_information(class: u32, ptr: u32) -> Option<Vec<u8>> {
         _ => return None,
     }
     Some(v)
+}
+
+/// One processor's (idle, kernel, user) times in 100 ns units after `ms` milliseconds up: half
+/// idle, a quarter user, a quarter kernel; kernel counts the idle time too, as on Windows.
+fn processor_times(ms: u32) -> (u64, u64, u64) {
+    let t = ms as u64 * 10_000;
+    (t / 2, t / 2 + t / 4, t / 4)
+}
+
+/// GetSystemTimes' (idle, kernel, user): the sums over the processors of their
+/// SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION times, as kernelbase adds them up.
+fn system_times(ms: u32, n: u32) -> (u64, u64, u64) {
+    let (i, k, u) = processor_times(ms);
+    (i * n as u64, k * n as u64, u * n as u64)
+}
+
+/// GetSystemTimes(idle*, kernel*, user*) -> TRUE; each FILETIME pointer may be NULL. (Mono's
+/// thread pool samples it for its CPU usage and aborts the process when it fails: Unity 2022.)
+fn GetSystemTimes(c: &mut Ctx) -> u32 {
+    let (idle, kernel, user) = system_times(ticks_ms(), ncpu());
+    for (i, v) in (0u32..).zip([idle, kernel, user]) {
+        if c.a(i) != 0 {
+            mem::put64(c.a(i), v);
+        }
+    }
+    1
 }
 
 /// NtQuerySystemInformation(class, buffer, length, return_length*)
@@ -331,6 +357,8 @@ fn GetActivePwrScheme(_: &mut Ctx) -> u32 {
 
 pub fn init() {
     reg!("ntdll"; NtQuerySystemInformation, ZwQuerySystemInformation);
+    reg!("kernel32"; GetSystemTimes);
+    reg!("kernelbase"; GetSystemTimes);
     reg!("kernel32"; GetSystemFirmwareTable, EnumSystemFirmwareTables, GetPhysicallyInstalledSystemMemory);
     reg!("powrprof"; PowerEnumerate, PowerGetActiveScheme, PowerReadFriendlyName, PowerReadDescription, EnumPwrSchemes, GetActivePwrScheme);
 }
@@ -355,6 +383,40 @@ mod tests {
         }
         assert_eq!(o, t.len());
         assert_eq!(types, [0, 1, 2, 17, 127]);
+    }
+
+    // GetSystemTimes adds up class 8's per-processor entries (kernelbase does exactly that)
+    #[test]
+    fn system_times_are_the_sum_of_class_8() {
+        let d = system_information(8, 4).unwrap();
+        let n = ncpu();
+        assert_eq!(d.len() as u32, 48 * n);
+        let q = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+        let (mut i, mut k, mut u) = (0, 0, 0);
+        for p in 0..n as usize {
+            i += q(48 * p);
+            k += q(48 * p + 8);
+            u += q(48 * p + 16);
+        }
+        let ms = u32::from_le_bytes(d[40..44].try_into().unwrap());
+        let (si, sk, su) = system_times(ms, n);
+        // (ticks can move by a few ms between the two reads)
+        let near = |a: u64, b: u64| a.abs_diff(b) <= n as u64 * 10_000 * 1000;
+        assert!(near(i, si) && near(k, sk) && near(u, su), "{i} {k} {u} vs {si} {sk} {su}");
+    }
+
+    proptest::proptest! {
+        // Windows' invariants mono's thread pool relies on: kernel includes idle, so busy time
+        // kernel + user - idle is never negative, and every time grows with uptime
+        #[test]
+        fn system_times_invariants(ms in 0u32..u32::MAX, later in 0u32..1_000_000, n in 1u32..64) {
+            let (i, k, u) = system_times(ms, n);
+            proptest::prop_assert!(k >= i);
+            proptest::prop_assert!(k + u >= i);
+            proptest::prop_assert_eq!(k + u, ms as u64 * 10_000 * n as u64);
+            let (i2, k2, u2) = system_times(ms.saturating_add(later), n);
+            proptest::prop_assert!(i2 >= i && k2 >= k && u2 >= u);
+        }
     }
 
     #[test]
