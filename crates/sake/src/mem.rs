@@ -274,6 +274,12 @@ pub fn cstr(a: u32) -> Vec<u8> {
     if a == 0 {
         return Vec::new();
     }
+    // (one scan of the guest memory up to GUEST_TOP: an unterminated string stops there
+    // instead of wrapping past 4 GB, review b07)
+    if a < GUEST_TOP {
+        let s = slice(a, GUEST_TOP - a);
+        return s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())].to_vec();
+    }
     let mut n = 0;
     while r8(a + n) != 0 {
         n += 1;
@@ -284,6 +290,14 @@ pub fn cstr(a: u32) -> Vec<u8> {
 pub fn wstr(a: u32) -> Vec<u16> {
     if a == 0 {
         return Vec::new();
+    }
+    if a < GUEST_TOP {
+        let s = slice(a, (GUEST_TOP - a) & !1);
+        let units = s.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
+        let n = units.clone().position(|c| c == 0).unwrap_or(s.len() / 2);
+        let mut v = Vec::with_capacity(n);
+        v.extend(units.take(n));
+        return v;
     }
     let mut v = Vec::new();
     let mut p = a;
@@ -373,10 +387,16 @@ pub fn snap_ranges(v: &mut Vec<(u32, u32)>) {
 fn align_up(v: u32, a: u32) -> u32 {
     (v + a - 1) & !(a - 1)
 }
+/// `size` (at least 1) rounded up to whole pages, None past the guest address space (a size
+/// near 4 GB wrapped to 0 and reserved an empty region the program took for ~4 GB, review b07)
+fn page_size(size: u32) -> Option<u32> {
+    let n = (size.max(1) as u64).div_ceil(PAGE as u64) * PAGE as u64;
+    (n <= HI as u64).then_some(n as u32)
+}
 
 /// Reserves `size` bytes at `want` (0 = anywhere, lowest first; `top` = highest first).
 pub fn reserve(want: u32, size: u32, prot: u32, kind: u32, top: bool) -> Option<u32> {
-    let size = align_up(size.max(1), PAGE);
+    let size = page_size(size)?;
     let mut sp = SPACE.lock().unwrap();
     let base = if want != 0 {
         let b = want & !(GRAN - 1);
@@ -429,7 +449,7 @@ fn insert(sp: &mut BTreeMap<u32, Region>, base: u32, size: u32, prot: u32, kind:
 /// space ran on over the TEBs, stacks and DLL images above, お仕置きLesson 体験版, Unity
 /// 6000.4.)
 pub fn reserve_aligned(size: u32, align: u32, prot: u32, kind: u32) -> Option<u32> {
-    let size = align_up(size.max(1), PAGE);
+    let size = page_size(size)?;
     let mut sp = SPACE.lock().unwrap();
     let base = aligned_fit(&holes(&sp, size), size, align)?;
     insert(&mut sp, base, size, prot, kind);
@@ -636,6 +656,13 @@ pub fn stack_grow(teb: u32, a: u32) -> bool {
     true
 }
 
+/// Whether `a` is in the lowest page of the thread stack of `teb` (between DeallocationStack
+/// and a page above it), which new_teb leaves inaccessible.
+pub fn stack_floor(teb: u32, a: u32) -> bool {
+    let dealloc = if x64() { r64(teb + 0x1478) } else { r32(teb + 0xe0c) as u64 };
+    dealloc != 0 && (dealloc..dealloc + PAGE as u64).contains(&(a as u64))
+}
+
 /// The allocation holding `a`.
 pub fn find(a: u32) -> Option<(u32, Region)> {
     let sp = SPACE.lock().unwrap();
@@ -697,7 +724,9 @@ struct Sys;
 
 unsafe impl dlmalloc::Allocator for Sys {
     fn alloc(&self, size: usize) -> (*mut u8, usize, u32) {
-        let size = align_up(size as u32, GRAN);
+        let Some(size) = u32::try_from(size).ok().filter(|&n| n <= HI - GRAN).map(|n| align_up(n, GRAN)) else {
+            return (std::ptr::null_mut(), 0, 0);
+        };
         match alloc(size) {
             Some(b) => (b as usize as *mut u8, size as usize, 0),
             None => (std::ptr::null_mut(), 0, 0),
@@ -1536,6 +1565,76 @@ mod heap_destroy_tests {
             for b in blocks.iter().filter(|b| b.1 == 0) {
                 prop_assert!(heap_free_small(b.0));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_b07_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The byte-at-a-time readers the bounded scans replaced
+    fn cstr_ref(a: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        let mut p = a;
+        while r8(p) != 0 {
+            v.push(r8(p));
+            p += 1;
+        }
+        v
+    }
+    fn wstr_ref(a: u32) -> Vec<u16> {
+        let mut v = Vec::new();
+        let mut p = a;
+        while r16(p) != 0 {
+            v.push(r16(p));
+            p += 2;
+        }
+        v
+    }
+
+    #[test]
+    fn sizes_past_the_address_space_are_refused() {
+        let _g = crate::test_guest::enter();
+        for n in [0xffff_f001u32, 0xffff_ffff, HI + 1, GUEST_TOP] {
+            assert_eq!(reserve(0, n, 4, 0x20000, false), None, "{n:#x}");
+            assert_eq!(reserve(0, n, 4, 0x20000, true), None, "{n:#x}");
+            assert_eq!(reserve_aligned(n, GRAN, 4, 0x20000), None, "{n:#x}");
+            assert_eq!(alloc(n), None, "{n:#x}");
+        }
+        assert_eq!(heap_alloc(0xffff_fff0, false), 0);
+    }
+
+    proptest! {
+        /// Pages: at least the size, less than a page more, None only past HI
+        #[test]
+        fn page_sizes_round_up_without_wrapping(size: u32) {
+            match page_size(size) {
+                Some(n) => {
+                    prop_assert!(n % PAGE == 0 && n >= size.max(1) && n - size.max(1) < PAGE && n <= HI);
+                }
+                None => prop_assert!(size as u64 > HI as u64 - PAGE as u64),
+            }
+        }
+
+        /// The bounded scans read what the byte/unit loops read, at any alignment
+        #[test]
+        fn strings_read_as_the_plain_loops_do(bytes in proptest::collection::vec(any::<u8>(), 0..300), at in 0u32..8, nul in 0usize..320) {
+            let _g = crate::test_guest::enter();
+            let b = heap_alloc(400, true);
+            prop_assert!(b != 0);
+            fill(b, 400, 0);
+            let mut v = bytes.clone();
+            if nul < v.len() {
+                v[nul] = 0;
+            }
+            for (i, &c) in v.iter().enumerate() {
+                w8(b + at + i as u32, c);
+            }
+            prop_assert_eq!(cstr(b + at), cstr_ref(b + at));
+            prop_assert_eq!(wstr(b + at), wstr_ref(b + at));
+            heap_free(b);
         }
     }
 }

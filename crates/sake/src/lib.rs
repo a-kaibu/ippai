@@ -279,6 +279,9 @@ fn new_teb(tid: u32, stack: u32) -> Option<(u32, u32, u32)> {
         return None;
     };
     mem::commit(st, 4);
+    // (its lowest page faults: a stack that runs off its bottom ends in STATUS_STACK_OVERFLOW
+    // as on Windows instead of writing into whatever was reserved below it, review b07)
+    mem::protect(st, mem::PAGE, 0x01);
     let top = st + size;
     if mem::x64() {
         mem::w64(teb + 8, top as u64);
@@ -432,7 +435,8 @@ fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
                 if guard && !mem::x64() && mem::stack_grow(crate::cur().teb, addr) {
                     continue;
                 }
-                let code = if guard { 0x8000_0001 } else { 0xc000_0005 };
+                // (the stack's lowest page, see new_teb: STATUS_STACK_OVERFLOW)
+                let code = if guard { 0x8000_0001 } else if mem::stack_floor(crate::cur().teb, addr) { 0xc000_00fd } else { 0xc000_0005 };
                 // (the kind: 0 read, 1 write, 8 executing at the address: DEP)
                 let kind = if addr == cpu.eip && !guard { 8 } else { write as u32 };
                 if mem::x64() {
@@ -575,7 +579,9 @@ fn privileged(b: &[u8; 8]) -> bool {
 fn instruction_at(cpu: &Cpu) -> koji::iced_x86::Instruction {
     use koji::iced_x86::{Decoder, DecoderOptions};
     let ip = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
-    let bytes = mem::slice(cpu.eip, 15).to_vec();
+    // (no allocation: protectors fault on purpose thousands of times a second)
+    let mut bytes = [0u8; 15];
+    bytes.copy_from_slice(mem::slice(cpu.eip, 15));
     Decoder::with_ip(if mem::x64() { 64 } else { 32 }, &bytes, ip, DecoderOptions::NONE).decode()
 }
 
@@ -658,6 +664,55 @@ pub fn call_thiscall(cpu: &mut Cpu, f: u32, this: u32, args: &[u32]) -> u64 {
     r as u64 | (cpu.regs[koji::EDX] as u64) << 32
 }
 
+/// A callback frame whose lowest byte is `low`, pushed below ESP `esp`: past the bottom of the
+/// thread's stack (its reservation, less the guard Windows keeps) or wrapping round is a stack
+/// overflow, and the process ends as Windows ends it, instead of host writes going below the
+/// stack into whatever is mapped there (they bypass the guard page).
+fn check_callback_frame(cpu: &mut Cpu, esp: u64, low: Option<u64>) {
+    let teb = cur().teb;
+    let (base, bottom) = if mem::x64() { (mem::r64(teb + 8), mem::r64(teb + 0x1478)) } else { (r32(teb + 4) as u64, r32(teb + 0xe0c) as u64) };
+    if let Some(at) = callback_overflow(esp, low, base, bottom) {
+        EXIT_CODE.store(0xc000_00fd, std::sync::atomic::Ordering::Relaxed);
+        fatal(cpu, &format!("stack overflow: a callback frame at {at:#x} below the stack {bottom:#x}..{base:#x}"));
+    }
+}
+/// The frame's lowest byte when it does not fit (None: it fits, or ESP is on no stack sake
+/// knows: a fiber's or the program's own)
+fn callback_overflow(esp: u64, low: Option<u64>, base: u64, bottom: u64) -> Option<u64> {
+    const GUARD: u64 = 0x3000;
+    if bottom == 0 || bottom >= base || esp > base || esp < bottom {
+        return None;
+    }
+    match low {
+        None => Some(0),
+        Some(l) if l < bottom + GUARD => Some(l),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod callback_frame_tests {
+    use super::callback_overflow;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// A frame fits when its lowest byte stays above the stack's bottom and guard; ESP off
+        /// the stack (a fiber's, the program's own) is not judged; a wrapped frame never fits
+        #[test]
+        fn frames_fit_inside_the_stack(bottom in 0x10000u64..0x7000_0000, size in 0x4000u64..0x100_0000, at in 0u64..0x100_0000, frame in 0u64..0x10000) {
+            let base = bottom + size;
+            let esp = bottom + at % size;
+            let low = esp.checked_sub(frame);
+            let r = callback_overflow(esp, low, base, bottom);
+            prop_assert_eq!(r.is_some(), low.is_none_or(|l| l < bottom + 0x3000));
+            prop_assert_eq!(callback_overflow(base + 0x100, low, base, bottom), None);
+            prop_assert_eq!(callback_overflow(bottom.saturating_sub(0x100), low, base, bottom), None);
+            prop_assert_eq!(callback_overflow(esp, None, base, bottom), Some(0));
+            prop_assert_eq!(callback_overflow(esp, low, base, 0), None);
+        }
+    }
+}
+
 fn call32(cpu: &mut Cpu, f: u32, args: &[u32], ecx: Option<u32>) -> u32 {
     let regs = cpu.regs;
     if let Some(t) = ecx {
@@ -667,6 +722,7 @@ fn call32(cpu: &mut Cpu, f: u32, args: &[u32], ecx: Option<u32>) -> u32 {
     cpu.materialize();
     let eflags = cpu.eflags;
     let mut sp = regs[ESP];
+    check_callback_frame(cpu, sp as u64, (sp as u64).checked_sub(4 * args.len() as u64 + 4));
     for &a in args.iter().rev() {
         sp -= 4;
         w32(sp, a);
@@ -696,6 +752,8 @@ pub fn call64(cpu: &mut Cpu, f: u64, args: &[u64]) -> u64 {
     let eflags = cpu.eflags;
     let nstack = args.len().saturating_sub(4) as u32;
     // (at the callee's entry RSP+8 is 16-byte aligned)
+    let low = (regs[ESP] as u64).checked_sub(0x30 + 8 * nstack as u64 + 24);
+    check_callback_frame(cpu, regs[ESP] as u64, low);
     let sp = ((regs[ESP] - 0x30 - 8 * nstack) & !15) - 8;
     mem::w64(sp, api::RET_TRAP as u64);
     for (i, &a) in args.iter().enumerate() {
@@ -729,7 +787,7 @@ pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
     kura::crashlog::crash(&format!("sake: {msg}"));
     let r = &cpu.regs;
     eprintln!(
-        "sake: {msg}\n  eip {:08x} eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x}",
+        "sake: {msg}\nsake:   eip {:08x} eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x}",
         cpu.eip, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]
     );
     let mut s = String::new();
@@ -739,7 +797,7 @@ pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
             s += &format!(" {:x}", r32(a));
         }
     }
-    eprintln!("  stack:{s}");
+    eprintln!("sake:   stack:{s}");
     let mut ebp = r[5];
     let mut chain = String::new();
     for _ in 0..12 {
@@ -753,7 +811,7 @@ pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
         }
         ebp = n;
     }
-    eprintln!("  frames:{chain}");
+    eprintln!("sake:   frames:{chain}");
     unsafe { libc::exit(EXIT_CODE.load(Ordering::Relaxed) as i32) }
 }
 

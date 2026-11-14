@@ -1,0 +1,13 @@
+reserve fffff001: 0 error 1
+commit fffff001: 0 error 1
+heap ffffeff1: 0
+reserve ffffffff: 0 error 1
+commit ffffffff: 0 error 1
+heap ffffffef: 0
+reserve fffff000: 0 error 1
+commit fffff000: 0 error 1
+heap ffffeff0: 0
+reserve 80000000: 0 error 1
+commit 80000000: 0 error 1
+heap 7ffffff0: 0
+small reserve after: 1
