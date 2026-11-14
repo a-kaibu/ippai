@@ -327,6 +327,9 @@ pub struct Device {
     pub palettes: HashMap<u32, Box<[u8; 1024]>>,
     pub cur_palette: u32,
     pub pal_gen: u64,
+    /// the `pal_gen` and bound textures refresh_p8 last looked at: the same again, nothing to
+    /// look for (it walked every sampler slot with lookups on every draw)
+    pub p8_seen: Option<(u64, [u32; SAMPLERS])>,
     /// Counts the calls that may change what a draw prepares from the device's state (its
     /// layout, shaders, pipeline: `Prep`) and the calls that may change its uniform blocks;
     /// `stale` says which (#118).
@@ -1188,6 +1191,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         palettes: HashMap::new(),
         cur_palette: 0,
         pal_gen: 0,
+        p8_seen: None,
         prep_gen: 0,
         uni_gen: 0,
         prep: None,
@@ -2685,8 +2689,16 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
 /// current one (SetPaletteEntries / SetCurrentTexturePalette since): made again from their
 /// guest copies, so a draw shows the palette current at the draw, as Direct3D 9 does.
 unsafe fn refresh_p8(d: &mut D3d) {
-    let Some(dev) = d.dev.as_ref() else { return };
+    let Some(dev) = d.dev.as_mut() else { return };
     let gen = dev.pal_gen;
+    // (every upload of a P8 surface makes it with the palette of now: nothing goes stale until
+    // the palette or what is bound changes)
+    let key = (gen, dev.st.textures);
+    if dev.p8_seen == Some(key) {
+        return;
+    }
+    dev.p8_seen = Some(key);
+    let dev = d.dev.as_ref().unwrap();
     let mut stale = Vec::new();
     for &t in dev.st.textures.iter().filter(|&&t| t != 0) {
         let Some(Data::Texture(tx)) = d.objs.get(&t).map(|o| &o.data) else { continue };
