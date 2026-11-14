@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 2.116616725921631,
+ "leftTitle": true,
+ "manifests": [
+  "musu_mama5_trial.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  1280,
+  720
+ ],
+ "steps": "wait:3 click:0.5,0.5 wait:4 click:0.5,0.5 wait:20 move:0.14,0.125 wait:1 click:0.14,0.125 wait:6",
+ "storyFrames": 2,
+ "title": 14.832435131072998,
+ "titleStill": 17.987042665481567
+}
