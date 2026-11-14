@@ -109,7 +109,13 @@ struct P<'a> {
     t: Vec<Tok>,
     i: usize,
     env: &'a dyn Env,
+    /// NOTs and parentheses open around the current token
+    depth: usize,
 }
+
+/// How deeply NOT and parentheses may nest: past it the condition is an error (the parser
+/// recurses once per level, and a guest's condition must not overflow the host stack).
+pub const MAX_DEPTH: usize = 200;
 
 fn word(t: Option<&Tok>, w: &str) -> bool {
     matches!(t, Some(Tok::Sym(s)) if s.eq_ignore_ascii_case(w))
@@ -169,16 +175,25 @@ impl P<'_> {
         }
         Some(a)
     }
+    fn deeper(&mut self) -> Option<()> {
+        self.depth += 1;
+        (self.depth <= MAX_DEPTH).then_some(())
+    }
     fn not(&mut self) -> Option<bool> {
         if self.take_word("NOT") {
-            return Some(!self.not()?);
+            self.deeper()?;
+            let v = !self.not()?;
+            self.depth -= 1;
+            return Some(v);
         }
         self.comparison()
     }
     fn comparison(&mut self) -> Option<bool> {
         if self.peek() == Some(&Tok::LP) {
             self.i += 1;
+            self.deeper()?;
             let v = self.imp()?;
+            self.depth -= 1;
             if self.peek() != Some(&Tok::RP) {
                 return None;
             }
@@ -298,7 +313,7 @@ pub fn evaluate(cond: &str, env: &dyn Env) -> Cond {
         return Cond::None;
     }
     let Some(t) = lex(cond) else { return Cond::Error };
-    let mut p = P { t, i: 0, env };
+    let mut p = P { t, i: 0, env, depth: 0 };
     match p.imp() {
         Some(v) if p.i == p.t.len() => {
             if v {
@@ -377,5 +392,53 @@ mod tests {
         assert_eq!(t("(1"), Cond::Error);
         assert_eq!(t("1 AND"), Cond::Error);
         assert_eq!(t("\"x"), Cond::Error);
+    }
+
+    struct NoProps;
+    impl Env for NoProps {
+        fn property(&self, _: &str) -> String {
+            String::new()
+        }
+    }
+
+    /// NOT and parentheses nested past MAX_DEPTH are an error, not a host stack overflow
+    /// (the guest's condition string drove one recursion per level; review b04).
+    #[test]
+    fn deep_nesting_is_an_error() {
+        for n in [MAX_DEPTH + 1, 10_000, 200_000] {
+            assert_eq!(evaluate(&format!("{}1", "NOT ".repeat(n)), &NoProps), Cond::Error);
+            assert_eq!(evaluate(&format!("{}1{}", "(".repeat(n), ")".repeat(n)), &NoProps), Cond::Error);
+        }
+        assert_eq!(evaluate(&format!("{}1", "NOT ".repeat(MAX_DEPTH)), &NoProps), Cond::True);
+        assert_eq!(evaluate(&format!("{}1{}", "(".repeat(MAX_DEPTH), ")".repeat(MAX_DEPTH)), &NoProps), Cond::True);
+        // (levels left again do not count: siblings each MAX_DEPTH deep)
+        let one = format!("{}1{}", "(".repeat(MAX_DEPTH), ")".repeat(MAX_DEPTH));
+        assert_eq!(evaluate(&[one.as_str(); 50].join(" AND "), &NoProps), Cond::True);
+    }
+
+    proptest::proptest! {
+        /// Any mix of NOTs and parentheses within the limit: the value is 1 negated once
+        /// per NOT; past the limit an error.
+        #[test]
+        fn nesting_model(ops in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..400)) {
+            let mut s = String::new();
+            let mut close = 0;
+            let (mut depth, mut max, mut nots) = (0usize, 0usize, 0usize);
+            for &not in &ops {
+                if not {
+                    s.push_str("NOT ");
+                    nots += 1;
+                } else {
+                    s.push('(');
+                    close += 1;
+                }
+                depth += 1;
+                max = max.max(depth);
+            }
+            s.push('1');
+            s.push_str(&")".repeat(close));
+            let want = if max > MAX_DEPTH { Cond::Error } else if nots % 2 == 0 { Cond::True } else { Cond::False };
+            proptest::prop_assert_eq!(evaluate(&s, &NoProps), want);
+        }
     }
 }

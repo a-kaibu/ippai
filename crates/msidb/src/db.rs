@@ -217,6 +217,12 @@ impl Database {
                     at += w;
                 }
             }
+            // (rows are kept in key order, which `find_key`'s binary search needs; Windows
+            // writes them so, a file written by another tool may not)
+            let keys: Vec<usize> = tcols.iter().enumerate().filter(|c| c.1.is_key()).map(|c| c.0).collect();
+            if !keys.is_empty() && !rows.windows(2).all(|w| keys.iter().map(|&k| w[0].v[k]).le(keys.iter().map(|&k| w[1].v[k]))) {
+                rows.sort_by(|a, b| keys.iter().map(|&k| a.v[k]).cmp(keys.iter().map(|&k| b.v[k])));
+            }
             tables.push(Table { name, cols: tcols, rows, persistent: true, hold: 0 });
         }
         pool.prune();
@@ -574,12 +580,15 @@ impl Database {
             e.persistent = 0;
         }
         let tables: Vec<&Table> = self.table_order().into_iter().map(|i| &self.tables[i]).filter(|t| t.persistent).collect();
+        // (a table or column named "": a damaged file's string id past the pool, or SQL's
+        // CREATE TABLE ``; such a name has no string id, so the database cannot be written)
+        let id_of = |pool: &crate::pool::Pool, s: &str| pool.find(s).ok_or(ERROR_FUNCTION_FAILED);
         for t in &tables {
-            let id = pool.find(&t.name).unwrap();
+            let id = id_of(&pool, &t.name)?;
             pool.addref(id, true);
             for c in t.cols.iter().filter(|c| !c.temporary()) {
                 pool.addref(id, true);
-                pool.addref(pool.find(&c.name).unwrap(), true);
+                pool.addref(id_of(&pool, &c.name)?, true);
             }
             for r in t.rows.iter().filter(|r| r.persistent) {
                 for (c, &v) in t.cols.iter().zip(&r.v) {
@@ -609,10 +618,10 @@ impl Database {
         let mut tb = Vec::new();
         let mut cl: Vec<(u32, u16, u32, u16)> = Vec::new();
         for t in &tables {
-            let id = pool.find(&t.name).unwrap();
+            let id = id_of(&pool, &t.name)?;
             put_ref(&mut tb, id);
             for (i, c) in t.cols.iter().filter(|c| !c.temporary()).enumerate() {
-                cl.push((id, i as u16 + 1, pool.find(&c.name).unwrap(), c.ty));
+                cl.push((id, i as u16 + 1, id_of(&pool, &c.name)?, c.ty));
             }
         }
         wr("_Tables", true, &tb)?;

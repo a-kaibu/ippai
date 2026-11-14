@@ -514,7 +514,10 @@ fn MsiViewGetColumnInfo(c: &mut Ctx) -> u32 {
     }
     let Some((d, v)) = view_of(h) else { return ERROR_INVALID_HANDLE };
     let o = d.lock().unwrap();
-    let cols = v.lock().unwrap().columns(&o.db);
+    let cols = match v.lock().unwrap().columns(&o.db) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
     let mut r = Record::new(cols.len());
     for (i, (name, ty)) in cols.iter().enumerate() {
         r.f[i + 1] = Field::Str(if kind == 0 { name.clone() } else { idt::type_text(*ty) });

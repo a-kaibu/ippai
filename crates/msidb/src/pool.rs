@@ -58,6 +58,8 @@ pub struct Pool {
     /// id - 1 → entry (unused ids: empty string, both counts 0)
     pub v: Vec<Entry>,
     map: HashMap<String, u32>,
+    /// the ids no string holds (both counts 0, not in `map`): a new string takes the lowest
+    free: std::collections::BTreeSet<u32>,
     /// the file had 3-byte string references
     pub long_refs: bool,
 }
@@ -91,6 +93,8 @@ impl Pool {
             // (the counts are rebuilt from the rows that load; a string no row uses is dropped)
             if refs != 0 && !p.map.contains_key(&s) {
                 p.map.insert(s.clone(), id);
+            } else {
+                p.free.insert(id);
             }
             p.v.push(Entry { s, persistent: 0, temporary: 0 });
         }
@@ -117,8 +121,8 @@ impl Pool {
         let id = match self.map.get(s) {
             Some(&id) => id,
             None => {
-                let id = match self.v.iter().position(|e| e.persistent == 0 && e.temporary == 0 && !self.map.contains_key(&e.s)) {
-                    Some(i) => i as u32 + 1,
+                let id = match self.take_free() {
+                    Some(id) => id,
                     None => {
                         self.v.push(Entry::default());
                         self.v.len() as u32
@@ -138,8 +142,21 @@ impl Pool {
         id
     }
 
+    /// The lowest id no string holds (the scan over every entry it replaces made N new
+    /// strings O(N x pool)).
+    fn take_free(&mut self) -> Option<u32> {
+        while let Some(id) = self.free.pop_first() {
+            let e = &self.v[id as usize - 1];
+            if e.persistent == 0 && e.temporary == 0 && !self.map.contains_key(&e.s) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
     /// Adds a reference to an id already in the pool.
     pub fn addref(&mut self, id: u32, persistent: bool) {
+        self.free.remove(&id);
         if let Some(e) = id.checked_sub(1).and_then(|i| self.v.get_mut(i as usize)) {
             if persistent {
                 e.persistent += 1;
@@ -164,6 +181,7 @@ impl Pool {
             if self.map.get(&s) == Some(&id) {
                 self.map.remove(&s);
             }
+            self.free.insert(id);
         }
     }
 
@@ -175,6 +193,9 @@ impl Pool {
                     self.map.remove(&e.s);
                 }
                 e.s.clear();
+            }
+            if e.persistent == 0 && e.temporary == 0 {
+                self.free.insert(i as u32 + 1);
             }
         }
     }
@@ -251,5 +272,88 @@ mod tests {
         assert_eq!(&sp[4..8], &[0, 0, 1, 0]);
         let q = Pool::load(&sp, &sd).unwrap();
         assert_eq!(q.get(1).unwrap().len(), 70000);
+    }
+
+    /// The id search the free set replaced: the lowest id no string holds.
+    fn old_add(p: &mut Pool, s: &str, persistent: bool) -> u32 {
+        if s.is_empty() {
+            return 0;
+        }
+        let id = match p.map.get(s) {
+            Some(&id) => id,
+            None => {
+                let id = match p.v.iter().position(|e| e.persistent == 0 && e.temporary == 0 && !p.map.contains_key(&e.s)) {
+                    Some(i) => i as u32 + 1,
+                    None => {
+                        p.v.push(Entry::default());
+                        p.v.len() as u32
+                    }
+                };
+                p.v[id as usize - 1] = Entry { s: s.to_string(), persistent: 0, temporary: 0 };
+                p.map.insert(s.to_string(), id);
+                id
+            }
+        };
+        let e = &mut p.v[id as usize - 1];
+        if persistent { e.persistent += 1 } else { e.temporary += 1 }
+        id
+    }
+
+    proptest::proptest! {
+        /// Any sequence of adds, releases and addrefs (and a save/load/prune in between):
+        /// the ids handed out are the ones the full scan gave.
+        #[test]
+        fn free_ids_as_the_scan(ops in proptest::collection::vec((0u8..4, 0u8..12, proptest::prelude::any::<bool>()), 0..200), reload_at in 0usize..200) {
+            let mut a = Pool { codepage: 65001, ..Default::default() };
+            let mut b = a.clone();
+            for (i, &(op, x, pers)) in ops.iter().enumerate() {
+                if i == reload_at {
+                    // (as Database::open: load, the rows' addrefs, prune)
+                    let (sp, sd) = a.save();
+                    a = Pool::load(&sp, &sd).unwrap();
+                    b = a.clone();
+                    for id in 1..=a.v.len() as u32 {
+                        if id % 3 == 0 {
+                            a.addref(id, true);
+                            b.addref(id, true);
+                        }
+                    }
+                    a.prune();
+                    b.prune();
+                }
+                match op {
+                    0 | 1 => {
+                        let s = format!("s{x}");
+                        proptest::prop_assert_eq!(a.add(&s, pers), old_add(&mut b, &s, pers));
+                    }
+                    2 => {
+                        a.release(x as u32 + 1, pers);
+                        b.release(x as u32 + 1, pers);
+                    }
+                    _ => {
+                        if (x as usize) < a.v.len() && !a.v[x as usize].s.is_empty() {
+                            a.addref(x as u32 + 1, pers);
+                            b.addref(x as u32 + 1, pers);
+                        }
+                    }
+                }
+                proptest::prop_assert_eq!(a.v.iter().map(|e| (&e.s, e.persistent, e.temporary)).collect::<Vec<_>>(), b.v.iter().map(|e| (&e.s, e.persistent, e.temporary)).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    /// 20000 new strings into a pool of 20000 held ones: no scan of the pool per string.
+    #[test]
+    fn many_new_strings() {
+        let mut p = Pool::default();
+        for i in 0..20000 {
+            p.add(&format!("held{i}"), true);
+        }
+        let t = std::time::Instant::now();
+        for i in 0..20000 {
+            p.add(&format!("new{i}"), true);
+        }
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+        assert_eq!(p.v.len(), 40000);
     }
 }

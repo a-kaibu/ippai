@@ -33,7 +33,13 @@ struct F<'a> {
     env: &'a dyn Env,
     /// formatting a field's own text: [n] stays as written
     in_field: bool,
+    /// brackets open around the one being formatted
+    depth: std::cell::Cell<usize>,
 }
+
+/// How deeply brackets are resolved; a bracket deeper than this stays as written (each level
+/// recurses, and a guest's template must not overflow the host stack).
+pub const MAX_DEPTH: usize = 100;
 
 /// What the keys of a {group} came to.
 #[derive(Default)]
@@ -168,6 +174,17 @@ impl F<'_> {
     /// make its key; a group in it makes it text: what came before the group as written,
     /// the rest formatted, in brackets.
     fn bracket(&self, s: &[char], st: &mut St) -> String {
+        if self.depth.get() >= MAX_DEPTH {
+            st.unresolved = true;
+            return format!("[{}]", s.iter().collect::<String>());
+        }
+        self.depth.set(self.depth.get() + 1);
+        let v = self.bracket_in(s, st);
+        self.depth.set(self.depth.get() - 1);
+        v
+    }
+
+    fn bracket_in(&self, s: &[char], st: &mut St) -> String {
         let mut key = String::new();
         let mut frozen: Option<String> = None;
         let mut i = 0;
@@ -213,7 +230,7 @@ impl F<'_> {
             return t.to_string();
         }
         let c: Vec<char> = t.chars().collect();
-        F { rec: self.rec, env: self.env, in_field: true }.run(&c)
+        F { rec: self.rec, env: self.env, in_field: true, depth: Default::default() }.run(&c)
     }
 
     fn run(&self, s: &[char]) -> String {
@@ -253,7 +270,7 @@ impl F<'_> {
 pub fn format_record(rec: &Record, env: &dyn Env) -> String {
     match rec.get(0) {
         Field::Null => {
-            let f = F { rec, env, in_field: false };
+            let f = F { rec, env, in_field: false, depth: Default::default() };
             let mut s = String::new();
             for i in 1..=rec.count() {
                 s.push_str(&format!("{i}: {} ", f.field(&rec.get(i).text())));
@@ -266,7 +283,7 @@ pub fn format_record(rec: &Record, env: &dyn Env) -> String {
 
 pub fn format_str(t: &str, rec: &Record, env: &dyn Env) -> String {
     let c: Vec<char> = t.chars().collect();
-    F { rec, env, in_field: false }.run(&c)
+    F { rec, env, in_field: false, depth: Default::default() }.run(&c)
 }
 
 #[cfg(test)]
@@ -374,5 +391,37 @@ mod tests {
         assert_eq!(format_record(&r, &NoPackage), "1: [2] 2: stuff 3: prop 4: [INSTALLDIR] 5: [noprop] ");
         r.set(0, Field::Str("[1]".into())).unwrap();
         assert_eq!(format_record(&r, &P), "[2]");
+    }
+
+    struct Pkg;
+    impl Env for Pkg {
+        fn has_package(&self) -> bool {
+            true
+        }
+        fn property(&self, name: &str) -> Option<String> {
+            Some(format!("<{name}>"))
+        }
+    }
+
+    /// Brackets nested past MAX_DEPTH stay as written instead of recursing on (a guest's
+    /// template drove one host recursion per level; review b04), and a long template of
+    /// nested brackets formats in time linear in its length.
+    #[test]
+    fn deep_brackets() {
+        let r = Record::new(1);
+        for n in [MAX_DEPTH + 1, 5_000, 100_000] {
+            let t = format!("{}x{}", "[".repeat(n), "]".repeat(n));
+            let t0 = std::time::Instant::now();
+            let out = format_str(&t, &r, &Pkg);
+            assert!(t0.elapsed().as_secs() < 10, "{n}: {:?}", t0.elapsed());
+            assert!(out.contains('x'));
+        }
+        // (within the limit: resolved from the inside out, as before)
+        assert_eq!(format_str("[[x]]", &r, &Pkg), "<<x>>");
+        let t = format!("{}x{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert_eq!(format_str(&t, &r, &Pkg), format!("{}x{}", "<".repeat(MAX_DEPTH), ">".repeat(MAX_DEPTH)));
+        // (unclosed: the rest is text)
+        let t = "[".repeat(100_000);
+        assert_eq!(format_str(&t, &r, &Pkg), t);
     }
 }

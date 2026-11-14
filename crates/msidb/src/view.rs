@@ -139,6 +139,121 @@ impl Src {
     }
 }
 
+static NULL: Field = Field::Null;
+
+/// The view's tables looked up once per execute.
+struct Bound<'a> {
+    db: &'a Database,
+    /// per source: its table (None: a system table)
+    tabs: Vec<Option<&'a Table>>,
+}
+
+/// An operand with its column resolved: (source, column) or a value.
+enum COp {
+    Col(usize, usize),
+    Val(Field),
+}
+
+/// A WHERE expression resolved for one execute.
+enum CExpr {
+    And(Box<CExpr>, Box<CExpr>),
+    Or(Box<CExpr>, Box<CExpr>),
+    /// (operand, op, operand, compared as strings)
+    Cmp(COp, Op, COp, bool),
+    IsNull(usize, usize, bool),
+}
+
+fn conjuncts<'e>(e: &'e CExpr, out: &mut Vec<&'e CExpr>) {
+    if let CExpr::And(a, b) = e {
+        conjuncts(a, out);
+        conjuncts(b, out);
+    } else {
+        out.push(e);
+    }
+}
+
+#[derive(Default)]
+struct Index {
+    s: HashMap<String, Vec<usize>>,
+    n: HashMap<Option<i64>, Vec<usize>>,
+}
+
+enum Plan {
+    All(usize),
+    List(Vec<usize>),
+    /// the rows whose column equals (source, column) of the row already bound
+    Index { ix: Index, other: (usize, usize), string: bool },
+}
+
+/// A field as the comparisons see it, borrowed from the table where it can be.
+enum Fv<'a> {
+    Int(i32),
+    Str(&'a str),
+    Ref(&'a Field),
+    Owned(Field),
+}
+
+impl Fv<'_> {
+    fn is_null(&self) -> bool {
+        match self {
+            Fv::Int(_) => false,
+            Fv::Str(s) => s.is_empty(),
+            Fv::Ref(f) => f.is_null(),
+            Fv::Owned(f) => f.is_null(),
+        }
+    }
+    fn text(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Fv::Int(i) => i.to_string().into(),
+            Fv::Str(s) => (*s).into(),
+            Fv::Ref(Field::Str(s)) | Fv::Owned(Field::Str(s)) => s.as_str().into(),
+            Fv::Ref(f) => f.text().into(),
+            Fv::Owned(f) => f.text().into(),
+        }
+    }
+    fn num(&self) -> Option<i64> {
+        match self {
+            Fv::Int(i) => num(&Field::Int(*i)),
+            Fv::Str(s) => s.trim().parse().ok(),
+            Fv::Ref(f) => num(f),
+            Fv::Owned(f) => num(f),
+        }
+    }
+    fn field(self) -> Field {
+        match self {
+            Fv::Int(i) => Field::Int(i),
+            Fv::Str(s) => Field::Str(s.to_string()),
+            Fv::Ref(f) => f.clone(),
+            Fv::Owned(f) => f,
+        }
+    }
+}
+
+/// A WHERE comparison (strings compare for equality only; NULLs are equal numbers).
+fn compare(fa: &Fv, op: Op, fb: &Fv, string: bool) -> bool {
+    if string {
+        let (x, y) = (fa.text(), fb.text());
+        match op {
+            Op::Eq => x == y,
+            Op::Ne => x != y,
+            _ => false,
+        }
+    } else {
+        match (fa.num(), fb.num()) {
+            (Some(x), Some(y)) => match op {
+                Op::Eq => x == y,
+                Op::Ne => x != y,
+                Op::Lt => x < y,
+                Op::Gt => x > y,
+                Op::Le => x <= y,
+                Op::Ge => x >= y,
+            },
+            (None, None) => matches!(op, Op::Eq | Op::Le | Op::Ge),
+            _ => matches!(op, Op::Ne),
+        }
+    }
+}
+
 fn param(p: &Option<&Record>, n: usize) -> Field {
     p.map_or(Field::Null, |r| r.get(n).clone())
 }
@@ -267,10 +382,11 @@ impl View {
     }
 
     /// Columns of the result: (name, type) as MsiViewGetColumnInfo gives them.
-    pub fn columns(&self, db: &Database) -> Vec<(String, u16)> {
+    /// (ERROR_FUNCTION_FAILED: a table of the view was dropped or altered since.)
+    pub fn columns(&self, db: &Database) -> R<Vec<(String, u16)>> {
         self.cols.iter().map(|&(s, c)| {
-            let col = &self.srcs[s].cols(db)[c];
-            (col.name.clone(), col.ty)
+            let col = self.srcs[s].cols(db).get(c).ok_or(ERROR_FUNCTION_FAILED)?;
+            Ok((col.name.clone(), col.ty))
         }).collect()
     }
 
@@ -278,87 +394,199 @@ impl View {
         self.cols.iter().map(|&(s, _)| self.srcs[s].name().to_string()).collect()
     }
 
+    /// The tables of the sources as they are now, with every column the view names checked
+    /// against them (a table dropped or altered by another view since `new`).
+    fn bind<'a>(&self, db: &'a Database) -> R<Bound<'a>> {
+        let mut tabs = Vec::with_capacity(self.srcs.len());
+        for s in &self.srcs {
+            tabs.push(match s {
+                Src::Db(n) => Some(db.table(n).ok_or(ERROR_FUNCTION_FAILED)?),
+                Src::Virt { .. } => None,
+            });
+        }
+        let b = Bound { db, tabs };
+        for &(s, c) in &self.cols {
+            if c >= self.srcs[s].cols(db).len() {
+                return Err(ERROR_FUNCTION_FAILED);
+            }
+        }
+        Ok(b)
+    }
+
+    /// The expression with its columns resolved and its parameters filled in.
+    fn compile(&self, db: &Database, e: &Expr, p: &Option<&Record>) -> R<CExpr> {
+        Ok(match e {
+            Expr::And(a, b) => CExpr::And(Box::new(self.compile(db, a, p)?), Box::new(self.compile(db, b, p)?)),
+            Expr::Or(a, b) => CExpr::Or(Box::new(self.compile(db, a, p)?), Box::new(self.compile(db, b, p)?)),
+            Expr::IsNull(c, null) => {
+                let (s, ci) = self.resolve(db, c).map_err(|_| ERROR_FUNCTION_FAILED)?;
+                CExpr::IsNull(s, ci, *null)
+            }
+            Expr::Cmp(a, op, b) => {
+                let mut kinds = [None, None];
+                let mut ops = Vec::with_capacity(2);
+                for (k, o) in [a, b].into_iter().enumerate() {
+                    ops.push(match o {
+                        Operand::Val(v) => COp::Val(val_field(v, p)),
+                        Operand::Col(c) => {
+                            let (s, ci) = self.resolve(db, c).map_err(|_| ERROR_FUNCTION_FAILED)?;
+                            kinds[k] = Some(self.srcs[s].cols(db)[ci].ty & T_STRING != 0);
+                            COp::Col(s, ci)
+                        }
+                    });
+                }
+                let [sa, sb] = kinds;
+                let string = sa.or(sb).unwrap_or(false) && sa != Some(false) && sb != Some(false);
+                let b = ops.pop().unwrap();
+                let a = ops.pop().unwrap();
+                CExpr::Cmp(a, *op, b, string)
+            }
+        })
+    }
+
+    fn operand<'a>(&'a self, bd: &Bound<'a>, o: &'a COp, rows: &[usize]) -> Option<Fv<'a>> {
+        match o {
+            COp::Val(f) => Some(Fv::Ref(f)),
+            COp::Col(s, c) => Some(self.value(bd, *s, *rows.get(*s)?, *c)),
+        }
+    }
+
+    /// A field of a source row, borrowed where it can be (no String per string column).
+    fn value<'a>(&'a self, bd: &Bound<'a>, s: usize, r: usize, c: usize) -> Fv<'a> {
+        match (&self.srcs[s], bd.tabs[s]) {
+            (Src::Db(_), Some(t)) => {
+                let Some(row) = t.rows.get(r) else { return Fv::Ref(&NULL) };
+                let col = &t.cols[c];
+                let v = row.v[c];
+                if v == 0 {
+                    Fv::Ref(&NULL)
+                } else if col.is_binary() {
+                    Fv::Owned(bd.db.field(t, row, c))
+                } else if col.ty & T_STRING != 0 {
+                    bd.db.pool.get(v).map_or(Fv::Ref(&NULL), Fv::Str)
+                } else {
+                    Fv::Int(int_of(col, v))
+                }
+            }
+            (Src::Virt { name, rows, .. }, _) => {
+                if c == 1 && (name == "_Streams" || name == "_Storages") {
+                    return Fv::Owned(self.srcs[s].field(bd.db, r, c));
+                }
+                rows.get(r).and_then(|row| row.get(c)).map_or(Fv::Ref(&NULL), Fv::Ref)
+            }
+            (Src::Db(_), None) => Fv::Ref(&NULL),
+        }
+    }
+
     /// The expression's value for bound rows (None: a table it needs is not bound yet).
-    fn eval(&self, db: &Database, e: &Expr, rows: &[usize], p: &Option<&Record>) -> Option<bool> {
+    fn eval(&self, bd: &Bound, e: &CExpr, rows: &[usize]) -> Option<bool> {
         match e {
-            Expr::And(a, b) => match (self.eval(db, a, rows, p), self.eval(db, b, rows, p)) {
+            CExpr::And(a, b) => match (self.eval(bd, a, rows), self.eval(bd, b, rows)) {
                 (Some(false), _) | (_, Some(false)) => Some(false),
                 (Some(true), Some(true)) => Some(true),
                 _ => None,
             },
-            Expr::Or(a, b) => match (self.eval(db, a, rows, p), self.eval(db, b, rows, p)) {
+            CExpr::Or(a, b) => match (self.eval(bd, a, rows), self.eval(bd, b, rows)) {
                 (Some(true), _) | (_, Some(true)) => Some(true),
                 (Some(false), Some(false)) => Some(false),
                 _ => None,
             },
-            Expr::IsNull(c, null) => {
-                let (s, ci) = self.resolve(db, c).ok()?;
-                let r = *rows.get(s)?;
-                Some(self.srcs[s].field(db, r, ci).is_null() == *null)
+            CExpr::IsNull(s, c, null) => {
+                let r = *rows.get(*s)?;
+                Some(self.value(bd, *s, r, *c).is_null() == *null)
             }
-            Expr::Cmp(a, op, b) => {
-                let get = |o: &Operand| -> Option<(Field, Option<bool>)> {
-                    Some(match o {
-                        Operand::Val(v) => (val_field(v, p), None),
-                        Operand::Col(c) => {
-                            let (s, ci) = self.resolve(db, c).ok()?;
-                            let r = *rows.get(s)?;
-                            let col = &self.srcs[s].cols(db)[ci];
-                            (self.srcs[s].field(db, r, ci), Some(col.ty & T_STRING != 0))
-                        }
-                    })
-                };
-                let (fa, sa) = get(a)?;
-                let (fb, sb) = get(b)?;
-                let string = sa.or(sb).unwrap_or(false) && sa != Some(false) && sb != Some(false);
-                Some(if string {
-                    let (x, y) = (fa.text(), fb.text());
-                    match op {
-                        Op::Eq => x == y,
-                        Op::Ne => x != y,
-                        _ => false,
-                    }
-                } else {
-                    let (x, y) = (num(&fa), num(&fb));
-                    match (x, y) {
-                        (Some(x), Some(y)) => match op {
-                            Op::Eq => x == y,
-                            Op::Ne => x != y,
-                            Op::Lt => x < y,
-                            Op::Gt => x > y,
-                            Op::Le => x <= y,
-                            Op::Ge => x >= y,
-                        },
-                        (None, None) => matches!(op, Op::Eq | Op::Le | Op::Ge),
-                        _ => matches!(op, Op::Ne),
-                    }
-                })
+            CExpr::Cmp(a, op, b, string) => {
+                let fa = self.operand(bd, a, rows)?;
+                let fb = self.operand(bd, b, rows)?;
+                Some(compare(&fa, *op, &fb, *string))
             }
         }
     }
 
-    fn matching(&self, db: &Database, cond: &Option<Expr>, p: &Option<&Record>) -> Vec<Vec<usize>> {
-        let mut out = Vec::new();
-        let mut cur = Vec::new();
-        self.join(db, cond, p, &mut cur, &mut out);
-        out
+    /// How each source's rows are met in the join: all of them, the ones a constant
+    /// equality lets through, or (an equality with an earlier source's column) the rows of a
+    /// hash index on the value. The rows keep their table order, so the result is in the
+    /// same order as the nested loop over every row.
+    fn plan(&self, bd: &Bound, cond: &Option<CExpr>) -> Vec<Plan> {
+        let mut conj = Vec::new();
+        if let Some(e) = cond {
+            conjuncts(e, &mut conj);
+        }
+        (0..self.srcs.len()).map(|k| {
+            let n = self.srcs[k].len(bd.db);
+            let mut konst = None;
+            for e in &conj {
+                let CExpr::Cmp(a, Op::Eq, b, string) = e else { continue };
+                match (a, b) {
+                    (COp::Col(sa, ca), COp::Col(sb, cb)) if (*sa == k && *sb < k) || (*sb == k && *sa < k) => {
+                        let ((_, mine), other) = if *sa == k { ((sa, *ca), (*sb, *cb)) } else { ((sb, *cb), (*sa, *ca)) };
+                        let mut ix = Index::default();
+                        for r in 0..n {
+                            let v = self.value(bd, k, r, mine);
+                            if *string {
+                                ix.s.entry(v.text().into_owned()).or_default().push(r);
+                            } else {
+                                ix.n.entry(v.num()).or_default().push(r);
+                            }
+                        }
+                        return Plan::Index { ix, other, string: *string };
+                    }
+                    (COp::Col(s, c), COp::Val(f)) | (COp::Val(f), COp::Col(s, c)) if *s == k && konst.is_none() => {
+                        let want = Fv::Ref(f);
+                        konst = Some((0..n).filter(|&r| compare(&self.value(bd, k, r, *c), Op::Eq, &want, *string)).collect());
+                    }
+                    _ => {}
+                }
+            }
+            konst.map_or(Plan::All(n), Plan::List)
+        }).collect()
     }
 
-    fn join(&self, db: &Database, cond: &Option<Expr>, p: &Option<&Record>, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+    fn matching(&self, db: &Database, cond: &Option<Expr>, p: &Option<&Record>) -> R<Vec<Vec<usize>>> {
+        let bd = self.bind(db)?;
+        let cond = cond.as_ref().map(|e| self.compile(db, e, p)).transpose()?;
+        let plan = self.plan(&bd, &cond);
+        let mut out = Vec::new();
+        let mut cur = Vec::new();
+        self.join(&bd, &cond, &plan, &mut cur, &mut out);
+        Ok(out)
+    }
+
+    fn join(&self, bd: &Bound, cond: &Option<CExpr>, plan: &[Plan], cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
         let k = cur.len();
         if k == self.srcs.len() {
-            if cond.as_ref().is_none_or(|e| self.eval(db, e, cur, p) == Some(true)) {
+            if cond.as_ref().is_none_or(|e| self.eval(bd, e, cur) == Some(true)) {
                 out.push(cur.clone());
             }
             return;
         }
-        for r in 0..self.srcs[k].len(db) {
+        let mut each = |r: usize, cur: &mut Vec<usize>| {
             cur.push(r);
-            let ok = cond.as_ref().is_none_or(|e| self.eval(db, e, cur, p) != Some(false));
-            if ok {
-                self.join(db, cond, p, cur, out);
+            if cond.as_ref().is_none_or(|e| self.eval(bd, e, cur) != Some(false)) {
+                self.join(bd, cond, plan, cur, out);
             }
             cur.pop();
+        };
+        match &plan[k] {
+            Plan::All(n) => (0..*n).for_each(|r| each(r, cur)),
+            Plan::List(v) => v.iter().for_each(|&r| each(r, cur)),
+            Plan::Index { ix, other, string } => {
+                let v = self.value(bd, other.0, cur[other.0], other.1);
+                let hits = if *string { ix.s.get(v.text().as_ref()) } else { ix.n.get(&v.num()) };
+                if let Some(hits) = hits {
+                    hits.iter().for_each(|&r| each(r, cur));
+                }
+            }
+        }
+    }
+
+    /// ORDER BY's sort key of a source row: the raw value (string ids, as Windows sorts) or
+    /// the field's text.
+    fn raw(&self, bd: &Bound, s: usize, r: usize, c: usize) -> (u32, String) {
+        match (&self.srcs[s], bd.tabs[s]) {
+            (Src::Db(_), Some(t)) => (t.rows.get(r).map_or(0, |row| row.v[c]), String::new()),
+            (Src::Db(_), None) => (0, String::new()),
+            (src @ Src::Virt { .. }, _) => src.raw(bd.db, r, c),
         }
     }
 
@@ -375,30 +603,21 @@ impl View {
         let stmt = self.stmt.clone();
         match stmt {
             Stmt::Select { cond, order, distinct, .. } => {
-                let mut res = self.matching(db, &cond, &p);
+                let mut res = self.matching(db, &cond, &p)?;
+                let bd = self.bind(db)?;
                 if !order.is_empty() {
-                    let keys: Vec<(usize, usize)> = order.iter().map(|c| self.resolve(db, c).unwrap()).collect();
-                    res.sort_by(|a, b| {
-                        for &(s, c) in &keys {
-                            let o = self.srcs[s].raw(db, a[s], c).cmp(&self.srcs[s].raw(db, b[s], c));
-                            if o != std::cmp::Ordering::Equal {
-                                return o;
-                            }
-                        }
-                        std::cmp::Ordering::Equal
-                    });
+                    let mut keys = Vec::with_capacity(order.len());
+                    for c in &order {
+                        keys.push(self.resolve(db, c).map_err(|_| ERROR_FUNCTION_FAILED)?);
+                    }
+                    // (each row's key once; a stable sort keeps the join's order for ties)
+                    let mut keyed: Vec<(Vec<(u32, String)>, Vec<usize>)> = res.into_iter().map(|r| (keys.iter().map(|&(s, c)| self.raw(&bd, s, r[s], c)).collect(), r)).collect();
+                    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+                    res = keyed.into_iter().map(|k| k.1).collect();
                 }
                 if distinct {
-                    let mut seen = Vec::<Vec<Field>>::new();
-                    res.retain(|r| {
-                        let f: Vec<Field> = self.cols.iter().map(|&(s, c)| self.srcs[s].field(db, r[s], c)).collect();
-                        if seen.contains(&f) {
-                            false
-                        } else {
-                            seen.push(f);
-                            true
-                        }
-                    });
+                    let mut seen = std::collections::HashSet::<Vec<Field>>::new();
+                    res.retain(|r| seen.insert(self.cols.iter().map(|&(s, c)| self.value(&bd, s, r[s], c).field()).collect()));
                 }
                 self.result = res;
             }
@@ -435,7 +654,7 @@ impl View {
             }
             Stmt::Update { table, sets, cond } if db.table_index(&table).is_none() => {
                 // (_Streams / _Storages: a stream's data)
-                let rows = self.matching(db, &cond, &p);
+                let rows = self.matching(db, &cond, &p)?;
                 let vals: Vec<Field> = sets.iter().map(|(_, v)| val_field(v, &p)).collect();
                 let names: Vec<String> = rows.iter().map(|r| self.srcs[0].field(db, r[0], 0).text()).collect();
                 for n in names {
@@ -456,15 +675,19 @@ impl View {
             }
             Stmt::Update { table, sets, cond } => {
                 let ti = db.table_index(&table).ok_or(ERROR_FUNCTION_FAILED)?;
-                let rows = self.matching(db, &cond, &p);
+                let rows = self.matching(db, &cond, &p)?;
                 let vals: Vec<Field> = sets.iter().map(|(_, v)| val_field(v, &p)).collect();
                 // (a key changing moves rows: update by key values, last first)
                 let mut keys = Vec::new();
                 for r in &rows {
                     keys.push(db.tables[ti].rows[r[0]].v.clone());
                 }
+                let keyed = db.tables[ti].keys().next().is_some();
                 for k in keys {
-                    let Some(ri) = db.tables[ti].rows.iter().position(|r| r.v == k) else { continue };
+                    // (keys are unique and the rows sorted by them: a binary search finds the row)
+                    let found = if keyed { db.find_key(ti, &k).err().filter(|&i| db.tables[ti].rows[i].v == k) } else { None };
+                    let found = found.or_else(|| db.tables[ti].rows.iter().position(|r| r.v == k));
+                    let Some(ri) = found else { continue };
                     let mut ri = ri;
                     for (&(_, ci), f) in self.cols.iter().zip(&vals) {
                         let col = &db.tables[ti].cols[ci];
@@ -476,7 +699,7 @@ impl View {
                 }
             }
             Stmt::Delete { table, cond } => {
-                let rows = self.matching(db, &cond, &p);
+                let rows = self.matching(db, &cond, &p)?;
                 if let Some(ti) = db.table_index(&table) {
                     for r in rows.iter().rev() {
                         db.delete(ti, r[0]);
@@ -557,6 +780,9 @@ impl View {
             if r.iter().enumerate().any(|(s, &ri)| ri >= self.srcs[s].len(db)) {
                 continue;
             }
+            if self.cols.iter().any(|&(s, c)| c >= self.srcs[s].cols(db).len()) {
+                return Err(ERROR_FUNCTION_FAILED);
+            }
             let mut rec = Record::new(self.cols.len());
             for (k, &(s, c)) in self.cols.iter().enumerate() {
                 rec.f[k + 1] = self.srcs[s].field(db, r[s], c);
@@ -592,6 +818,9 @@ impl View {
         }
         if rec.count() < self.cols.len() {
             return Err(ERROR_INVALID_DATA);
+        }
+        if self.cols.iter().any(|&(_, c)| c >= db.tables[ti].cols.len()) {
+            return Err(ERROR_FUNCTION_FAILED);
         }
         let mut row = vec![Field::Null; db.tables[ti].cols.len()];
         for (k, &(_, c)) in self.cols.iter().enumerate() {
@@ -841,5 +1070,294 @@ mod tests {
         assert!(e.pool.find("temp").is_none());
         run(&mut db, "ALTER TABLE `T` FREE").unwrap();
         assert!(db.table("T").is_none());
+    }
+
+    /// A table of a view dropped or altered by another view before the first executes
+    /// (MsiDatabaseOpenView, then DROP TABLE through a second view) is ERROR_FUNCTION_FAILED
+    /// from MsiViewExecute / MsiViewGetColumnInfo / MsiViewFetch, not a panic (review b04).
+    #[test]
+    fn stale_views_fail() {
+        let mut db = Database::new();
+        run(&mut db, "CREATE TABLE `T` (`k` INT NOT NULL, `s` CHAR(0), `x` CHAR(0) PRIMARY KEY `k`)").unwrap();
+        run(&mut db, "INSERT INTO `T` (`k`, `s`, `x`) VALUES (1, 'a', 'b')").unwrap();
+        let mut sel = View::new(&db, "SELECT `k`, `x` FROM `T` WHERE `s` = 'a' ORDER BY `x`").unwrap();
+        let mut fetched = View::new(&db, "SELECT `x` FROM `T`").unwrap();
+        fetched.execute(&mut db, None).unwrap();
+        run(&mut db, "DROP TABLE `T`").unwrap();
+        assert_eq!(sel.columns(&db), Err(ERROR_FUNCTION_FAILED));
+        assert_eq!(sel.execute(&mut db, None), Err(ERROR_FUNCTION_FAILED));
+        // (the same name again, with fewer columns)
+        run(&mut db, "CREATE TABLE `T` (`k` INT NOT NULL PRIMARY KEY `k`)").unwrap();
+        run(&mut db, "INSERT INTO `T` (`k`) VALUES (1)").unwrap();
+        assert_eq!(sel.execute(&mut db, None), Err(ERROR_FUNCTION_FAILED));
+        assert_eq!(fetched.fetch(&db).err(), Some(ERROR_FUNCTION_FAILED));
+        let mut upd = View::new(&db, "UPDATE `T` SET `k` = 2 WHERE `k` = 1").unwrap();
+        run(&mut db, "DROP TABLE `T`").unwrap();
+        assert!(upd.execute(&mut db, None).is_err());
+    }
+
+    /// A File x Component x Directory style join of 20000 rows each: the equalities go
+    /// through hash indexes (the nested loop was 8e12 row combinations).
+    #[test]
+    fn large_equality_join() {
+        let mut db = Database::new();
+        run(&mut db, "CREATE TABLE `F` (`File` CHAR(72) NOT NULL, `Component_` CHAR(72) NOT NULL, `Size` LONG PRIMARY KEY `File`)").unwrap();
+        run(&mut db, "CREATE TABLE `C` (`Component` CHAR(72) NOT NULL, `Directory_` CHAR(72) NOT NULL PRIMARY KEY `Component`)").unwrap();
+        run(&mut db, "CREATE TABLE `D` (`Directory` CHAR(72) NOT NULL, `Seq` LONG PRIMARY KEY `Directory`)").unwrap();
+        let n = 20000;
+        let ins = |db: &mut Database, sql: &str, f: &[Field]| {
+            let mut v = View::new(db, sql).unwrap();
+            let mut r = Record::new(f.len());
+            for (i, x) in f.iter().enumerate() {
+                r.set(i + 1, x.clone()).unwrap();
+            }
+            v.execute(db, Some(&r)).unwrap();
+        };
+        for i in 0..n {
+            ins(&mut db, "INSERT INTO `F` (`File`, `Component_`, `Size`) VALUES (?, ?, ?)", &[Field::Str(format!("f{i}")), Field::Str(format!("c{}", i / 2)), Field::Int(i)]);
+            ins(&mut db, "INSERT INTO `C` (`Component`, `Directory_`) VALUES (?, ?)", &[Field::Str(format!("c{i}")), Field::Str(format!("d{}", i % 100))]);
+            ins(&mut db, "INSERT INTO `D` (`Directory`, `Seq`) VALUES (?, ?)", &[Field::Str(format!("d{i}")), Field::Int(i % 7)]);
+        }
+        let t = std::time::Instant::now();
+        let r = run(&mut db, "SELECT `File`, `Directory`, `Seq` FROM `F`, `C`, `D` WHERE `F`.`Component_` = `C`.`Component` AND `C`.`Directory_` = `D`.`Directory` AND `Size` >= 10 ORDER BY `Seq`").unwrap();
+        assert_eq!(r.len(), n as usize - 10);
+        assert!(r.windows(2).all(|w| w[0].get(3).int() <= w[1].get(3).int()));
+        assert!(t.elapsed().as_secs() < 30, "{:?}", t.elapsed());
+        // UPDATE over all rows by key (was a linear search per row)
+        run(&mut db, "UPDATE `F` SET `Size` = 0 WHERE `Size` > 0").unwrap();
+        assert_eq!(run(&mut db, "SELECT `File` FROM `F` WHERE `Size` = 0").unwrap().len(), n as usize);
+    }
+
+    mod model {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A value of one generated column: strings from a small set (with '' = NULL), or
+        /// integers (None = NULL).
+        #[derive(Clone, Debug)]
+        enum V {
+            S(&'static str),
+            N(Option<i32>),
+        }
+        const STRS: &[&str] = &["", "a", "b", "c", "ab"];
+
+        /// The columns of each table: 0 the key (a string), 1 a string, 2 an integer.
+        fn table() -> impl Strategy<Value = Vec<(u8, V, V)>> {
+            prop::collection::vec((0u8..12, prop::sample::select(STRS).prop_map(V::S), prop::option::of(-2i32..3).prop_map(V::N)), 0..7)
+        }
+
+        #[derive(Clone, Debug)]
+        enum E {
+            And(Box<E>, Box<E>),
+            Or(Box<E>, Box<E>),
+            /// (table, column, op, table, column)
+            ColCol(usize, usize, Op, usize, usize),
+            /// (table, column, op, the constant: an index into STRS or an integer)
+            ColVal(usize, usize, Op, i32),
+            IsNull(usize, usize, bool),
+        }
+
+        fn op(string: bool) -> BoxedStrategy<Op> {
+            if string {
+                prop::sample::select(vec![Op::Eq, Op::Ne]).boxed()
+            } else {
+                prop::sample::select(vec![Op::Eq, Op::Ne, Op::Lt, Op::Gt, Op::Le, Op::Ge]).boxed()
+            }
+        }
+
+        fn leaf(nt: usize) -> BoxedStrategy<E> {
+            let col = (0..nt, 0usize..3);
+            prop_oneof![
+                (col.clone(), 0..nt, any::<bool>()).prop_flat_map(|((t, c), u, x)| {
+                    // (columns of the same kind: 0 and 1 strings, 2 integers)
+                    let string = c < 2;
+                    let d = if string { if x { 0 } else { 1 } } else { 2 };
+                    op(string).prop_map(move |o| E::ColCol(t, c, o, u, d))
+                }),
+                (col.clone(), -2i32..5).prop_flat_map(|((t, c), v)| op(c < 2).prop_map(move |o| E::ColVal(t, c, o, if c < 2 { v.rem_euclid(STRS.len() as i32) } else { v }))),
+                (col, any::<bool>()).prop_map(|((t, c), n)| E::IsNull(t, c, n)),
+            ]
+            .boxed()
+        }
+
+        fn expr(nt: usize) -> impl Strategy<Value = E> {
+            leaf(nt).prop_recursive(3, 12, 2, |inner| prop_oneof![(inner.clone(), inner.clone()).prop_map(|(a, b)| E::And(Box::new(a), Box::new(b))), (inner.clone(), inner).prop_map(|(a, b)| E::Or(Box::new(a), Box::new(b)))])
+        }
+
+        const COLS: [&str; 3] = ["k", "s", "n"];
+        fn name(t: usize) -> String {
+            format!("T{t}")
+        }
+        fn opsql(o: Op) -> &'static str {
+            match o {
+                Op::Eq => "=",
+                Op::Ne => "<>",
+                Op::Lt => "<",
+                Op::Gt => ">",
+                Op::Le => "<=",
+                Op::Ge => ">=",
+            }
+        }
+        fn sql(e: &E) -> String {
+            match e {
+                E::And(a, b) => format!("({} AND {})", sql(a), sql(b)),
+                E::Or(a, b) => format!("({} OR {})", sql(a), sql(b)),
+                E::ColCol(t, c, o, u, d) => format!("`{}`.`{}` {} `{}`.`{}`", name(*t), COLS[*c], opsql(*o), name(*u), COLS[*d]),
+                E::ColVal(t, c, o, v) if *c < 2 => format!("`{}`.`{}` {} '{}'", name(*t), COLS[*c], opsql(*o), STRS[*v as usize]),
+                E::ColVal(t, c, o, v) => format!("`{}`.`{}` {} {}", name(*t), COLS[*c], opsql(*o), v),
+                E::IsNull(t, c, n) => format!("`{}`.`{}` IS {}NULL", name(*t), COLS[*c], if *n { "" } else { "NOT " }),
+            }
+        }
+
+        fn cmp_model(a: &V, o: Op, b: &V) -> bool {
+            match (a, b) {
+                (V::S(x), V::S(y)) => match o {
+                    Op::Eq => x == y,
+                    Op::Ne => x != y,
+                    _ => false,
+                },
+                (V::N(x), V::N(y)) => match (x, y) {
+                    (Some(x), Some(y)) => match o {
+                        Op::Eq => x == y,
+                        Op::Ne => x != y,
+                        Op::Lt => x < y,
+                        Op::Gt => x > y,
+                        Op::Le => x <= y,
+                        Op::Ge => x >= y,
+                    },
+                    (None, None) => matches!(o, Op::Eq | Op::Le | Op::Ge),
+                    _ => o == Op::Ne,
+                },
+                _ => unreachable!(),
+            }
+        }
+
+        fn eval_model(e: &E, row: &[(String, V, V)]) -> bool {
+            let get = |t: usize, c: usize| -> V {
+                let r = &row[t];
+                match c {
+                    0 => V::S(STRS.iter().copied().find(|s| *s == r.0).unwrap_or_else(|| Box::leak(r.0.clone().into_boxed_str()))),
+                    1 => r.1.clone(),
+                    _ => r.2.clone(),
+                }
+            };
+            match e {
+                E::And(a, b) => eval_model(a, row) && eval_model(b, row),
+                E::Or(a, b) => eval_model(a, row) || eval_model(b, row),
+                E::ColCol(t, c, o, u, d) => cmp_model(&get(*t, *c), *o, &get(*u, *d)),
+                E::ColVal(t, c, o, v) => cmp_model(&get(*t, *c), *o, &if *c < 2 { V::S(STRS[*v as usize]) } else { V::N(Some(*v)) }),
+                E::IsNull(t, c, n) => {
+                    let null = match get(*t, *c) {
+                        V::S(s) => s.is_empty(),
+                        V::N(x) => x.is_none(),
+                    };
+                    null == *n
+                }
+            }
+        }
+
+        fn show(v: &V) -> String {
+            match v {
+                V::S(s) => s.to_string(),
+                V::N(Some(i)) => i.to_string(),
+                V::N(None) => String::new(),
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(400))]
+            /// SELECT over 1-3 tables with any WHERE: the same rows as a model that tries every
+            /// combination of rows, and in the order of the nested loop over the tables in
+            /// FROM order (each table in key order); the hash-indexed join and the filtered
+            /// candidate lists may not drop, add or reorder a row.
+            #[test]
+            fn select_matches_the_model(tabs in prop::collection::vec(table(), 1..4).prop_flat_map(|t| { let n = t.len(); (Just(t), prop::option::of(expr(n))) })) {
+                let (tabs, cond) = tabs;
+                let mut db = Database::new();
+                let mut rows: Vec<Vec<(String, V, V)>> = Vec::new();
+                for (t, rs) in tabs.iter().enumerate() {
+                    run(&mut db, &format!("CREATE TABLE `{}` (`k` CHAR(8) NOT NULL, `s` CHAR(8), `n` INT PRIMARY KEY `k`)", name(t))).unwrap();
+                    let mut kept = Vec::new();
+                    for (k, s, n) in rs {
+                        let k = format!("k{k}");
+                        let (V::S(sv), V::N(nv)) = (s, n) else { unreachable!() };
+                        let nsql = nv.map_or("NULL".to_string(), |i| i.to_string());
+                        if run(&mut db, &format!("INSERT INTO `{}` (`k`, `s`, `n`) VALUES ('{k}', '{sv}', {nsql})", name(t))).is_ok() {
+                            kept.push((k, s.clone(), n.clone()));
+                        }
+                    }
+                    rows.push(kept);
+                }
+                // (each table's rows in the order the table keeps them: by key)
+                let order: Vec<Vec<usize>> = (0..tabs.len()).map(|t| {
+                    let tb = db.table(&name(t)).unwrap();
+                    tb.rows.iter().map(|r| rows[t].iter().position(|x| db.pool.get(r.v[0]) == Some(x.0.as_str())).unwrap()).collect()
+                }).collect();
+                let mut want = Vec::new();
+                let mut idx = vec![0usize; tabs.len()];
+                'all: loop {
+                    if order.iter().all(|o| !o.is_empty()) {
+                        let row: Vec<(String, V, V)> = (0..tabs.len()).map(|t| rows[t][order[t][idx[t]]].clone()).collect();
+                        if cond.as_ref().is_none_or(|e| eval_model(e, &row)) {
+                            want.push(row.iter().map(|r| format!("{}|{}|{}", r.0, show(&r.1), show(&r.2))).collect::<Vec<_>>().join("|"));
+                        }
+                    } else {
+                        break;
+                    }
+                    for t in (0..tabs.len()).rev() {
+                        idx[t] += 1;
+                        if idx[t] < order[t].len() {
+                            continue 'all;
+                        }
+                        idx[t] = 0;
+                    }
+                    break;
+                }
+                let from = (0..tabs.len()).map(|t| format!("`{}`", name(t))).collect::<Vec<_>>().join(", ");
+                let q = format!("SELECT * FROM {from}{}", cond.as_ref().map_or(String::new(), |e| format!(" WHERE {}", sql(e))));
+                let got = texts(&run(&mut db, &q).unwrap());
+                prop_assert_eq!(got, want, "{}", q);
+            }
+        }
+    }
+
+    /// A table or column named "" (SQL CREATE TABLE ``, or a damaged file's string id past
+    /// the pool) makes MsiDatabaseCommit fail, not panic (review b04).
+    #[test]
+    fn empty_names_do_not_save() {
+        let mut db = Database::new();
+        if run(&mut db, "CREATE TABLE `` (`k` INT NOT NULL PRIMARY KEY `k`)").is_ok() {
+            assert_eq!(db.to_bytes().err(), Some(ERROR_FUNCTION_FAILED));
+        }
+        let mut db = Database::new();
+        run(&mut db, "CREATE TABLE `T` (`k` INT NOT NULL PRIMARY KEY `k`)").unwrap();
+        db.tables[0].name.clear();
+        assert_eq!(db.to_bytes().err(), Some(ERROR_FUNCTION_FAILED));
+        let mut db = Database::new();
+        run(&mut db, "CREATE TABLE `T` (`k` INT NOT NULL PRIMARY KEY `k`)").unwrap();
+        db.tables[0].cols[0].name.clear();
+        assert_eq!(db.to_bytes().err(), Some(ERROR_FUNCTION_FAILED));
+    }
+
+    /// A file whose rows are not in key order (written by another tool): it opens with its
+    /// rows sorted, so keyed lookups, duplicate checks and UPDATE find them.
+    #[test]
+    fn unsorted_rows_are_sorted_on_open() {
+        let mut db = Database::new();
+        run(&mut db, "CREATE TABLE `T` (`k` INT NOT NULL, `s` CHAR(0) PRIMARY KEY `k`)").unwrap();
+        for i in 0..50 {
+            run(&mut db, &format!("INSERT INTO `T` (`k`, `s`) VALUES ({i}, 'v{i}')")).unwrap();
+        }
+        db.tables[0].rows.reverse();
+        let mut e = Database::open(Box::new(std::io::Cursor::new(db.to_bytes().unwrap()))).unwrap();
+        for i in 0..50 {
+            assert_eq!(run(&mut e, &format!("INSERT INTO `T` (`k`, `s`) VALUES ({i}, 'dup')")), Err(ERROR_FUNCTION_FAILED));
+        }
+        run(&mut e, "UPDATE `T` SET `s` = 'x' WHERE `k` >= 0").unwrap();
+        assert_eq!(texts(&run(&mut e, "SELECT `k` FROM `T` WHERE `s` = 'x'").unwrap()).len(), 50);
+        let mut v = View::new(&e, "SELECT `k`, `s` FROM `T`").unwrap();
+        v.execute(&mut e, None).unwrap();
+        let mut r = v.fetch(&e).unwrap();
+        v.modify(&mut e, MSIMODIFY_SEEK, &mut r).unwrap();
     }
 }

@@ -56,7 +56,7 @@ pub fn export(db: &mut Database, table: &str) -> R<(Vec<u8>, Vec<(String, Vec<u8
     }
     let mut v = View::new(db, &format!("SELECT * FROM `{table}`"))?;
     v.execute(db, None)?;
-    let cols = v.columns(db);
+    let cols = v.columns(db)?;
     let mut out = String::new();
     out.push_str(&cols.iter().map(|c| c.0.clone()).collect::<Vec<_>>().join("\t"));
     out.push_str("\r\n");

@@ -176,7 +176,15 @@ struct P {
     t: Vec<Tok>,
     i: usize,
     np: usize,
+    /// parentheses open around the current token, and the comparisons so far: the parser
+    /// and the views that run a WHERE recurse once per level / per AND or OR, so a query
+    /// past these limits is a syntax error rather than a host stack overflow
+    depth: usize,
+    terms: usize,
 }
+
+pub const MAX_DEPTH: usize = 64;
+pub const MAX_TERMS: usize = 1000;
 
 const KEYWORDS: &[&str] = &[
     "ADD", "ALTER", "AND", "BY", "CHAR", "CHARACTER", "CREATE", "DELETE", "DISTINCT", "DROP", "FREE", "FROM", "HOLD", "INSERT", "INT", "INTEGER", "INTO", "IS", "KEY", "LIKE",
@@ -298,9 +306,18 @@ impl P {
     }
     fn prim(&mut self) -> R<Expr> {
         if self.op("(") {
+            self.depth += 1;
+            if self.depth > MAX_DEPTH {
+                return Err(ERROR_BAD_QUERY_SYNTAX);
+            }
             let e = self.expr()?;
             self.need_op(")")?;
+            self.depth -= 1;
             return Ok(e);
+        }
+        self.terms += 1;
+        if self.terms > MAX_TERMS {
+            return Err(ERROR_BAD_QUERY_SYNTAX);
         }
         let a = self.operand()?;
         if self.kw("IS") {
@@ -474,7 +491,7 @@ impl P {
 
 pub fn parse(s: &str) -> R<Stmt> {
     let t = lex(s)?;
-    P { t, i: 0, np: 0 }.stmt()
+    P { t, i: 0, np: 0, depth: 0, terms: 0 }.stmt()
 }
 
 #[cfg(test)]
@@ -551,5 +568,21 @@ mod tests {
             let Stmt::Select { tables, .. } = s else { panic!() };
             prop_assert_eq!(tables, vec![t]);
         }
+    }
+
+    /// Parentheses past MAX_DEPTH and WHERE clauses past MAX_TERMS comparisons are syntax
+    /// errors, not a host stack overflow in the parser or in the view that evaluates them.
+    #[test]
+    fn deep_and_long_where() {
+        for n in [MAX_DEPTH + 1, 100_000] {
+            let q = format!("SELECT * FROM T WHERE {}a = 1{}", "(".repeat(n), ")".repeat(n));
+            assert_eq!(parse(&q), Err(ERROR_BAD_QUERY_SYNTAX));
+        }
+        let q = format!("SELECT * FROM T WHERE {}a = 1{}", "(".repeat(MAX_DEPTH), ")".repeat(MAX_DEPTH));
+        assert!(parse(&q).is_ok());
+        let terms = |n: usize| format!("SELECT * FROM T WHERE {}", vec!["a = 1"; n].join(" AND "));
+        assert!(parse(&terms(MAX_TERMS)).is_ok());
+        assert_eq!(parse(&terms(MAX_TERMS + 1)), Err(ERROR_BAD_QUERY_SYNTAX));
+        assert_eq!(parse(&terms(200_000)), Err(ERROR_BAD_QUERY_SYNTAX));
     }
 }

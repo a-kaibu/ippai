@@ -2,7 +2,7 @@
 
 use crate::*;
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Field {
     #[default]
     Null,
