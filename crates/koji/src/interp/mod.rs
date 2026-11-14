@@ -1585,7 +1585,10 @@ impl<'a, M: Memory> X<'a, M> {
         let repne = ins.has_repne_prefix();
         let src_seg = self.seg_base(); // DS:ESI may take a segment override (FS)
         let compare = matches!(mn, Cmpsb | Cmpsw | Cmpsd | Cmpsq | Scasb | Scasw | Scasd | Scasq);
-        if rep && !compare && self.bulk(mn, bits, step, src_seg) {
+        // (TF: a repeated string instruction traps after each iteration, EIP still at it while
+        // iterations remain, as the CPU does; single-stepping decryptors count these traps)
+        let stepping = self.cpu.eflags & crate::flags::TF != 0 && self.cpu.mode16 == 0;
+        if rep && !compare && !stepping && self.bulk(mn, bits, step, src_seg) {
             return self.done();
         }
         let (rc, rs, rd) = self.string_regs();
@@ -1642,6 +1645,12 @@ impl<'a, M: Memory> X<'a, M> {
                 if (rep && !zf) || (repne && zf) {
                     break;
                 }
+            }
+            if stepping {
+                if c != 0 {
+                    return Exit::Continue;
+                }
+                break;
             }
         }
         self.done()

@@ -710,6 +710,9 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
 /// A new thread's first steps: DllMain(THREAD_ATTACH), then `start(param)` set up to run.
 pub(crate) fn thread_start(t: &mut Thread, start: u32, param: u32) {
     let cpu = unsafe { &mut *t.cpu };
+    if !mem::x64() && !w16::on() {
+        seh::top_frame(t.teb);
+    }
     pe::thread_attach(cpu);
     if mem::x64() {
         return setup64(cpu, start, param);
@@ -943,6 +946,9 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     }
     fiber::thread_start(cur().teb);
     fiber::READY.store(true, Ordering::Release);
+    if !x64 {
+        seh::top_frame(cur().teb);
+    }
     pe::init_dlls(cpu);
     if x64 {
         start64(cpu, entry, peb);

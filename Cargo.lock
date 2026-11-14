@@ -2006,6 +2006,7 @@ dependencies = [
  "iced-x86",
  "libc",
  "libm",
+ "proptest",
 ]
 
 [[package]]

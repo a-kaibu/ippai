@@ -695,6 +695,8 @@ static TLS_NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::ne
 /// Where the exe's entry and threads return: a stub in kernel32's image that goes on to
 /// EXIT_TRAP (0 until kernel32 is made).
 static EXIT_THUNK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// (32-bit) the handler of a thread's last SEH frame, in ntdll as Windows' (see seh::top_frame)
+static TOP_HANDLER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The return address for a 32-bit entry point or thread start: inside kernel32's image, as on
 /// Windows (BaseThreadInitThunk).
@@ -705,6 +707,18 @@ pub fn exit_return() -> u32 {
     hle_module("kernel32.dll");
     match EXIT_THUNK.load(std::sync::atomic::Ordering::Relaxed) {
         0 => crate::api::EXIT_TRAP,
+        t => t,
+    }
+}
+
+/// (32-bit) The handler of the SEH frame every thread starts with (seh::top_frame): code in
+/// ntdll's image, `mov eax, 1 (ExceptionContinueSearch); ret`, so the dispatch goes on to the
+/// end of the chain and the unhandled-exception path (SetUnhandledExceptionFilter's filter,
+/// then the end of the process), as Windows' _except_handler4 in RtlUserThreadStart ends it.
+pub fn top_seh_handler() -> u32 {
+    hle_module("ntdll.dll");
+    match TOP_HANDLER.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => crate::seh::fallback_top_handler(),
         t => t,
     }
 }
@@ -800,6 +814,11 @@ pub fn hle_module(dll: &str) -> u32 {
         w32(base + 0x58 + 92, 16);
         if key == "kernel32" {
             EXIT_THUNK.store(base + thunks, std::sync::atomic::Ordering::Relaxed);
+        }
+        if key == "ntdll" {
+            // (after stub 0's 8 bytes: the last SEH frame's handler, top_seh_handler)
+            mem::write(base + thunks + 8, &[0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3, 0xcc, 0xcc]);
+            TOP_HANDLER.store(base + thunks + 8, std::sync::atomic::Ordering::Relaxed);
         }
     }
     mem::protect(base, size, 0x20);

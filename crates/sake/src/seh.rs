@@ -84,6 +84,32 @@ fn stub() -> u32 {
     })
 }
 
+/// The handler of the last frame where ntdll has none (top_seh_handler before ntdll's image):
+/// the same code in a stub page.
+pub fn fallback_top_handler() -> u32 {
+    static S: OnceLock<u32> = OnceLock::new();
+    *S.get_or_init(|| crate::api::stub(&[0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3]))
+}
+
+/// Where a thread's last SEH frame goes, for a stack whose top is `top`: 8 bytes below it, above
+/// the 16 the thread's ESP starts below (see enter)
+pub const fn top_frame_at(top: u32) -> u32 {
+    top - 8
+}
+
+/// (32-bit) A thread's first SEH frame, at the top of its stack: on Windows every thread starts
+/// in RtlUserThreadStart's __try, so the exe's entry (and a thread's start) finds fs:[0] pointing
+/// at a frame (Next -1, handler in ntdll) and not at -1. Packers rely on it: peC (Malie's
+/// malie.exe) installs its own frame, and its handler unlinks it with `pop fs:[0]` of the saved
+/// Next before returning ExceptionContinueExecution; with -1 there ExecuteHandler's
+/// `mov esp, fs:[0]` took ESP to -1 (#167).
+pub fn top_frame(teb: u32) {
+    let f = top_frame_at(r32(teb + 4));
+    w32(f, 0xffff_ffff);
+    w32(f + 4, crate::pe::top_seh_handler());
+    w32(teb, f);
+}
+
 pub fn save_context(cpu: &mut Cpu, ctx: u32) {
     crate::mem::fill(ctx, CONTEXT_SIZE, 0);
     w32(ctx, 0x1003f);
@@ -452,4 +478,31 @@ pub fn except_handler3(c: &mut Ctx) -> u32 {
 }
 pub fn except_handler4(c: &mut Ctx) -> u32 {
     except_handler(c, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A thread's chain starts at a frame at the top of its stack (Next -1, a handler in
+    /// ntdll's image that continues the search), not at -1 (#167; winref sehtop)
+    #[test]
+    fn threads_start_with_a_last_frame() {
+        let _g = crate::test_guest::enter();
+        crate::test_guest::guest_thread();
+        let teb = crate::cur().teb;
+        let (base, limit) = (r32(teb + 4), r32(teb + 8));
+        top_frame(teb);
+        let f = r32(teb);
+        assert_ne!(f, 0xffff_ffff);
+        assert!(f >= limit && f + 8 <= base, "inside the stack");
+        assert!(f >= base - 16, "above the thread's starting ESP (top - 16)");
+        assert_eq!(r32(f), 0xffff_ffff, "Next: the end of the chain");
+        let h = r32(f + 4);
+        let ntdll = crate::pe::hle_module("ntdll.dll");
+        let size = crate::pe::with(ntdll, |m| m.size).unwrap();
+        assert!(h >= ntdll && h < ntdll + size, "handler {h:#x} in ntdll {ntdll:#x}");
+        // mov eax, 1 (ExceptionContinueSearch); ret
+        assert_eq!(crate::mem::slice(h, 6), &[0xb8, 1, 0, 0, 0, 0xc3]);
+    }
 }
