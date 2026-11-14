@@ -9,7 +9,7 @@
 //   "click:x,y wait:3 key:Return wait:5" (move:x,y: the mouse only) ; default: nothing (story clicks start right away)
 // env: PRE=x,y / PRE_KEYS=0 (see below), TITLE_STILL=2 (seconds the title holds still), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title),
 // TITLE_AT=s (the title from then on even with few colours: 操心術外伝's dark menu on black), STORY_AT=x,y (story clicks,
-// default centre of the bottom fifth), CHROME_ARGS, PLAYWRIGHT
+// default centre of the bottom fifth), IDLE=s (that long more without a click: idleCores, a still screen's CPU), CHROME_ARGS, PLAYWRIGHT
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
@@ -260,6 +260,15 @@ for (let s = 0; s < STORY && !crashed; s += 2) {
 const f1 = await frame(false);
 res.storyCores = f1 && !f1.err ? (f1.busy - b0) / 1000 / (now() - s0) : null;
 res.storyFrames = hashes.size;
+// (IDLE seconds more without a click: the program's CPU on a still screen, a line waiting for
+// its click; #121)
+const IDLE = Number(process.env.IDLE ?? 0);
+if (IDLE > 0 && !crashed && f1 && !f1.err) {
+  const t0 = now();
+  await sleep(IDLE);
+  const f2 = await frame(false);
+  res.idleCores = f2 && !f2.err ? (f2.busy - f1.busy) / 1000 / (now() - t0) : null;
+}
 // the story screens left the title (the steps started the game)
 res.leftTitle = [...hashes].some((h) => h !== res.titleHash);
 res.crashed = crashed;

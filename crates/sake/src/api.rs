@@ -399,8 +399,10 @@ pub fn trace() -> u32 {
     *T.get_or_init(|| std::env::var("SAKE_TRACE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))
 }
 
-/// Counting API calls by name (SAKE_API_STATS=<seconds>).
+/// Counting API calls by name (SAKE_API_STATS=<seconds>), and the time spent in them (µs: a
+/// call that waits, WaitMessage or WaitForSingleObject, counts its wait too)
 static COUNTS: Mutex<Option<HashMap<u32, u64>>> = Mutex::new(None);
+static TIMES: Mutex<Option<HashMap<u32, u64>>> = Mutex::new(None);
 
 fn stats_on() -> bool {
     static T: OnceLock<bool> = OnceLock::new();
@@ -414,6 +416,12 @@ fn stats_on() -> bool {
             let total: u64 = v.iter().map(|x| x.1).sum();
             let top: Vec<String> = v.iter().take(40).map(|(i, n)| format!("{}={n}", name_of(TRAP_LO + 4 * i).unwrap_or_default())).collect();
             eprintln!("sake api {total} calls/{s}s: {}", top.join(" "));
+            let m = TIMES.lock().unwrap().take().unwrap_or_default();
+            let mut v: Vec<(u32, u64)> = m.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1));
+            let total: u64 = v.iter().map(|x| x.1).sum();
+            let top: Vec<String> = v.iter().take(40).map(|(i, us)| format!("{}={}ms", name_of(TRAP_LO + 4 * i).unwrap_or_default(), us / 1000)).collect();
+            eprintln!("sake api time {}ms/{s}s: {}", total / 1000, top.join(" "));
         });
         true
     })
@@ -545,6 +553,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     me.api = (esp, if crate::mem::x64() { 8 } else { 4 + if cdecl { 0 } else { bytes } });
     let this = (this_arg && !crate::mem::x64()).then(|| cpu.regs[koji::ECX]);
     let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr, this };
+    let t0 = stats_on().then(std::time::Instant::now);
     let r = match f {
         Some(f) => f(&mut c),
         None => {
@@ -560,6 +569,9 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
             r
         }
     };
+    if let Some(t0) = t0 {
+        *TIMES.lock().unwrap().get_or_insert_with(HashMap::default).entry(i).or_default() += t0.elapsed().as_micros() as u64;
+    }
     if top {
         crate::snap::api_leave();
     }

@@ -1509,6 +1509,45 @@ struct TexCopy<'a> {
     mask: u32,
 }
 
+/// The pixels of row `py` within [lo, hi] that pass every edge's test (`Raster::tri`'s: e >= 0,
+/// e == 0 only on a top or left edge), as one run; each edge's pass set along the row is a prefix
+/// or a suffix (e is monotonic in x), found by bisection.
+fn row_run(es: &[(f32, f32, f32, f32, bool); 3], py: f32, lo: i32, hi: i32) -> Option<(i32, i32)> {
+    let pass = |&(dx, dy, ox, oy, tl): &(f32, f32, f32, f32, bool), x: i32| {
+        let e = dx * (py - oy) - dy * (x as f32 - ox);
+        !(e < 0. || (e == 0. && !tl))
+    };
+    let (mut a, mut b) = (lo, hi);
+    for e in es {
+        if a > b {
+            return None;
+        }
+        match (pass(e, a), pass(e, b)) {
+            (true, true) => {}
+            (false, false) => return None,
+            // a prefix: the last x that passes
+            (true, false) => {
+                let (mut l, mut r) = (a, b);
+                while r - l > 1 {
+                    let m = l + (r - l) / 2;
+                    if pass(e, m) { l = m } else { r = m }
+                }
+                b = l;
+            }
+            // a suffix: the first x that passes
+            (false, true) => {
+                let (mut l, mut r) = (a, b);
+                while r - l > 1 {
+                    let m = l + (r - l) / 2;
+                    if pass(e, m) { r = m } else { l = m }
+                }
+                a = r;
+            }
+        }
+    }
+    (a <= b).then_some((a, b))
+}
+
 struct Raster {
     rt: *mut u8,
     pitch: usize,
@@ -1883,6 +1922,43 @@ impl Raster {
         let nt = self.ntc;
         let vs = [va, vb, vc];
         if let Some(cp) = self.copy_plan([(a, va), (b, vb), (c, vc)], [minx, miny, maxx, maxy]) {
+            // (#121) Each edge's test is monotonic in x along a row (the float operations are),
+            // so the pixels a row covers are one run: its ends found by bisection per edge, then
+            // the texels copied without a test each (KiriKiri 2 presents its whole screen so,
+            // every frame its click glyph turns). Not with any coordinate not finite (NaN passes
+            // the test).
+            if es.iter().all(|e| e.0.is_finite() && e.1.is_finite() && e.2.is_finite() && e.3.is_finite()) {
+                let four = self.bpp == 4 && cp.same;
+                let full = four && cp.mask == u32::MAX;
+                for y in miny..=maxy {
+                    let py = y as f32;
+                    let Some((x0, x1)) = row_run(&es, py, minx, maxx) else { continue };
+                    let row = unsafe { self.rt.add(y as usize * self.pitch) };
+                    if full {
+                        let src = unsafe { cp.tex.bits.add((y + cp.dy) as usize * cp.tex.pitch + (x0 + cp.dx) as usize * 4) };
+                        unsafe { std::ptr::copy_nonoverlapping(src, row.add(x0 as usize * 4), (x1 - x0 + 1) as usize * 4) };
+                        continue;
+                    }
+                    if four {
+                        // (an X8R8G8B8 target: the texels but the X byte)
+                        let src = unsafe { cp.tex.bits.add((y + cp.dy) as usize * cp.tex.pitch + (x0 + cp.dx) as usize * 4) };
+                        let dst = unsafe { row.add(x0 as usize * 4) };
+                        for k in 0..(x1 - x0 + 1) as usize {
+                            unsafe {
+                                let v = (src.add(4 * k) as *const u32).read_unaligned();
+                                (dst.add(4 * k) as *mut u32).write_unaligned(v & cp.mask);
+                            }
+                        }
+                        continue;
+                    }
+                    for x in x0..=x1 {
+                        let v = cp.tex.raw(x + cp.dx, y + cp.dy);
+                        let v = if cp.same { v & cp.mask } else { self.fmt.pack(cp.tex.fmt.unpack(v)) };
+                        write_px(unsafe { row.add(x as usize * self.bpp) }, self.bpp as u32, v);
+                    }
+                }
+                return;
+            }
             for y in miny..=maxy {
                 let py = y as f32;
                 let row = unsafe { self.rt.add(y as usize * self.pitch) };
@@ -3791,6 +3867,54 @@ mod tests {
             let mut rt_a = Pic::new(ARGB, 32, 32, 5);
             let r = raster(&mut rt_a, &tex, &Setup { aop: 1, ..KIRIKIRI }, true);
             assert!(!plan(&r, &aligned(&tex, 4, 4, 20, 20, 2, 3, 0., [1.; 4], [1.; 4]), [4, 4, 19, 19]));
+        }
+
+        mod run_props {
+            use super::*;
+            use proptest::prelude::*;
+
+            fn coord() -> impl Strategy<Value = f32> {
+                prop_oneof![
+                    3 => (-8i32..72).prop_map(|v| v as f32),
+                    2 => (-16i32..144).prop_map(|v| v as f32 * 0.5),
+                    2 => -8f32..72.,
+                    1 => (-8i32..72).prop_map(|v| v as f32 - 0.5 + 1. / 4096.),
+                    1 => prop_oneof![Just(1e30f32), Just(-1e30f32), Just(1e-30f32)],
+                ]
+            }
+
+            proptest! {
+                #![proptest_config(ProptestConfig::with_cases(4096))]
+                /// (#121) The run `row_run` gives for each row is exactly the pixels the
+                /// per-pixel test passes (`Raster::tri`'s edges, either winding's ties), over
+                /// triangles of any shape, half-pixel and off-screen corners, slivers and huge
+                /// coordinates.
+                #[test]
+                fn row_runs_are_the_pixels_inside(p in proptest::array::uniform6(coord()), lo in -4i32..32, w in 0i32..48) {
+                    let (a, b, c) = ([p[0], p[1]], [p[2], p[3]], [p[4], p[5]]);
+                    let area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+                    let (b, c) = if area < 0. { (c, b) } else { (b, c) };
+                    let edge = |p: [f32; 2], q: [f32; 2]| {
+                        let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+                        (dx, dy, p[0], p[1], (dy == 0. && dx > 0.) || dy < 0.)
+                    };
+                    let es = [edge(b, c), edge(c, a), edge(a, b)];
+                    prop_assume!(es.iter().all(|e| e.0.is_finite() && e.1.is_finite()));
+                    let hi = lo + w;
+                    for y in -4..40 {
+                        let py = y as f32;
+                        let inside: Vec<i32> = (lo..=hi).filter(|&x| es.iter().all(|&(dx, dy, ox, oy, tl)| {
+                            let e = dx * (py - oy) - dy * (x as f32 - ox);
+                            !(e < 0. || (e == 0. && !tl))
+                        })).collect();
+                        let want = inside.first().map(|&f| (f, *inside.last().unwrap()));
+                        if let Some((f, l)) = want {
+                            prop_assert_eq!(inside.len() as i32, l - f + 1, "row {}: not one run", y);
+                        }
+                        prop_assert_eq!(row_run(&es, py, lo, hi), want, "row {}", y);
+                    }
+                }
+            }
         }
 
         mod copy_props {
