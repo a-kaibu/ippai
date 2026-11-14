@@ -1,7 +1,7 @@
 # wingfx
 
-Conformance tests for the Windows graphics APIs: GDI, Direct3D 9 and 11 first, then the rest
-(GDI+, DirectDraw, Direct2D, DirectWrite; Direct3D 8 and WIC are in). Written to check any
+Conformance tests for the Windows graphics APIs: GDI, Direct3D 8, 9 and 11, WIC so far, then
+the rest (DirectDraw, GDI+, Direct2D, DirectWrite). Written to check any
 implementation of them (Wine, an emulator, a translation layer) against real Windows, and to
 be usable without a Windows machine.
 
