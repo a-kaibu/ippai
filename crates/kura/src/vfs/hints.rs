@@ -62,6 +62,66 @@ pub fn kind(name: &str) -> Kind {
     }
 }
 
+/// What of each file a game's start reads, whatever it goes on to, hinted at its first read
+/// that waits (vfs.rs `hint`): replayed against worker2's read-order lists (hints_eval.rs,
+/// 2026-11-14), 74% of what still waited with the other hints was this, and hinting it took the
+/// KiriKiri misses from 54% to 12% with less fetched for nothing (an archive's first chunk read
+/// no longer hints the chunks after it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Boot {
+    No,
+    /// An archive's first and last chunks: KiriKiri opens each at its start (the header, then
+    /// the index at its end); others read their index from either end.
+    Ends,
+    /// A small file the program reads as it starts: plugins, fonts, settings.
+    Whole,
+}
+
+/// Start files bigger than this are not hinted whole; all the start's hints at most.
+pub const BOOT_MAX: u64 = 8 << 20;
+pub const BOOT_BYTES: u64 = 96 << 20;
+
+pub fn boot(name: &str, size: u64) -> Boot {
+    let e = ext(name);
+    let start = matches!(e.as_str(), "dll" | "sig" | "ttf" | "otf" | "ttc" | "ico" | "cf" | "cfu" | "ksd" | "ini" | "tcr" | "cgm") || name.to_ascii_lowercase().starts_with("gameexe.");
+    if start {
+        return if size <= BOOT_MAX && size > 0 { Boot::Whole } else { Boot::No };
+    }
+    // (Siglus' voices: hundreds of .ovk, one opened per line)
+    if kind(name) == Kind::Archive && e != "ovk" && size > 0 {
+        return Boot::Ends;
+    }
+    Boot::No
+}
+
+/// The start's hints over `files` (name, size, chunk sizes): (file, chunk) in the order to fetch
+/// them, the small start files before the archives' ends, BOOT_BYTES at most.
+pub fn boot_chunks<'a>(files: impl Iterator<Item = (&'a str, u64, Vec<u64>)>) -> Vec<(usize, usize)> {
+    let (mut whole, mut ends) = (Vec::new(), Vec::new());
+    for (i, (name, size, chunks)) in files.enumerate() {
+        match boot(name, size) {
+            Boot::Whole => whole.extend((0..chunks.len()).map(|c| ((i, c), chunks[c]))),
+            Boot::Ends if !chunks.is_empty() => {
+                ends.push(((i, 0), chunks[0]));
+                if chunks.len() > 1 {
+                    ends.push(((i, chunks.len() - 1), chunks[chunks.len() - 1]));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    let mut bytes = 0u64;
+    for (k, n) in whole.into_iter().chain(ends) {
+        if bytes + n > BOOT_BYTES {
+            break;
+        }
+        bytes += n;
+        out.push(k);
+    }
+    out
+}
+
 /// How far ahead a read of `name` reaches: by its kind, and per engine by its extension.
 pub fn policy(name: &str) -> Policy {
     let p = |siblings, chunks| Policy { siblings, chunks };
@@ -169,6 +229,24 @@ mod tests {
         // (no extension, a dot file)
         assert_eq!(kind("README"), Kind::Other);
         assert_eq!(kind(".ogg"), Kind::Other);
+    }
+
+    /// The start's hints: plugins, fonts, settings whole first, then each archive's ends (not
+    /// Siglus' voices), at most BOOT_BYTES.
+    #[test]
+    fn what_a_start_reads() {
+        assert_eq!(boot("plugin/wuvorbis.dll", 200), Boot::Whole);
+        assert_eq!(boot("Gameexe.dat", 16000), Boot::Whole);
+        assert_eq!(boot("startup.dll", BOOT_MAX + 1), Boot::No);
+        assert_eq!(boot("data.xp3", 1 << 30), Boot::Ends);
+        assert_eq!(boot("koe/z0001.ovk", 1 << 20), Boot::No);
+        assert_eq!(boot("voice/v001.ogg", 100), Boot::No);
+        assert_eq!(boot("game.exe", 100), Boot::No);
+        let files = vec![("data.xp3", 30, vec![10, 10, 10]), ("bgm.xp3", 5, vec![5]), ("v.ogg", 1, vec![1]), ("plugin/a.dll", 4, vec![2, 2])];
+        assert_eq!(boot_chunks(files.into_iter()), vec![(3, 0), (3, 1), (0, 0), (0, 2), (1, 0)]);
+        // (no more than BOOT_BYTES)
+        let big = (0..100).map(|_| ("x.pac", 8 << 20, vec![4 << 20, 4 << 20]));
+        assert_eq!(boot_chunks(big).len() as u64, BOOT_BYTES / (4 << 20));
     }
 
     #[test]

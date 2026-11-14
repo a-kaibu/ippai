@@ -1454,9 +1454,44 @@ fn hinted(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) 
     out
 }
 
-/// Tells the page what a read of chunk `i` of `ino` says the game reads soon (`hinted`).
+/// Tells the page what a read of chunk `i` of `ino` says the game reads soon (`hinted`); the
+/// first such read, also what every start reads (`booted`).
 fn hint(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) {
+    if !BOOTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let skip = chunks.get(i).copied().flatten();
+        send_hint(&booted().into_iter().filter(|h| Some(*h) != skip).collect::<Vec<_>>(), "boot");
+    }
     send_hint(&hinted(ino, l, chunks, i, first), "layout");
+}
+
+/// Whether the start's hints went (the first read that waited).
+static BOOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The chunks of the store's files every start of a game reads (hints::boot_chunks), not those
+/// on the device.
+fn booted() -> Vec<Hash> {
+    let files: Vec<(String, u64, std::sync::Arc<Vec<Option<Hash>>>, Vec<u64>)> = with(|fs| {
+        let mut v = Vec::new();
+        for n in fs.nodes.iter().flatten() {
+            if let Data::Dir(ch) = &n.data {
+                for (nm, &f) in ch {
+                    if let Some(Data::File(Content::Lower { size, chunks, starts })) = fs.node(f).map(|x| &x.data) {
+                        let l = Layout { size: *size, starts: starts.clone() };
+                        let sizes = (0..chunks.len()).map(|c| l.span(c).1).collect();
+                        v.push((nm.clone(), *size, chunks.clone(), sizes));
+                    }
+                }
+            }
+        }
+        v
+    });
+    let picks = hints::boot_chunks(files.iter().map(|f| (f.0.as_str(), f.1, f.3.clone())));
+    let mut out: Vec<Hash> = picks.into_iter().filter_map(|(f, c)| files[f].2.get(c).copied().flatten()).collect();
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|h| seen.insert(*h));
+    let g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    out.retain(|h| g.as_ref().is_none_or(|c| !c.contains(&(*h, 0))));
+    out
 }
 
 /// Tells the page the chunks `hs`, to fetch onto the device (host/fetch-bridge.js masuHint);
@@ -3119,6 +3154,7 @@ pub(crate) mod tests {
         *HINTED.lock().unwrap() = None;
         *LAST_END.lock().unwrap() = None;
         HINTS.lock().unwrap().clear();
+        BOOTED.store(true, std::sync::atomic::Ordering::Relaxed);
         let name = |i: u32| format!("chunks/{}/{}", &h(i)[..2], h(i));
         let read = |p: &str, off: u64| {
             let At::Ours(Ok(fd)) = open_handle(p, libc::O_RDONLY, 0) else { panic!("open {p}") };
@@ -3137,6 +3173,57 @@ pub(crate) mod tests {
         assert!(read("/data.xp3", 48 * 7).is_empty());
         // (a movie: nothing)
         assert!(read("/movie/op.mpg", 0).is_empty());
+    }
+
+    /// The first read that waits also hints what every start reads: plugins whole, each
+    /// archive's first and last chunks (not the chunk read, nor what the device has); once.
+    #[test]
+    fn a_start_hints_what_starts_read() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = |i: u32| format!("{:032x}", 0xb007_0000u128 + i as u128);
+        let mut tsv = String::from("vnvm-tree\t2\t64\nd\t755\t0\tplugin\n");
+        let mut m = HashMap::new();
+        let mut file = |tsv: &mut String, path: &str, ids: std::ops::Range<u32>| {
+            let list: Vec<String> = ids.clone().map(|i| format!("{}:48", h(i))).collect();
+            *tsv += &format!("f\t644\t0\t{path}\t{}\t{}\n", 48 * ids.len(), list.join(","));
+            for i in ids {
+                m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), vec![i as u8; 48]);
+            }
+        };
+        file(&mut tsv, "game.exe", 1..3);
+        file(&mut tsv, "plugin/a.dll", 10..12);
+        file(&mut tsv, "data.xp3", 100..110);
+        file(&mut tsv, "voice.xp3", 200..205);
+        file(&mut tsv, "v001.ogg", 300..301);
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.mounts.push(("/".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *HINTED.lock().unwrap() = None;
+        *LAST_END.lock().unwrap() = None;
+        HINTS.lock().unwrap().clear();
+        BOOTED.store(false, std::sync::atomic::Ordering::Relaxed);
+        let name = |i: u32| format!("chunks/{}/{}", &h(i)[..2], h(i));
+        let read = |p: &str, off: u64| {
+            let At::Ours(Ok(fd)) = open_handle(p, libc::O_RDONLY, 0) else { panic!("open {p}") };
+            let ino = handle(fd).unwrap().0;
+            let mut b = [0u8; 8];
+            assert_eq!(read_at(ino, &mut b, off), Ok(8));
+            release(fd);
+            std::mem::take(&mut *HINTS.lock().unwrap())
+        };
+        let got = read("/game.exe", 0);
+        let boot: Vec<String> = [10, 11, 100, 109, 200, 204].into_iter().map(name).collect();
+        assert_eq!(&got[..boot.len()], &boot[..], "{got:?}");
+        assert!(!got.contains(&name(1)) && !got.contains(&name(300)));
+        // (once)
+        let again = read("/v001.ogg", 0);
+        assert!(!again.iter().any(|n| boot.contains(n)), "{again:?}");
+        *CACHE.lock().unwrap() = None;
+        *FS.lock().unwrap() = None;
     }
 
     /// A script the game reads names what comes next: a KiriKiri scenario inside an .xp3 (zlib'd,
