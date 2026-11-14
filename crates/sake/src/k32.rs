@@ -74,11 +74,15 @@ pub fn ret_str(dst: u32, cap: u32, s: &str, wide: bool) -> u32 {
 /// Nanoseconds since the first call, by the wall clock: in the browser every worker has its own
 /// performance.now() (Instant), so a time taken on one thread (an input message's) and compared
 /// on another (GetTickCount) would disagree by seconds; Date.now() is shared.
+/// It never goes back: a wall clock set back (NTP, the user) holds it where it was until the
+/// clock catches up, rather than making GetTickCount / QueryPerformanceCounter go backwards.
 pub fn clock_ns() -> u64 {
     static START: OnceLock<u128> = OnceLock::new();
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let t0 = *START.get_or_init(now);
-    now().saturating_sub(t0) as u64
+    let t = now().saturating_sub(t0) as u64;
+    LAST.fetch_max(t, Ordering::Relaxed).max(t)
 }
 
 /// RDTSC's counter (koji::set_tsc_source): 2 GHz from the wall clock, since the same "boot"
@@ -421,6 +425,13 @@ pub fn exit_thread(code: u32) -> ! {
     }
     crate::dbg::thread_exiting(code);
     crate::dbg::thread_port_closes();
+    // (what was kept for it by handle or id: nobody asks an ended thread)
+    if let Some(m) = PRIORITY.lock().unwrap().as_mut() {
+        m.remove(&crate::cur().obj);
+    }
+    if let Some((_, m)) = BOOST_OFF.lock().unwrap().as_mut() {
+        m.remove(&crate::cur().tid);
+    }
     kura::snap::unregister();
     crate::fiber::thread_exit(None);
     let t = crate::cur();
@@ -627,13 +638,16 @@ pub(crate) fn query_system_processes(c: &mut Ctx) -> u32 {
     let ps = mem::ps();
     let x64 = mem::x64();
     let [_, avail, commit, limit, peak, paged, nonpaged] = perf_pages();
+    // (one look at the threads, for the size and the records: a thread made in between wrote
+    // past what was checked)
+    let (tids, handles) = counts();
+    let tids = if tids.is_empty() { vec![crate::cur().tid] } else { tids };
+    let name: Vec<u16> = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default().encode_utf16().collect();
     let (need, exact) = match class {
         2 => (312, false),
         5 => {
-            let (tids, _) = counts();
-            let name = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default();
             let (fixed, ti) = if x64 { (0x100, 0x50) } else { (0xb8, 0x40) };
-            (fixed + ti * tids.len().max(1) as u32 + 2 * (name.encode_utf16().count() as u32 + 1), false)
+            (fixed + ti * tids.len() as u32 + 2 * (name.len() as u32 + 1), false)
         }
         _ => return 0xc000_0003,
     };
@@ -643,6 +657,9 @@ pub(crate) fn query_system_processes(c: &mut Ctx) -> u32 {
     if (exact && len != need) || len < need {
         return 0xc000_0004; // STATUS_INFO_LENGTH_MISMATCH
     }
+    if mem::accessible(p, need, true, false) < need {
+        return 0xc000_0005;
+    }
     mem::fill(p, need, 0);
     match class {
         2 => {
@@ -651,9 +668,6 @@ pub(crate) fn query_system_processes(c: &mut Ctx) -> u32 {
             }
         }
         _ => {
-            let (tids, handles) = counts();
-            let tids = if tids.is_empty() { vec![crate::cur().tid] } else { tids };
-            let name: Vec<u16> = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default().encode_utf16().collect();
             let (fixed, ti) = if x64 { (0x100, 0x50) } else { (0xb8, 0x40) };
             w32(p + 4, tids.len() as u32);
             let s = p + fixed + ti * tids.len() as u32;
@@ -4139,7 +4153,7 @@ fn GetSystemInfo(c: &mut Ctx) -> u32 {
         w32(p + 4, 0x1000);
         mem::w64(p + 8, 0x10000);
         mem::w64(p + 16, 0x7fff_fffe_ffff);
-        mem::w64(p + 24, ((1u64 << ncpu()) - 1) as u64);
+        mem::w64(p + 24, cpu_mask64());
         w32(p + 32, ncpu());
         w32(p + 36, 8664);
         w32(p + 40, 0x10000);
@@ -4151,7 +4165,7 @@ fn GetSystemInfo(c: &mut Ctx) -> u32 {
     w32(p + 4, 0x1000);
     w32(p + 8, 0x10000);
     w32(p + 12, 0x7ffe_ffff);
-    w32(p + 16, (1u32 << ncpu()) - 1);
+    w32(p + 16, cpu_mask());
     w32(p + 20, ncpu());
     w32(p + 24, 586);
     w32(p + 28, 0x10000);
@@ -4162,7 +4176,11 @@ fn GetSystemInfo(c: &mut Ctx) -> u32 {
 // CPU topology: one group, one package, one NUMA node, one core per processor (the MSVC
 // concurrency runtime asks before it starts; without it the game throws at startup)
 pub(crate) fn cpu_mask() -> u32 {
-    (1u32 << ncpu()) - 1
+    cpu_mask64() as u32
+}
+/// One bit per processor (SAKE_NCPU takes up to 64: a shift by 32 or 64 overflowed)
+fn cpu_mask64() -> u64 {
+    u64::MAX >> (64 - ncpu().clamp(1, 64))
 }
 fn group_affinity(p: u32, mask: u32) {
     mem::fill(p, 12, 0);
@@ -5344,6 +5362,27 @@ fn IsDBCSLeadByteEx(c: &mut Ctx) -> u32 {
     ok(crate::text::is_lead_cp(c.a(0), c.a(1) as u8))
 }
 
+/// The `n` guest bytes at `p` (a string a caller sized), or None (ERROR_NOACCESS set) where they
+/// are not all readable: a garbage length failed the call, not the whole program
+fn guest_bytes(p: u32, n: u32) -> Option<Vec<u8>> {
+    if mem::accessible(p, n, false, false) < n {
+        last_error(998);
+        return None;
+    }
+    Some(mem::slice(p, n).to_vec())
+}
+/// The `n` UTF-16 units at `p`, as guest_bytes
+fn guest_units(p: u32, n: u32) -> Option<Vec<u16>> {
+    let Some(bytes) = n.checked_mul(2) else {
+        last_error(998);
+        return None;
+    };
+    if mem::accessible(p, bytes, false, false) < bytes {
+        last_error(998);
+        return None;
+    }
+    Some(mem::slice(p, bytes).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect())
+}
 fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
     let (cp, flags, src, n, dst, cap) = (c.a(0), c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
     // (Windows: any negative length means NUL-terminated; no output buffer with a size is
@@ -5352,7 +5391,14 @@ fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    let s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
+    let s = if n < 0 {
+        let mut v = cstr(src);
+        v.push(0);
+        v
+    } else {
+        let Some(v) = guest_bytes(src, n as u32) else { return 0 };
+        v
+    };
     let (w, bad) = crate::text::mb2w_checked(cp, &s);
     // MB_ERR_INVALID_CHARS: bytes that are no character (a lone lead byte) fail with
     // ERROR_NO_UNICODE_TRANSLATION (mingw's btowc relies on it, winref crt_io)
@@ -5395,7 +5441,8 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
         v.push(0);
         v
     } else {
-        (0..n as u32).map(|i| r16(src + 2 * i)).collect()
+        let Some(v) = guest_units(src, n as u32) else { return 0 };
+        v
     };
     // (lpDefaultChar / lpUsedDefaultChar with UTF-7/8: documented as ERROR_INVALID_PARAMETER,
     // but Windows Server 2025 converts and leaves the flag alone, winref crt_io)
@@ -5538,7 +5585,12 @@ fn string_type(ty: u32, w: &[u16], out: u32) {
 }
 fn GetStringTypeA(c: &mut Ctx) -> u32 {
     let (ty, src, n, out) = (c.a(1), c.a(2), c.i(3), c.a(4));
-    let s = if n < 0 { cstr(src) } else { mem::slice(src, n as u32).to_vec() };
+    let s = if n < 0 {
+        cstr(src)
+    } else {
+        let Some(v) = guest_bytes(src, n as u32) else { return 0 };
+        v
+    };
     // one result per byte
     let mut w = Vec::new();
     let mut i = 0;
@@ -5587,7 +5639,14 @@ fn lcmap(w: &[u16], flags: u32) -> Vec<u16> {
 /// LCMapStringA: through Unicode in the ANSI code page (CharUpperA's rules for case)
 fn LCMapStringA(c: &mut Ctx) -> u32 {
     let (flags, src, n, dst, cap) = (c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
-    let mut s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
+    let mut s = if n < 0 {
+        let mut v = cstr(src);
+        v.push(0);
+        v
+    } else {
+        let Some(v) = guest_bytes(src, n as u32) else { return 0 };
+        v
+    };
     if flags & 0xf00000 != 0 {
         s = crate::text::w2a(&lcmap(&a2w(&s), flags));
     } else if flags & 0x300 != 0 {
@@ -5602,7 +5661,14 @@ fn LCMapStringA(c: &mut Ctx) -> u32 {
 }
 pub(crate) fn LCMapStringW(c: &mut Ctx) -> u32 {
     let (flags, src, n, dst, cap) = (c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
-    let w: Vec<u16> = if n < 0 { let mut v = wstr(src); v.push(0); v } else { (0..n as u32).map(|i| r16(src + 2 * i)).collect() };
+    let w: Vec<u16> = if n < 0 {
+        let mut v = wstr(src);
+        v.push(0);
+        v
+    } else {
+        let Some(v) = guest_units(src, n as u32) else { return 0 };
+        v
+    };
     let w = lcmap(&w, flags);
     if cap == 0 {
         return w.len() as u32;
@@ -5630,7 +5696,8 @@ fn CompareStringOrdinal(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    let rd = |p: u32, n: i32| -> Vec<u16> { if n < 0 { wstr(p) } else { (0..n as u32).map(|i| r16(p + 2 * i)).collect() } };
+    let rd = |p: u32, n: i32| -> Option<Vec<u16>> { if n < 0 { Some(wstr(p)) } else { guest_units(p, n as u32) } };
+    let (Some(a), Some(b)) = (rd(s1, n1), rd(s2, n2)) else { return 0 };
     let up = |v: Vec<u16>| -> Vec<u16> {
         if !nocase {
             return v;
@@ -5643,7 +5710,7 @@ fn CompareStringOrdinal(c: &mut Ctx) -> u32 {
             }
         }).unwrap_or(u)).collect()
     };
-    up(rd(s1, n1)).cmp(&up(rd(s2, n2))) as i32 as u32 + 2
+    up(a).cmp(&up(b)) as i32 as u32 + 2
 }
 fn CompareStringW(c: &mut Ctx) -> u32 {
     let (flags, s1, n1, s2, n2) = (c.a(1), c.a(2), c.i(3), c.a(4), c.i(5));
@@ -5898,10 +5965,13 @@ fn lstrcmpiW(c: &mut Ctx) -> u32 {
 // atoms
 /// An atom table: string atoms 0xc000 + index, each with its reference count (integer atoms,
 /// 1..=0xbfff, are their own value and are not stored).
-struct Atoms(Vec<Option<(String, u32)>>);
+/// An atom table: slot i is atom 0xc000 + i (its name, its references); names found by their
+/// case-folded form in one lookup (every class registration and RegisterWindowMessage asks),
+/// the lowest free slot taken first
+struct Atoms(Vec<Option<(String, u32)>>, Option<HashMap<String, usize>>, std::collections::BTreeSet<usize>);
 /// GlobalAddAtom's and AddAtom's tables.
-static GLOBAL_ATOMS: Mutex<Atoms> = Mutex::new(Atoms(Vec::new()));
-static LOCAL_ATOMS: Mutex<Atoms> = Mutex::new(Atoms(Vec::new()));
+static GLOBAL_ATOMS: Mutex<Atoms> = Mutex::new(Atoms::new());
+static LOCAL_ATOMS: Mutex<Atoms> = Mutex::new(Atoms::new());
 
 /// What an atom function was given: an integer atom (MAKEINTATOM, or "#1234"), a name, or the
 /// Win32 error (0: none, as for MAKEINTATOM(0))
@@ -5935,22 +6005,26 @@ fn atom_text(s: String) -> AtomArg {
     AtomArg::Name(s)
 }
 impl Atoms {
+    const fn new() -> Self {
+        Atoms(Vec::new(), None, std::collections::BTreeSet::new())
+    }
     fn find(&self, s: &str) -> Option<usize> {
-        let low = s.to_lowercase();
-        self.0.iter().position(|e| e.as_ref().is_some_and(|(n, _)| n.to_lowercase() == low))
+        self.1.as_ref()?.get(&s.to_lowercase()).copied()
     }
     fn add(&mut self, s: String) -> u32 {
         if let Some(i) = self.find(&s) {
             self.0[i].as_mut().unwrap().1 += 1;
             return 0xc000 + i as u32;
         }
-        let i = self.0.iter().position(|e| e.is_none()).unwrap_or(self.0.len());
+        let i = self.2.first().copied().unwrap_or(self.0.len());
         if i >= 0x4000 {
             return 0;
         }
         if i == self.0.len() {
             self.0.push(None);
         }
+        self.2.remove(&i);
+        self.1.get_or_insert_with(HashMap::default).insert(s.to_lowercase(), i);
         self.0[i] = Some((s, 1));
         0xc000 + i as u32
     }
@@ -5959,10 +6033,18 @@ impl Atoms {
         if (1..0xc000).contains(&a) {
             return 0;
         }
-        let Some(e) = a.checked_sub(0xc000).and_then(|i| self.0.get_mut(i as usize)) else { return a };
+        let Some(i) = a.checked_sub(0xc000).filter(|&i| (i as usize) < self.0.len()) else { return a };
+        let i = i as usize;
+        let e = &mut self.0[i];
         match e {
             Some((_, n)) if *n > 1 => *n -= 1,
-            Some(_) => *e = None,
+            Some((name, _)) => {
+                if let Some(m) = self.1.as_mut() {
+                    m.remove(&name.to_lowercase());
+                }
+                *e = None;
+                self.2.insert(i);
+            }
             None => return a,
         }
         0
@@ -6840,7 +6922,8 @@ fn WriteConsoleA(c: &mut Ctx) -> u32 {
     if !is_console_out(c.a(0)) {
         return console_fail(c.a(3));
     }
-    console_write(&String::from_utf8_lossy(mem::slice(buf, n)));
+    let Some(b) = guest_bytes(buf, n) else { return 0 };
+    console_write(&String::from_utf8_lossy(&b));
     put32(c.a(3), n);
     1
 }
@@ -7214,7 +7297,8 @@ fn WriteFile(c: &mut Ctx) -> u32 {
     if let Some(k) = kind {
         // (the null device takes everything; the console writes it to stderr)
         if k != "nul" {
-            console_write(&a2s(mem::slice(buf, n)));
+            let Some(b) = guest_bytes(buf, n) else { return 0 };
+            console_write(&a2s(&b));
         }
         put32(pw, n);
         return 1;
@@ -7253,7 +7337,17 @@ pub(crate) fn console_write(t: &str) {
         let line: String = p.drain(..=i).collect();
         eprintln!("{}", line.trim_end_matches(['\r', '\n']));
     }
+    // (output that never ends a line: out in pieces, not kept for good)
+    if p.len() > CONSOLE_PIECE {
+        let mut at = CONSOLE_PIECE;
+        while !p.is_char_boundary(at) {
+            at -= 1;
+        }
+        let piece: String = p.drain(..at).collect();
+        eprintln!("{piece}");
+    }
 }
+const CONSOLE_PIECE: usize = 4096;
 /// SAKE_ECHO_FILE=name: what the program writes to files of that name also goes to the log, a
 /// line at a time (a game's own log file: 吉里吉里2 writes Debug.message only to krkr.console.log)
 pub(crate) fn echo_write(path: &str, buf: u32, n: u32) {
@@ -8980,26 +9074,22 @@ fn computer_name_ex(c: &mut Ctx, wide: bool) -> u32 {
 }
 /// RtlGenRandom (advapi32!SystemFunction036): the browser's random bytes.
 fn SystemFunction036(c: &mut Ctx) -> u32 {
-    let (p, n) = (c.a(0), c.a(1));
-    let mut buf = vec![0u8; n as usize];
-    for chunk in buf.chunks_mut(256) {
-        if unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0 {
-            return 0;
-        }
+    random_into(c.a(0), c.a(1)) as u32
+}
+/// `n` random bytes straight into guest memory at `p` (a guest-sized Vec could be any size):
+/// false where the buffer is not writable or the browser gives none
+fn random_into(p: u32, n: u32) -> bool {
+    if mem::accessible(p, n, true, false) < n {
+        return false;
     }
-    mem::write(p, &buf);
-    1
+    let Some(b) = mem::guest_mut(p, n) else { return false };
+    b.chunks_mut(256).all(|chunk| unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } == 0)
 }
 /// BCryptOpenAlgorithmProvider(&alg, id, implementation, flags): any algorithm "opens"; only
 /// BCryptGenRandom does something with it.
 /// BCryptGenRandom(alg, buffer, length, flags)
 fn BCryptGenRandom(c: &mut Ctx) -> u32 {
-    let mut buf = vec![0u8; c.a(2) as usize];
-    for chunk in buf.chunks_mut(256) {
-        unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
-    }
-    mem::write(c.a(1), &buf);
-    0
+    if random_into(c.a(1), c.a(2)) { 0 } else { 0xc000_000d } // STATUS_INVALID_PARAMETER
 }
 fn BCryptGetProperty(_: &mut Ctx) -> u32 {
     0xc000_00bb // STATUS_NOT_SUPPORTED
@@ -9015,12 +9105,47 @@ fn av_true(_: &mut Ctx) -> u32 {
 }
 /// pdh: a query whose counters all read 0 (LiveMaker watches the CPU load).
 fn PdhOpenQuery(c: &mut Ctx) -> u32 {
-    put32(c.a(2), mem::heap_alloc(16, true));
+    let q = mem::heap_alloc(16, true);
+    if q == 0 {
+        return 0xc000_07d1; // PDH_MEMORY_ALLOCATION_FAILURE
+    }
+    PDH.lock().unwrap().get_or_insert_with(HashMap::default).insert(q, Vec::new());
+    mem::putp(c.a(2), q);
     0
 }
+/// A query's counters, by query (freed with it)
+static PDH: Mutex<Option<HashMap<u32, Vec<u32>>>> = Mutex::new(None);
 /// PdhAddCounter(query, path, user, &counter)
 fn PdhAddCounter(c: &mut Ctx) -> u32 {
-    put32(c.a(3), mem::heap_alloc(16, true));
+    let q = c.a(0);
+    let mut g = PDH.lock().unwrap();
+    let Some(list) = g.get_or_insert_with(HashMap::default).get_mut(&q) else { return 0xc000_0bbc }; // PDH_INVALID_HANDLE
+    let k = mem::heap_alloc(16, true);
+    if k == 0 {
+        return 0xc000_07d1;
+    }
+    w32(k, q);
+    list.push(k);
+    mem::putp(c.a(3), k);
+    0
+}
+/// PdhRemoveCounter(counter)
+fn PdhRemoveCounter(c: &mut Ctx) -> u32 {
+    let k = c.a(0);
+    let mut g = PDH.lock().unwrap();
+    let Some(list) = g.as_mut().and_then(|m| m.values_mut().find(|l| l.contains(&k))) else { return 0xc000_0bbc };
+    list.retain(|&x| x != k);
+    mem::heap_free(k);
+    0
+}
+/// PdhCloseQuery(query): it and its counters
+fn PdhCloseQuery(c: &mut Ctx) -> u32 {
+    let q = c.a(0);
+    let Some(list) = PDH.lock().unwrap().as_mut().and_then(|m| m.remove(&q)) else { return 0xc000_0bbc };
+    for k in list {
+        mem::heap_free(k);
+    }
+    mem::heap_free(q);
     0
 }
 fn pdh_ok(_: &mut Ctx) -> u32 {
@@ -9538,7 +9663,9 @@ pub fn init() {
     for n in ["PdhAddCounterA", "PdhAddCounterW", "PdhAddEnglishCounterA", "PdhAddEnglishCounterW"] {
         implement("pdh", n, PdhAddCounter);
     }
-    for n in ["PdhCollectQueryData", "PdhRemoveCounter", "PdhCloseQuery"] {
+    implement("pdh", "PdhRemoveCounter", PdhRemoveCounter);
+    implement("pdh", "PdhCloseQuery", PdhCloseQuery);
+    for n in ["PdhCollectQueryData"] {
         implement("pdh", n, pdh_ok);
     }
     reg!("pdh"; PdhGetFormattedCounterValue);
@@ -9781,7 +9908,7 @@ mod atom_tests {
 
     #[test]
     fn counted_case_blind_and_reused() {
-        let mut t = Atoms(Vec::new());
+        let mut t = Atoms::new();
         let a = t.add("foobar".into());
         assert_eq!(a, 0xc000);
         assert_eq!(t.add("FOOBAR".into()), a);
@@ -9798,6 +9925,48 @@ mod atom_tests {
         assert_eq!(t.delete(5), 0);
         // (the freed slot goes to the next name)
         assert_eq!(t.add("other".into()), 0xc000);
+    }
+
+    proptest::proptest! {
+        /// The indexed table against the linear one it replaced (fold and compare every entry,
+        /// first free slot): the same atoms, names and failures for any adds and deletes
+        #[test]
+        fn atoms_match_the_linear_table(ops in proptest::collection::vec((proptest::bool::ANY, 0u8..12, proptest::bool::ANY), 1..200)) {
+            let mut t = Atoms::new();
+            let mut m: Vec<Option<(String, u32)>> = vec![];
+            let names = ["a", "A", "b", "Bb", "bB", "ccc", "Straße", "STRASSE", "x1", "X1", "émile", "ÉMILE"];
+            for (add, k, up) in ops {
+                let name = if up { names[k as usize].to_uppercase() } else { names[k as usize].to_string() };
+                let low = name.to_lowercase();
+                let found = m.iter().position(|e| e.as_ref().is_some_and(|(n, _)| n.to_lowercase() == low));
+                proptest::prop_assert_eq!(t.find(&name), found);
+                if add {
+                    let want = match found {
+                        Some(i) => {
+                            m[i].as_mut().unwrap().1 += 1;
+                            0xc000 + i as u32
+                        }
+                        None => {
+                            let i = m.iter().position(|e| e.is_none()).unwrap_or(m.len());
+                            if i == m.len() {
+                                m.push(None);
+                            }
+                            m[i] = Some((name.clone(), 1));
+                            0xc000 + i as u32
+                        }
+                    };
+                    proptest::prop_assert_eq!(t.add(name), want);
+                } else if let Some(i) = found {
+                    let a = 0xc000 + i as u32;
+                    match &mut m[i] {
+                        Some((_, n)) if *n > 1 => *n -= 1,
+                        e => *e = None,
+                    }
+                    proptest::prop_assert_eq!(t.delete(a), 0);
+                    proptest::prop_assert_eq!(t.name(a), m[i].as_ref().map(|e| e.0.clone()));
+                }
+            }
+        }
     }
 }
 
@@ -10744,5 +10913,87 @@ mod thread_fail_tests {
             }
         }
         mem::heap_free(ptid);
+    }
+}
+
+/// Review b07: guest-sized copies fail the call instead of the program; Pdh queries free their
+/// blocks; processor masks for any count.
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod review_b07 {
+    use super::*;
+    use crate::test_guest::{call, enter, guest_thread};
+    use proptest::prelude::*;
+
+    #[test]
+    fn garbage_lengths_fail_with_noaccess() {
+        let _g = enter();
+        guest_thread();
+        let src = mem::heap_alloc(64, true);
+        mem::write(src, b"abc");
+        let dst = mem::heap_alloc(256, true);
+        // (lengths that run far past the block into memory nobody reserved)
+        for n in [0x7fff_ffffu32, 0x4000_0000, 0x1000_0000] {
+            last_error(0);
+            assert_eq!(call(MultiByteToWideChar, &[0, 0, src, n, 0, 0]), 0, "{n:#x}");
+            assert_eq!(call(GetLastError, &[]), 998);
+            last_error(0);
+            assert_eq!(call(WideCharToMultiByte, &[0, 0, src, n, 0, 0, 0, 0]), 0, "{n:#x}");
+            assert_eq!(call(GetLastError, &[]), 998);
+            assert_eq!(call(LCMapStringA, &[0x411, 0x100, src, n, 0, 0]), 0);
+            assert_eq!(call(LCMapStringW, &[0x411, 0x100, src, n, 0, 0]), 0);
+            assert_eq!(call(CompareStringOrdinal, &[src, n as u32, src, 3, 0]), 0);
+            assert_eq!(call(BCryptGenRandom, &[0, dst, n, 2]), 0xc000_000d);
+            assert_eq!(call(SystemFunction036, &[dst, n]), 0);
+        }
+        // and real ones still work
+        assert_eq!(call(MultiByteToWideChar, &[0, 0, src, 3, dst, 16]), 3);
+        assert_eq!(mem::wstr(dst), "abc".encode_utf16().collect::<Vec<_>>());
+        mem::fill(dst, 256, 0);
+        assert_eq!(call(BCryptGenRandom, &[0, dst, 256, 2]), 0);
+        assert!(mem::slice(dst, 256).iter().any(|&b| b != 0));
+        mem::heap_free(src);
+        mem::heap_free(dst);
+    }
+
+    #[test]
+    fn pdh_queries_free_their_blocks() {
+        let _g = enter();
+        guest_thread();
+        let out = mem::heap_alloc(8, true);
+        assert_eq!(call(PdhOpenQuery, &[0, 0, out]), 0);
+        let q = r32(out);
+        assert!(mem::heap_owns(q));
+        let mut ks = vec![];
+        for _ in 0..3 {
+            assert_eq!(call(PdhAddCounter, &[q, 0, 0, out]), 0);
+            ks.push(r32(out));
+        }
+        assert_eq!(call(PdhRemoveCounter, &[ks[0]]), 0);
+        assert!(!mem::heap_owns(ks[0]));
+        assert_eq!(call(PdhRemoveCounter, &[ks[0]]), 0xc000_0bbc, "removed already");
+        assert_eq!(call(PdhCloseQuery, &[q]), 0);
+        assert!(!mem::heap_owns(q) && ks.iter().all(|&k| !mem::heap_owns(k)));
+        assert_eq!(call(PdhCloseQuery, &[q]), 0xc000_0bbc);
+        assert_eq!(call(PdhAddCounter, &[q, 0, 0, out]), 0xc000_0bbc);
+        mem::heap_free(out);
+    }
+
+    #[test]
+    fn the_clock_never_goes_back() {
+        let mut last = clock_ns();
+        for _ in 0..100_000 {
+            let t = clock_ns();
+            assert!(t >= last);
+            last = t;
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn processor_masks_have_one_bit_each(n in 1u32..=64) {
+            let m = u64::MAX >> (64 - n);
+            prop_assert_eq!(m.count_ones(), n);
+            prop_assert_eq!(m.trailing_ones(), n);
+        }
     }
 }
