@@ -3664,13 +3664,13 @@ fn has_work() -> bool {
     has_work_of(QS_ALL)
 }
 const QS_ALL: u32 = 0x4ff;
-/// Whether thread `me` has messages of the QS_* kinds in `mask`: input (key, mouse, raw input
-/// 0x407), posted (0x108), paint (0x20), sent (0x40). (Delphi's TThread.WaitFor waits for
+/// Whether thread `me` has messages of the QS_* kinds in `mask`: input (key, mouse, raw input,
+/// pointer 0x1407), posted (0x108), paint (0x20), sent (0x40). (Delphi's TThread.WaitFor waits for
 /// QS_SENDMESSAGE only and peeks without removing: a pending paint must not wake it.)
 fn queued(s: &State, me: u32, mask: u32) -> bool {
     s.queues.get(&me).is_some_and(|q| {
         mask & 0x108 != 0 && (!q.posted.is_empty() || q.quit.is_some())
-            || mask & 0x407 != 0 && !q.input.is_empty()
+            || mask & 0x1407 != 0 && !q.input.is_empty()
             || mask & 0x40 != 0 && !q.sent.is_empty()
     }) || mask & 0x20 != 0 && s.wins.iter().any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h))
 }
@@ -3858,6 +3858,7 @@ fn GetQueueStatus(c: &mut Ctx) -> u32 {
                 0x100..=0x109 => 0x1,
                 0x200 => 0x2,
                 0x201..=0x20e => 0x4,
+                0x245..=0x24f => 0x1000, // QS_POINTER
                 _ => 0x400,
             };
         }
@@ -5258,13 +5259,13 @@ fn DisplayConfigGetDeviceInfo(c: &mut Ctx) -> u32 {
     0
 }
 fn MonitorFromWindow(_: &mut Ctx) -> u32 {
-    0x10001
+    kura::display::HMONITOR
 }
 fn MonitorFromPoint(_: &mut Ctx) -> u32 {
-    0x10001
+    kura::display::HMONITOR
 }
 fn MonitorFromRect(_: &mut Ctx) -> u32 {
-    0x10001
+    kura::display::HMONITOR
 }
 /// GetMonitorInfo(monitor, MONITORINFO(EX)*): cbSize must be MONITORINFO's 40 or MONITORINFOEX's
 /// (A 72, W 104), else ERROR_INVALID_PARAMETER with nothing written
@@ -5302,7 +5303,7 @@ fn EnumDisplayMonitors(c: &mut Ctx) -> u32 {
     let (w, h) = screen();
     Rect { l: 0, t: 0, r: w, b: h }.write(r);
     c.cpu.regs[koji::ESP] = r - 16;
-    c.call(f, &[0x10001, 0, r, lp]);
+    c.call(f, &[kura::display::HMONITOR, 0, r, lp]);
     c.cpu.regs[koji::ESP] = save;
     1
 }
@@ -6811,6 +6812,8 @@ fn UnregisterHotKey(_: &mut Ctx) -> u32 {
 // input from the page (kura's input queue)
 
 static INPUT_AT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The pointer messages' frame ids (POINTER_INFO.frameId)
+static POINTER_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// A restored save state: the input thread again, if it ran.
 pub(crate) fn snap_restore() {
@@ -6941,6 +6944,8 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                         flags |= bit;
                     }
                 }
+                let held = |keys: &[u8; 256]| [1usize, 2, 4].iter().enumerate().fold(0u8, |b, (i, vk)| b | (((keys[*vk] >> 7) & 1) << i));
+                let before = held(&s.keys);
                 let (msg, wp) = match kind {
                     1 => (0x200, flags),
                     2 | 3 => {
@@ -6966,16 +6971,37 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                     _ => (0x20a, flags | (data << 16)),
                 };
                 let lp = if msg == 0x20a { ((y as u32) << 16) | (x as u32 & 0xffff) } else { ((cy as u32) << 16) | (cx as u32 & 0xffff) };
+                // the mouse as a pointer (EnableMouseInPointer): WM_POINTER* ahead of the mouse
+                // message, at the screen position
+                let pointer = if crate::pointer::on() {
+                    crate::pointer::event(kind, data, data as u16 as i16 as i32, before, held(&s.keys)).map(|e| {
+                        let mods = if s.keys[0x10] & 0x80 != 0 { 4 } else { 0 } | if s.keys[0x11] & 0x80 != 0 { 8 } else { 0 };
+                        let frame = POINTER_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        crate::pointer::set_last(crate::pointer::Info { event: e, frame, hwnd: target, x, y, time: t, keys: mods, qpc: crate::k32::qpc() });
+                        Msg { hwnd: target, msg: e.msg, w: e.wparam, l: ((y as u32) << 16) | (x as u32 & 0xffff), time: t, x, y }
+                    })
+                } else {
+                    None
+                };
                 let q = s.queues.entry(tid).or_default();
-                // coalesce moves
+                // coalesce moves (and their pointer updates: [WM_POINTERUPDATE,] WM_SETCURSOR,
+                // WM_MOUSEMOVE)
                 if msg == 0x200 {
-                    if let Some(last) = q.input.back_mut() {
-                        if last.msg == 0x200 && last.hwnd == target {
-                            *last = Msg { hwnd: target, msg, w: wp, l: lp, time: t, x, y };
+                    let n = q.input.len();
+                    if q.input.back().is_some_and(|last| last.msg == 0x200 && last.hwnd == target) {
+                        let pu = n >= 3 && q.input[n - 3].msg == crate::pointer::WM_POINTERUPDATE && q.input[n - 3].hwnd == target;
+                        if pu == pointer.is_some() {
+                            q.input[n - 1] = Msg { hwnd: target, msg, w: wp, l: lp, time: t, x, y };
+                            if let Some(p) = pointer {
+                                q.input[n - 3] = p;
+                            }
                             return;
                         }
                     }
+                    q.input.extend(pointer);
                     q.input.push_back(Msg { hwnd: target, msg: 0x20, w: target, l: 0x200 << 16 | 1, time: t, x, y });
+                } else {
+                    q.input.extend(pointer);
                 }
                 q.input.push_back(Msg { hwnd: target, msg, w: wp, l: lp, time: t, x, y });
             }

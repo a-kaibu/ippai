@@ -979,8 +979,8 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             std::ptr::copy_nonoverlapping(c.as_ptr(), a(3) as *mut u32, c.len());
             S_OK
         }
-        // GetAdapterMonitor: win32u numbers monitors from 1 (sysparams.c), the only one is 1
-        15 => 1,
+        // GetAdapterMonitor: the one monitor, as MonitorFromWindow
+        15 => crate::display::HMONITOR,
         16 => create_device(d, this, a(2), a(3), a(4), a(5), a(6)),
         _ => E_NOTIMPL,
     }

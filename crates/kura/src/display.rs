@@ -320,6 +320,13 @@ impl Display {
 /// How big `screen` may get each way (it holds the screen and the windows on it).
 const MAX_EXTENT: i32 = 8192;
 
+/// The one monitor's HMONITOR, as user32 (MonitorFromWindow, EnumDisplayMonitors), DXGI
+/// (IDXGIOutput::GetDesc) and d3d9 (GetAdapterMonitor) all answer it: Unity 6 matches the
+/// window's monitor against the DXGI outputs to number the display its pointer is on, and with
+/// no match uGUI dropped every click and hover as being on another display. 0x10001 as Windows'
+/// first monitor.
+pub const HMONITOR: u32 = 0x10001;
+
 /// A display mode change (ChangeDisplaySettings): the screen takes the new size.
 #[no_mangle]
 pub extern "C" fn vnhost_display_set_size(w: c_int, h: c_int) {

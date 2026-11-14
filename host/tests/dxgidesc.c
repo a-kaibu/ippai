@@ -1,6 +1,8 @@
 /* DXGI descriptions written to exactly their size: DXGI_OUTPUT_DESC is 92 bytes on x86 (an
  * x64-sized one overwrote Unity 2019's factory pointer, next to it on the stack), 96 on x64;
- * DXGI_ADAPTER_DESC(1) likewise. The expected lines are what Windows gives.
+ * DXGI_ADAPTER_DESC(1) likewise. The output's HMONITOR is user32's for that monitor (Unity 6
+ * numbers the display a window is on by matching them; sake's differed, and uGUI dropped every
+ * click as being on another display). The expected lines are what Windows gives.
  * Built for x86 and x64. libs: -ldxgi -luuid
  * Build: i686-w64-mingw32-gcc -O2 dxgidesc.c -o dxgidesc.exe -ldxgi -luuid */
 #define COBJMACROS
@@ -37,6 +39,9 @@ int main(void)
     IDXGIOutput_GetDesc(o, (DXGI_OUTPUT_DESC *)buf);
     DXGI_OUTPUT_DESC *d = (DXGI_OUTPUT_DESC *)buf;
     printf("output desc: the rest kept %d, attached %d, monitor set %d\n", kept(buf, sizeof(DXGI_OUTPUT_DESC), sizeof(buf)), d->AttachedToDesktop, d->Monitor != 0);
+    POINT origin = {0, 0};
+    printf("output monitor as user32's: window %d, point %d\n", d->Monitor == MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY),
+           d->Monitor == MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY));
     IDXGIOutput_Release(o);
     IDXGIAdapter1_Release(a);
     IDXGIFactory1_Release(f);

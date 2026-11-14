@@ -126,6 +126,7 @@ pub mod wmi;
 pub mod winrt;
 pub mod pe;
 pub mod rawinput;
+pub mod pointer;
 pub mod seh;
 pub mod seh64;
 pub mod cxx;
@@ -820,6 +821,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     k32::init();
     user::init();
     rawinput::init();
+    pointer::init();
     autopilot::start();
     gdi::init();
     misc::init();

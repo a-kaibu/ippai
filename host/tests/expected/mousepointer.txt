@@ -1,0 +1,19 @@
+in pointer before: 0
+a mouse click before:
+WM_LBUTTONDOWN
+WM_LBUTTONUP
+enable: 1
+in pointer: 1
+left click:
+WM_POINTERDOWN: flags 2016, at the cursor 1, type 1 4, info 1: type 4, same id 1, down/up/wheel 10000, change 1, target 1, at the cursor 1, wheel 0
+WM_LBUTTONDOWN
+WM_POINTERUP: flags 2002, at the cursor 1, type 1 4, info 1: type 4, same id 1, down/up/wheel 40000, change 2, target 1, at the cursor 1, wheel 0
+WM_LBUTTONUP
+right click:
+WM_POINTERDOWN: flags 2026, at the cursor 1, type 1 4, info 1: type 4, same id 1, down/up/wheel 10000, change 3, target 1, at the cursor 1, wheel 0
+WM_RBUTTONDOWN
+WM_POINTERUP: flags 2002, at the cursor 1, type 1 4, info 1: type 4, same id 1, down/up/wheel 40000, change 4, target 1, at the cursor 1, wheel 0
+WM_RBUTTONUP
+wheel:
+WM_POINTERWHEEL: delta -120, at the cursor 1, type 1 4, info 1: type 4, same id 1, down/up/wheel 80000, change 0, target 1, at the cursor 1, wheel -120
+WM_MOUSEWHEEL
