@@ -329,6 +329,20 @@ fn page_attached(q: &Queue) -> bool {
     q.last_poll.is_some_and(|t| now() - t < 3000.0)
 }
 
+/// Frames and bytes the page may be behind before Present stops letting the game go on after
+/// 250 ms. A page that polls but draws slower than 4 frames a second (a weak phone's GPU two
+/// frames behind, a page whose frames take seconds) otherwise fell further behind with every
+/// Present: the queue grew without end, as a hidden tab's did (2026-11-14 金恋 OOM).
+const BACKLOG_FRAMES: u64 = 8;
+const BACKLOG_BYTES: usize = 256 << 20;
+
+/// Whether a Present `behind` frames ahead of the page (with `bytes` of batches queued) returns:
+/// two frames behind at most, as a vsync; past its 250 ms when the page polls and is not
+/// `BACKLOG_*` behind; never while the page is away.
+fn may_go(behind: u64, bytes: usize, past_deadline: bool, attached: bool) -> bool {
+    behind <= 2 || (past_deadline && attached && behind <= BACKLOG_FRAMES && bytes <= BACKLOG_BYTES)
+}
+
 /// The open batch's generation and how many command words it has (where the next command goes)
 pub fn batch_end() -> (u64, usize) {
     with(|q| (q.gen, q.open.cmds.len()))
@@ -358,8 +372,9 @@ fn flush_now() {
 
 /// After a Present was recorded: closes the batch, then waits while the page is more than two
 /// frames behind (as a vsync would; without a page, drops what nobody will draw). A page that
-/// polls but is slow holds a frame at most 250 ms; a page that stopped polling (its tab hidden:
-/// no animation frames) holds it until it polls again. Returning then, as before, let a game
+/// polls but is slow holds a frame at most 250 ms while it is less than `BACKLOG_FRAMES` /
+/// `BACKLOG_BYTES` behind, then until it caught up to that; a page that stopped polling (its
+/// tab hidden: no animation frames) holds it until it polls again. Returning then, as before, let a game
 /// in a background tab spin at a whole core and pile up frames nobody drew: 金恋 ran out of
 /// memory after 6 minutes, and showed white for minutes after while the page caught up.
 /// (`hwnd`: the window presented to; each window is paced on its own)
@@ -390,7 +405,7 @@ pub fn present(hwnd: u32) {
     loop {
         let q = queue(&mut g);
         // (a state being taken: the game must reach its pause, not wait here)
-        if q.presented <= q.shown + 2 || (now() >= deadline && page_attached(q)) || crate::snap::pausing() {
+        if may_go(q.presented.saturating_sub(q.shown), queued(q), now() >= deadline, page_attached(q)) || crate::snap::pausing() {
             return;
         }
         g = WAKE.wait_timeout(g, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
@@ -748,5 +763,102 @@ mod hidden_tests {
         assert_eq!(got, (0..60).collect::<Vec<u32>>());
         QUEUE_MAX.store(was, SeqCst);
         set_pump(None);
+    }
+
+    /// A page that polls every 30 ms but takes a frame only every 600 ms (a weak GPU two frames
+    /// behind): the game is let go past 250 ms only while the page is less than BACKLOG_FRAMES
+    /// behind, so the queue stays bounded instead of growing by a frame or two a second.
+    #[test]
+    fn a_slow_page_holds_the_game_at_the_backlog() {
+        let _g = super::super::trace_tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_pump(None);
+        with(|q| {
+            q.closed.clear();
+            q.shown = q.presented;
+            q.last_poll = Some(now());
+        });
+        let game = std::thread::spawn(|| {
+            for _ in 0..60 {
+                record(|b| {
+                    b.cmd(&[0]);
+                    b.blob.extend(std::iter::repeat_n(7u8, 1 << 16));
+                });
+                present(1);
+            }
+        });
+        let mut most = 0;
+        let mut ticks = 0;
+        while !game.is_finished() {
+            std::thread::sleep(Duration::from_millis(30));
+            ticks += 1;
+            if ticks % 20 == 0 {
+                run_next(|_, _, _| {});
+            } else {
+                with(|q| q.last_poll = Some(now()));
+            }
+            most = most.max(queued().0);
+            if ticks > 400 {
+                // (the rest at full speed: the test's end)
+                while !game.is_finished() {
+                    while run_next(|_, _, _| {}) {}
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        game.join().unwrap();
+        assert!(most as u64 <= BACKLOG_FRAMES + 1, "{most} frames queued for a slow page");
+        while run_next(|_, _, _| {}) {}
+        set_pump(None);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+        /// Present's rule over any page: a game presenting as fast as it may (each Present
+        /// waiting out its 250 ms when it must) against a page that takes `take` batches every
+        /// `every` ms, polls every `polls` ms (0: never, a hidden tab) and is away from `away`
+        /// for `gone` ms. Whatever the rates, the batches queued stay within BACKLOG_FRAMES + 1
+        /// frames and BACKLOG_BYTES plus one frame, and the game goes on whenever the page is
+        /// at most two frames behind.
+        #[test]
+        fn present_bounds_the_queue_for_any_page(
+            take in 0u64..4, every in 1u64..2000, polls in 0u64..4000,
+            away in 0u64..20_000, gone in 0u64..60_000,
+            sizes in proptest::collection::vec(0usize..(96 << 20), 1..8),
+        ) {
+            let (mut behind, mut bytes) = (0u64, std::collections::VecDeque::<usize>::new());
+            let (mut last_poll, mut waiting_since) = (None::<u64>, None::<u64>);
+            let mut frame = 0usize;
+            for t in 0..120_000u64 {
+                let present = !(t >= away && t < away + gone);
+                if present && polls > 0 && t % polls == 0 {
+                    last_poll = Some(t);
+                }
+                if present && t % every == 0 {
+                    for _ in 0..take {
+                        if bytes.pop_front().is_none() { break }
+                        behind = behind.saturating_sub(1);
+                        last_poll = Some(t);
+                    }
+                }
+                let attached = last_poll.is_some_and(|p| t - p < 3000);
+                // (the game: a Present recorded, then waiting until may_go)
+                if waiting_since.is_none() {
+                    behind += 1;
+                    bytes.push_back(sizes[frame % sizes.len()]);
+                    frame += 1;
+                    waiting_since = Some(t);
+                }
+                let total: usize = bytes.iter().sum();
+                let past = t - waiting_since.unwrap() >= 250;
+                if may_go(behind, total, past, attached) {
+                    waiting_since = None;
+                }
+                proptest::prop_assert!(behind <= BACKLOG_FRAMES + 1, "{} frames behind at {} ms", behind, t);
+                proptest::prop_assert!(total <= BACKLOG_BYTES + (96 << 20), "{} bytes queued at {} ms", total, t);
+                if behind <= 2 {
+                    proptest::prop_assert!(may_go(behind, total, false, false));
+                }
+            }
+        }
     }
 }

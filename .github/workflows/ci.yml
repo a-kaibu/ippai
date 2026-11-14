@@ -797,6 +797,8 @@ jobs:
           node tests/savestate-browser.mjs target/release/ippai
           node tests/hidden-browser.mjs target/release/ippai
           node tests/autoadvance-browser.mjs target/release/ippai
+          # (a hidden tab: the game held in Present, the host heap flat, drawing again when shown)
+          node tests/hidden-memory-browser.mjs target/release/ippai
           node tests/exec-browser.mjs target/release/ippai
           node tests/output-browser.mjs target/release/ippai
           node tests/screen-browser.mjs target/release/ippai
