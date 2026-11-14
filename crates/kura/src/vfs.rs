@@ -12,6 +12,9 @@ use libc::size_t;
 
 pub mod hints;
 pub mod predict;
+pub mod trace;
+#[cfg(test)]
+mod replay;
 mod shared;
 
 type Ino = u32;
@@ -1203,6 +1206,8 @@ fn note_name(ino: Ino, path: &str) {
         m.clear();
     }
     m.insert(ino, path.to_string());
+    drop(g);
+    trace::name(ino, path);
 }
 
 /// Whether (`ino`, `what`) is new (u32::MAX: the file's neighbours).
@@ -1252,14 +1257,16 @@ fn hinted(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) 
 
 /// Tells the page what a read of chunk `i` of `ino` says the game reads soon (`hinted`).
 fn hint(ino: Ino, l: &Layout, chunks: &[Option<Hash>], i: usize, first: bool) {
-    send_hint(&hinted(ino, l, chunks, i, first));
+    send_hint(&hinted(ino, l, chunks, i, first), "layout");
 }
 
-/// Tells the page the chunks `hs`, to fetch onto the device (host/fetch-bridge.js ippaiHint).
-fn send_hint(hs: &[Hash]) {
+/// Tells the page the chunks `hs`, to fetch onto the device (host/fetch-bridge.js ippaiHint);
+/// `source` says which foresight gave them (the run's trace keeps it: vfs/trace.rs).
+fn send_hint(hs: &[Hash], source: &str) {
     if hs.is_empty() {
         return;
     }
+    trace::hint(source, hs);
     let names: Vec<String> = hs.iter().map(|h| {
         let x = hex(h);
         format!("chunks/{}/{x}", &x[..2])
@@ -1342,7 +1349,7 @@ fn predict_read(ino: Ino, off: u64, len: u64) {
     if trace() && !hs.is_empty() {
         eprintln!("vfs: a script read names {} chunks", hs.len());
     }
-    send_hint(&hs);
+    send_hint(&hs, "script");
 }
 
 /// The chunks scripts reached by this read name (`predict_read`), those not on the device, in the
@@ -1541,6 +1548,7 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
     }
     let b = block();
     let mut at = off;
+    let t = std::time::Instant::now();
     while at < end {
         let i = layout.index(at);
         let (cstart, clen) = layout.span(i);
@@ -1563,6 +1571,10 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
             }
         }
         at += n;
+    }
+    // (the run's trace: each chunk's first read, and how long this read waited)
+    if !PREDICTING.with(|p| p.get()) {
+        trace::read(ino, off, end, &layout, &chunks, t.elapsed());
     }
     // (a script: what it names, fetched ahead)
     predict_read(ino, off, end - off);
@@ -2594,6 +2606,71 @@ mod tests {
         c.put(&(v(3), 0), Arc::new(vec![3; 48]), false, 1 << 20);
         *CACHE.lock().unwrap() = Some(c);
         assert!(predicted(scene, 0, 4).is_empty());
+        *CACHE.lock().unwrap() = None;
+    }
+
+    /// The run's trace: a path before its file's reads, each chunk's first read once (with the
+    /// read's offset and wait), hints with their source; a prediction's own reads are not the
+    /// game's; it parses back.
+    #[test]
+    fn the_trace_says_what_was_read_when() {
+        let _g = TEST_FS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = |i: u32| format!("{:032x}", 0x7ace_0000u128 + i as u128);
+        let mut m = HashMap::new();
+        let mut tsv = String::from("vnvm-tree\t2\t64\nd\t755\t0\tvoice\n");
+        for i in 1..=3u32 {
+            tsv += &format!("f\t644\t0\tvoice/v{i:03}.ogg\t96\t{}:48,{}:48\n", h(i), h(i + 100));
+            m.insert(format!("chunks/{}/{}", &h(i)[..2], h(i)), vec![i as u8; 48]);
+            m.insert(format!("chunks/{}/{}", &h(i + 100)[..2], h(i + 100)), vec![i as u8; 48]);
+        }
+        let script = b"@voice storage=v003".to_vec();
+        tsv += &format!("f\t644\t0\tfirst.ks\t{}\t{}:{}\n", script.len(), h(50), script.len());
+        m.insert(format!("chunks/{}/{}", &h(50)[..2], h(50)), script.clone());
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.mounts.push(("/".into(), root));
+        fs.load_tree(root, &tsv);
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((m, Vec::new()));
+        *CACHE.lock().unwrap() = None;
+        *PREDICT.lock().unwrap() = None;
+        *HINTED.lock().unwrap() = None;
+        trace::reset();
+        let read = |p: &str, off: u64, n: usize| {
+            let At::Ours(Ok(fd)) = open_handle(p, libc::O_RDONLY, 0) else { panic!("open {p}") };
+            let ino = handle(fd).unwrap().0;
+            let mut b = vec![0u8; n];
+            assert_eq!(read_at(ino, &mut b, off), Ok(n));
+            release(fd);
+            ino
+        };
+        let v1 = read("/voice/v001.ogg", 40, 16);
+        read("/voice/v001.ogg", 0, 8);
+        let ks = read("/first.ks", 0, 4);
+        let text = trace::text();
+        assert!(text.starts_with("ippai-trace 1\n"));
+        let lines = trace::parse(&text);
+        let reads: Vec<(Ino, u64, u32, String)> = lines.iter().filter_map(|l| match l {
+            trace::Line::Read { ino, off, chunk, hash, .. } => Some((*ino, *off, *chunk, hash.clone())),
+            _ => None,
+        }).collect();
+        // (v001's two chunks once each, at the read's offset; first.ks; not v003, which only the
+        // script's prediction read)
+        assert_eq!(reads, [(v1, 40, 0, h(1)), (v1, 40, 1, h(101)), (ks, 0, 0, h(50))]);
+        let pos = |f: &dyn Fn(&trace::Line) -> bool| lines.iter().position(f).unwrap();
+        assert!(pos(&|l| matches!(l, trace::Line::Path { ino, path } if *ino == v1 && path == "/voice/v001.ogg")) < pos(&|l| matches!(l, trace::Line::Read { ino, .. } if *ino == v1)));
+        let hints: Vec<(String, Vec<String>)> = lines.iter().filter_map(|l| match l {
+            trace::Line::Hint { source, hashes, .. } => Some((source.clone(), hashes.clone())),
+            _ => None,
+        }).collect();
+        assert!(hints.iter().any(|(s, hs)| s == "layout" && hs.contains(&h(2))), "{hints:?}");
+        assert!(hints.iter().any(|(s, hs)| s == "script" && hs.contains(&h(3)) && hs.contains(&h(103))), "{hints:?}");
+        // (times never go back)
+        let ms: Vec<u64> = lines.iter().filter_map(|l| match l {
+            trace::Line::Read { ms, .. } | trace::Line::Hint { ms, .. } => Some(*ms),
+            _ => None,
+        }).collect();
+        assert!(ms.windows(2).all(|w| w[0] <= w[1]));
         *CACHE.lock().unwrap() = None;
     }
 

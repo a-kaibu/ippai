@@ -10,7 +10,7 @@ import {
   WARM_WIDTH,
   type WarmReport,
 } from "./warm";
-import { gameChunksName } from "./runtime";
+import { gameChunksName, traceName } from "./runtime";
 
 test("the trees' chunks in order, up to the bytes allowed", () => {
   const sizes = new Map([
@@ -200,4 +200,10 @@ test("the pairs and the reads' reports reach the worker and the run log", () => 
     /: 0; device 0 \(0%, 0 ms\)/,
   );
   stop();
+});
+
+test("a run's trace goes by the game and the run's start, as ippai serve takes it", () => {
+  expect(traceName("saga_planets-2", 36 ** 3)).toBe("trace.game.saga_planets-2.1000");
+  for (const id of ["x", "日本語", "../x"])
+    expect(traceName(id, Date.now())).toMatch(/^trace\.game\.[A-Za-z0-9_.-]+$/);
 });

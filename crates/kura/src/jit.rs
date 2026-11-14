@@ -1364,6 +1364,9 @@ impl SaveBook {
 /// main thread, read by maybe_save on the program's: atomics only, nothing that waits).
 static SAVE_ACKS: [std::sync::atomic::AtomicU64; 32] = [const { std::sync::atomic::AtomicU64::new(0) }; 32];
 
+/// The id of a send no save waits for (save_chunks' trace).
+const NO_ACK: u32 = u32::MAX;
+
 fn ack(id: u32, a: Ack) {
     SAVE_ACKS[id as usize % 32].store(1 << 63 | (id as u64) << 8 | a as u64, Ordering::Release);
 }
@@ -1371,6 +1374,10 @@ fn ack(id: u32, a: Ack) {
 /// host/vnjit.js, when the server answered save `id` (or the request failed): `ack` an [`Ack`].
 #[no_mangle]
 pub extern "C" fn vnhost_jit_saved(id: u32, a: u32) {
+    // (a trace's: no save waits for it, and its slot is another save's)
+    if id == NO_ACK {
+        return;
+    }
     ack(id, match a {
         1 => Ack::Taken,
         2 => Ack::Refused,
@@ -1529,7 +1536,9 @@ fn chunks_url(url: &std::ffi::CStr) -> std::ffi::CString {
     std::ffi::CString::new(u).unwrap_or_default()
 }
 
-/// Sends the chunks list `c` (save `id`; the page answers it as any save).
+/// Sends the chunks list `c` (save `id`; the page answers it as any save), and with it the run's
+/// read trace so far to IPPAI_TRACE_URL (the page's, one per run: vfs/trace.rs), answered to no
+/// save (NO_ACK: a lost one goes again with the next list, longer).
 fn save_chunks(url: &std::ffi::CStr, id: u32, c: &[u8]) {
     let u = chunks_url(url);
     #[cfg(target_os = "emscripten")]
@@ -1537,6 +1546,14 @@ fn save_chunks(url: &std::ffi::CStr, id: u32, c: &[u8]) {
         vnvm_jit_save(u.as_ptr(), c.as_ptr(), c.len(), id);
     }
     let _ = (u, id, c);
+    if let Some(t) = std::env::var("IPPAI_TRACE_URL").ok().filter(|u| !u.is_empty()).and_then(|u| std::ffi::CString::new(u).ok()) {
+        let text = crate::vfs::trace::text();
+        #[cfg(target_os = "emscripten")]
+        unsafe {
+            vnvm_jit_save(t.as_ptr(), text.as_ptr(), text.len(), NO_ACK);
+        }
+        let _ = (t, text);
+    }
 }
 
 /// Whether the block at `a` ran: the interpreter stops at every branch, so each block that
@@ -2764,6 +2781,20 @@ mod save_tests {
         std::env::set_var("IPPAI_CHUNKS_URL", "http://h/jit-save/sake-x-1.kinkoi.chunks");
         assert_eq!(chunks_url(&url).to_str().unwrap(), "http://h/jit-save/sake-x-1.kinkoi.chunks");
         std::env::remove_var("IPPAI_CHUNKS_URL");
+    }
+
+    /// A trace's answer (NO_ACK) takes no save's slot.
+    #[test]
+    fn a_trace_answer_leaves_the_saves_alone() {
+        let mut b = SaveBook::default();
+        // (id 31 mod 32: NO_ACK's slot; far from the other tests' ids)
+        b.next_id = 2014;
+        let a = b.send(Instant::now(), regions(1, 0), None);
+        assert_eq!(a % 32, NO_ACK % 32);
+        vnhost_jit_saved(a, 1);
+        vnhost_jit_saved(NO_ACK, 0);
+        take_acks(&mut b);
+        assert!(!b.wanted(&[0x1000], 0), "the save's own answer stands");
     }
 
     #[test]

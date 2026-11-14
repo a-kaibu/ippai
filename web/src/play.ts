@@ -54,6 +54,7 @@ import {
   fnv,
   jitBase as jitBaseOf,
   gameChunksName,
+  traceName,
   sakeBase,
   sakeBuild,
   type SakeBuild,
@@ -445,6 +446,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // (the chunks list: the game's own, see gameChunksName)
       ...(jitName && game
         ? { IPPAI_CHUNKS_URL: new URL(`jit-save/${gameChunksName(game)}.chunks`, location.href).href }
+        : {}),
+      // (this run's read trace, beside it: what it read when, what was foreseen; kura vfs/trace.rs)
+      ...(jitName && game
+        ? { IPPAI_TRACE_URL: new URL(`jit-save/${traceName(game, Date.now())}`, location.href).href }
         : {}),
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off

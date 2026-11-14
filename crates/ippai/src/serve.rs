@@ -14,6 +14,8 @@
 //!   index) adds a run's new regions as a new part (parts compiled before stay the same); `PUT /jit-save/<name>.chunks` stores the store chunks a
 //!   run read first (16-byte hashes), which the page fetches ahead next time, and beside it
 //!   `<name>.next`: which chunk each chunk led to (pairs of hashes, every branch: merge_edges).
+//!   `PUT /jit-save/trace.<game>.<run>`: a run's read trace (kura vfs/trace.rs), kept in
+//!   `<jit>/traces/` (the newest TRACES_MAX) for hints_eval.rs.
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
 //!   programs saved (shared libraries and the like; the chunks only for a program with no list
 //!   of its own yet): every page loads them too, so a
@@ -216,11 +218,45 @@ fn list_owner(file: &str) -> String {
     file.rsplit_once('-').map_or(file.to_string(), |x| x.0.to_string())
 }
 
+/// Traces kept at most (a run's is up to 4 MiB: kura vfs/trace.rs TRACE_MAX).
+const TRACES_MAX: usize = 300;
+
+/// Stores run trace `name` (text starting "ippai-trace "), then drops the oldest past TRACES_MAX.
+async fn save_trace(jit: &Jit, name: &str, body: &[u8]) -> StatusCode {
+    if !body.starts_with(b"ippai-trace ") || body.len() > (4 << 20) + 4096 {
+        return StatusCode::BAD_REQUEST;
+    }
+    let dir = jit.0.join("traces");
+    let _g = jit.1.lock().await;
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let tmp = dir.join(format!("{name}.tmp"));
+    if tokio::fs::write(&tmp, body).await.is_err() || tokio::fs::rename(&tmp, dir.join(name)).await.is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    let mut all = Vec::new();
+    if let Ok(mut d) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(e)) = d.next_entry().await {
+            let t = e.metadata().await.and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            all.push((t, e.path()));
+        }
+    }
+    all.sort();
+    for (_, p) in all.iter().take(all.len().saturating_sub(TRACES_MAX)) {
+        let _ = tokio::fs::remove_file(p).await;
+    }
+    StatusCode::NO_CONTENT
+}
+
 /// Merges a run's regions into `name`'s: those not saved already (same roots and code) go after
 /// the others.
 async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes) -> StatusCode {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
         return StatusCode::BAD_REQUEST;
+    }
+    // a run's read trace (kura vfs/trace.rs: what it read when, what was foreseen), whole each
+    // time: jit/traces/<name>, the newest TRACES_MAX kept (hints_eval.rs replays them)
+    if name.starts_with("trace.") {
+        return save_trace(&jit, &name, &body).await;
     }
     // the store chunks a run read first, as is (the page fetches them ahead)
     if name.ends_with(".chunks") {
@@ -1659,6 +1695,28 @@ mod tests {
             b
         }).collect();
         assert_eq!(super::merge_edges(&many, &[]).len(), 32 * super::EDGES_MAX);
+    }
+
+    /// PUT /jit-save/trace.<game>.<run>: kept whole (the newest of a run replaces it), only a
+    /// trace, the newest TRACES_MAX of them.
+    #[tokio::test]
+    async fn traces_are_kept_newest_first() {
+        use axum::extract::{Path, State};
+        let d = scratch("traces");
+        let jit: super::Jit = std::sync::Arc::new((d.clone(), tokio::sync::Mutex::new(())));
+        let put = |name: String, body: &str| super::save_jit(State(jit.clone()), Path(name), body.to_string().into());
+        assert_eq!(put("trace.game.x.1".into(), "ippai-trace 1\nR\t0").await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(put("trace.game.x.1".into(), "ippai-trace 1\nR\t0\nR\t5").await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(std::fs::read_to_string(d.join("traces/trace.game.x.1")).unwrap(), "ippai-trace 1\nR\t0\nR\t5");
+        assert_eq!(put("trace.game.x.2".into(), "not a trace").await, axum::http::StatusCode::BAD_REQUEST);
+        for i in 0..super::TRACES_MAX + 5 {
+            assert_eq!(put(format!("trace.game.y.{i}"), "ippai-trace 1\n").await, axum::http::StatusCode::NO_CONTENT);
+        }
+        let left: Vec<String> = std::fs::read_dir(d.join("traces")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert_eq!(left.len(), super::TRACES_MAX);
+        assert!(!left.iter().any(|n| n.ends_with(".tmp")));
+        assert!(left.contains(&format!("trace.game.y.{}", super::TRACES_MAX + 4)), "the newest stays");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// PUT /jit-save/<name>.chunks: merged with what was there; the games' lists

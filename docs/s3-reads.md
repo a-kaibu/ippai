@@ -206,6 +206,23 @@ Each first read of a chunk is counted by where it was then (`ippaiReads`): `devi
 own fetch); with the milliseconds waited. The run log has a line a minute: `game reads, first
 of each chunk: ...`. `coming` + `none` is the real miss rate the 37% above is a floor of.
 
+## Run traces and their replay (crates/kura/src/vfs/trace.rs, replay.rs)
+
+Each run sends its read trace with its chunks list (`IPPAI_TRACE_URL`, the page's:
+`trace.game.<id>.<start>`): every chunk's first read with its time, file, offset and wait, and
+every hint with its source (`layout`, `script`). ippai serve keeps the newest 300 in
+`<jit>/traces/`. `replay_traces` replays them in time against a model of the bucket (each
+request 1.5 s, 6 ahead at once, newest hints first), each run against its game's other runs:
+per game and foresight (none, layout, script, next, list and their sums), the reads that still
+waited, the seconds waited, and the chunks fetched for nothing.
+
+```sh
+REPLAY_TRACES=~/.cache/ippai/jit/traces cargo test -p kura --lib replay_traces -- --ignored --nocapture
+```
+
+These traces are also what a model of the next reads learns from (candidates from each
+foresight, labelled by whether the game read them soon).
+
 ## sake's wasm from the bucket (web/src/wasmsource.ts)
 
 sake.wasm is ~23 MB (~5 MB as zstd). From worker2 it came at ~100 KB/s at times (2026-11-14:

@@ -84,6 +84,11 @@ export const jitBase = (run: string) => `sake-${run.replace(/[^A-Za-z0-9_.-]/g, 
  * build either: a new sake does not change what the game reads. */
 export const gameChunksName = (game: string) => `game.${game.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 
+/** A run's read trace's name (ippai serve keeps them in jit/traces/: kura vfs/trace.rs): the
+ * game's, and the run's start (ms, base 36). */
+export const traceName = (game: string, start: number) =>
+  `trace.${gameChunksName(game)}.${start.toString(36)}`;
+
 /** FNV-1a of `bytes`, in hex. */
 export function fnv(bytes: Uint8Array): string {
   let h = 0x811c9dc5;
