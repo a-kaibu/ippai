@@ -1,0 +1,10 @@
+parse: 0, cBytes 136, nErrCode 0, path full
+exist, missing: HFILE_ERROR, cBytes 136, nErrCode 2
+create: a handle, cBytes 136, nErrCode 0
+exist: 1, cBytes 136, nErrCode 0, path full
+read: a handle, cBytes 136, nErrCode 0, path full
+_hread: 8 "pictures"
+reopen: a handle, cBytes 136, nErrCode 0, path full
+bare name of the exe: a handle, cBytes 136, nErrCode 0, path full
+delete: 1, cBytes 136, nErrCode 0, path full
+read, deleted: HFILE_ERROR, cBytes 136, nErrCode 2

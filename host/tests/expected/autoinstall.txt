@@ -1,0 +1,5 @@
+licence: next, accepted, back pressed 0 times
+options: install, start the game afterwards cleared, folder changed 0 times
+installed: yes
+start it now: no
+go on: 1

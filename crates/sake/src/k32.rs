@@ -6666,6 +6666,82 @@ fn _lopen(c: &mut Ctx) -> u32 {
         Err(_) => 0xffff_ffff,
     }
 }
+/// OpenFile(name, OFSTRUCT *, style): the 16-bit way to open, create, test or delete a file.
+/// OFSTRUCT is cBytes (136), fFixedDisk, nErrCode, two reserved words and szPathName[128], the
+/// full path found. A bare name (no folder of its own) is searched for as SearchPath does, unless
+/// it is to be made; OF_REOPEN takes the name from the OFSTRUCT. OF_PARSE fills it only, OF_EXIST
+/// and OF_DELETE close (or remove) the file and answer 1; else the handle, HFILE_ERROR and the
+/// error in nErrCode when it fails (Wine's OpenFile: SearchPath, then _lopen).
+fn OpenFile(c: &mut Ctx) -> u32 {
+    const OF_PARSE: u32 = 0x100;
+    const OF_DELETE: u32 = 0x200;
+    const OF_CREATE: u32 = 0x1000;
+    const OF_EXIST: u32 = 0x4000;
+    const OF_REOPEN: u32 = 0x8000;
+    let (of, style) = (c.a(1), c.a(2));
+    let name = if style & OF_REOPEN != 0 && of != 0 { arg_str(of + 8, false) } else { arg_str(c.a(0), false) };
+    // (the path only when found: a failure leaves szPathName as it was, as Windows does)
+    let done = |path: &str, err: u32| {
+        if of != 0 {
+            mem::w8(of, 136);
+            mem::w8(of + 1, 1);
+            mem::w16(of + 2, err as u16);
+            if err == 0 {
+                mem::w32(of + 4, 0);
+                mem::put_cstr(of + 8, 128, &crate::text::s2a(path));
+            }
+        }
+        if err != 0 {
+            last_error(err);
+        }
+    };
+    let b = name.as_bytes();
+    let own_path = name.contains(['\\', '/']) || (b.len() > 1 && b[1] == b':');
+    let full = if own_path || style & (OF_CREATE | OF_PARSE) != 0 {
+        files::full_path(&name)
+    } else {
+        search_dirs()
+            .iter()
+            .filter(|d| !d.is_empty())
+            .map(|d| files::full_path(&format!("{}\\{name}", d.trim_end_matches('\\'))))
+            .find(|w| files::resolve(w).is_some())
+            .unwrap_or_else(|| files::full_path(&name))
+    };
+    if name.is_empty() {
+        done("", 2);
+        return 0xffff_ffff;
+    }
+    if style & OF_PARSE != 0 {
+        done(&full, 0);
+        return 0;
+    }
+    if style & OF_DELETE != 0 {
+        if del(&full) == 0 {
+            done(&full, get_last_error());
+            return 0xffff_ffff;
+        }
+        done(&full, 0);
+        return 1;
+    }
+    let access = match style & 3 {
+        0 => 0x8000_0000,
+        1 => 0x4000_0000,
+        _ => 0xc000_0000,
+    };
+    match files::open(&full, if style & OF_CREATE != 0 { 0xc000_0000 } else { access }, if style & OF_CREATE != 0 { 2 } else { 3 }) {
+        Ok(f) => {
+            done(&full, 0);
+            if style & OF_EXIST != 0 {
+                return 1;
+            }
+            obj::add(Obj::File(std::sync::Arc::new(f)))
+        }
+        Err(e) => {
+            done(&full, e);
+            0xffff_ffff
+        }
+    }
+}
 /// _lcreat(name, attributes): a new empty file (or the old one emptied), open to read and write
 fn _lcreat(c: &mut Ctx) -> u32 {
     let name = arg_str(c.a(0), false);
@@ -6680,6 +6756,31 @@ fn _lclose(c: &mut Ctx) -> u32 {
 }
 fn _lread(c: &mut Ctx) -> u32 {
     obj::file(c.a(0)).map_or(0xffff_ffff, |f| f.read_into(c.a(1), c.a(2)))
+}
+/// _hread(h, buffer, count): _lread with a 32-bit count (the same in Win32)
+fn _hread(c: &mut Ctx) -> u32 {
+    _lread(c)
+}
+/// _lwrite(h, buffer, count): the bytes written, HFILE_ERROR when not all were; a count of 0
+/// ends the file at the current position (Windows: kernel32 _lwrite = _hwrite, which truncates
+/// for 0; LHa's self-extractor lzhsfx32 writes every file this way)
+fn _lwrite(c: &mut Ctx) -> u32 {
+    let (h, buf, n) = (c.a(0), c.a(1), c.a(2));
+    let Some(f) = obj::file(h) else { return 0xffff_ffff };
+    if !f.write {
+        return 0xffff_ffff;
+    }
+    if n == 0 {
+        let p = f.seek(SeekFrom::Current(0)).unwrap_or(0);
+        return if f.f.lock().unwrap().set_len(p).is_ok() { 0 } else { 0xffff_ffff };
+    }
+    match f.write_from(buf, n) {
+        w if w == n => n,
+        _ => 0xffff_ffff,
+    }
+}
+fn _hwrite(c: &mut Ctx) -> u32 {
+    _lwrite(c)
 }
 fn _llseek(c: &mut Ctx) -> u32 {
     let Some(f) = obj::file(c.a(0)) else { return 0xffff_ffff };
@@ -7863,11 +7964,7 @@ fn search_path(c: &mut Ctx, wide: bool) -> u32 {
     } else if path != 0 {
         arg_str(path, wide).split(';').map(String::from).collect()
     } else {
-        let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
-        let exe_dir = exe.rfind('\\').map_or(String::new(), |i| exe[..i].to_string());
-        let mut v = vec![exe_dir, files::cwd(), "C:\\windows\\system32".into(), "C:\\windows".into()];
-        v.extend(env_get("PATH").unwrap_or_default().split(';').filter(|d| !d.is_empty()).map(String::from));
-        v
+        search_dirs()
     };
     let names: Vec<String> = if own_path { vec![given, n] } else { vec![n] };
     for (d, n) in dirs.iter().filter(|d| own_path || !d.is_empty()).flat_map(|d| names.iter().map(move |n| (d, n))) {
@@ -7887,6 +7984,15 @@ fn search_path(c: &mut Ctx, wide: bool) -> u32 {
     }
     last_error(2);
     0
+}
+/// Where a bare file name is looked for (SearchPath with no path, OpenFile): the exe's folder,
+/// the current one, system32, windows, then PATH
+fn search_dirs() -> Vec<String> {
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+    let exe_dir = exe.rfind('\\').map_or(String::new(), |i| exe[..i].to_string());
+    let mut v = vec![exe_dir, files::cwd(), "C:\\windows\\system32".into(), "C:\\windows".into()];
+    v.extend(env_get("PATH").unwrap_or_default().split(';').filter(|d| !d.is_empty()).map(String::from));
+    v
 }
 fn SearchPathA(c: &mut Ctx) -> u32 {
     search_path(c, false)
@@ -8687,7 +8793,7 @@ pub fn init() {
         GetModuleHandleExW, LoadLibraryA, LoadLibraryW, LoadLibraryExA, LoadLibraryExW, FreeLibrary,
         DisableThreadLibraryCalls, GetProcAddress, FindResourceA, FindResourceW, FindResourceExA, EnumResourceTypesA, EnumResourceTypesW, EnumResourceNamesA, EnumResourceNamesW, EnumResourceLanguagesA, EnumResourceLanguagesW, FindResourceExW,
         LoadResource, LockResource, FreeResource, SizeofResource,
-        GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, CreateFile2, _lopen, _lcreat, _lclose, _lread,
+        GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, CreateFile2, OpenFile, _lopen, _lcreat, _lclose, _lread, _hread, _lwrite, _hwrite,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,
         FlushFileBuffers, LockFile, UnlockFile, LockFileEx, UnlockFileEx, GetFileTime, SetFileTime, GetFileInformationByHandle,
         FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, FindFirstChangeNotificationA, FindFirstChangeNotificationW, FindNextChangeNotification, FindCloseChangeNotification, GetFileAttributesA,

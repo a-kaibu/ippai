@@ -19,8 +19,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-changenotify afdpoll callwndhook dllinit dxversion dircase dlgenter bigwindow aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect d3dx9resource struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep apiimage nuldevice virtualex filetitle flatsb propsheet trackmouse richedit getmsghook memdccaps msvcp80str xfile mmiobuf dsnotify ltcsha256 x87ext framewalk}
-X64=" dxversion changenotify afdpoll nuldevice callwndhook dllinit dircase dlgenter dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep virtualex filetitle flatsb propsheet trackmouse richedit getmsghook memdccaps xfile mmiobuf dsnotify x87ext "
+TESTS=${*:-changenotify afdpoll callwndhook dllinit dxversion dircase dlgenter bigwindow aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect d3dx9resource struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock beginthread d3d12delay mfengine jitcode wasapi waveout hops sendrace dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep apiimage nuldevice virtualex filetitle flatsb propsheet trackmouse richedit getmsghook memdccaps msvcp80str xfile mmiobuf dsnotify ltcsha256 x87ext framewalk autoinstall openfile}
+X64=" dxversion changenotify afdpoll nuldevice callwndhook dllinit dircase dlgenter dlgthread editnotify shfileinfo deleteonclose filelock bcryptkeys listbox searchpath resupdate shfolders shelllink sendnotify browsefolder shellstubs aclentries acctnames acmdriver stacksize passwordchar wininetquery msgwaitstart makepath netbios mbshort mbtokens winineturl dialogtab mbsecure olefont comclass registrymulti imagecert capiprovider recalloc comrpc services dllsearch cryptoapi hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock beginthread d3d12delay mfengine wasapi waveout msiinstall msiui nsisinstall innoinstall jalocale msgboxes wideprintf dllversion mkdirsep virtualex filetitle flatsb propsheet trackmouse richedit getmsghook memdccaps xfile mmiobuf dsnotify x87ext autoinstall openfile "
 CLANG64=${CLANG64-x64seh x64crt msvcpchar msvcpsync msvcstream msvcrtti msvcseh mmdev avx256 highmem}
 CLANG32=${CLANG32-msvcseh mfc42 mfc42u mfc40}
 # CLANG64's MSVC STL programs built for x86 (msvcp140's thiscall members, __int64 in two slots,
@@ -174,14 +174,16 @@ for t in $TESTS; do
     "$1" -shared -nostdlib -DBUILD_FIXTURE -Wl,--entry,0 "$ROOT/host/tests/dllsearch.c" "$OUT/dllsearch-res.o" -o "$OUT/dllsearch-fixture.dll"
   }
   case "$t" in
-    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall|msiui|nsisinstall|innoinstall)
-      [[ $t = msi* || $t = nsis* || $t = inno* ]] && rm -rf "$OUT/$t-prefix"
+    comclass|registrymulti|comrpc|services|capiprovider|dllsearch|msiinstall|msiui|nsisinstall|innoinstall|autoinstall)
+      [[ $t = msi* || $t = nsis* || $t = inno* || $t = auto* ]] && rm -rf "$OUT/$t-prefix"
       mkdir -p "$OUT/$t-prefix/windows/system32"
       test_env=("SAKE_C=$OUT/$t-prefix")
       ;;
     # (koji's precise x87 mode: the 80-bit format, expected from a native x86-64 Linux build)
     x87ext) test_env=("IPPAI_X87_80=1") ;;
   esac
+  # (an installer's pages answered by sake's autopilot, crates/sake/src/autopilot.rs)
+  [ "$t" = autoinstall ] && test_env+=("SAKE_AUTO=1")
   # (Inno Setup lays its windows out in dialog units: fonts, SAKE_FONTS or made from the IPA
   # fonts by tools/ci/sake-fonts.py)
   case "$t" in

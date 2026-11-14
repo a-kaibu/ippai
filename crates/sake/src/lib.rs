@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use koji::{Cpu, EAX, EBP, ESP};
 
+pub mod autopilot;
 pub mod acm;
 #[cfg(test)]
 mod outptr_audit;
@@ -780,6 +781,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     k32::init();
     user::init();
     rawinput::init();
+    autopilot::start();
     gdi::init();
     misc::init();
     gdiplus::init();

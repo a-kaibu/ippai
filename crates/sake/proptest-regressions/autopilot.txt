@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e1153984b97ac7f8761c608e4db30b84b13e27e58f80bb12b43c7531e7be54f4 # shrinks to ts = [Top { h: 1, text: "", dialog: false, enabled: true, active: false, ctrls: [Ctrl { h: 5, kind: Push, text: "キャンセル", checked: false, enabled: false, at: (5, 0) }, Ctrl { h: 5, kind: Push, text: "インストール", checked: false, enabled: true, at: (5, 0) }] }]

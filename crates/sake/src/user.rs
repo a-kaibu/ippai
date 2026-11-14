@@ -593,6 +593,25 @@ fn class_index(s: &State, name: u32, wide: bool) -> Option<usize> {
     s.classes.iter().position(|c| c.name.to_lowercase() == n && !c.unregistered)
 }
 
+/// comctl32's animation control (SysAnimate32), shown still: ACM_OPEN(A/W) of a clip, ACM_PLAY
+/// and ACM_STOP succeed and nothing is drawn; ACM_ISPLAYING is FALSE. (Delphi's TAnimate opens
+/// its clip when created and raises 「AVI を開くことができません」 on FALSE: YU-RIS's installer)
+fn animate_proc() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("animate_proc", |c| match animate_answer(c.a(1)) {
+        Some(r) => r,
+        None => def_proc(c, msg_wide()),
+    }, 16))
+}
+pub(crate) fn animate_answer(msg: u32) -> Option<u32> {
+    match msg {
+        // ACM_OPENA, ACM_PLAY, ACM_STOP, ACM_OPENW
+        0x464..=0x467 => Some(1),
+        // ACM_ISPLAYING
+        0x468 => Some(0),
+        _ => None,
+    }
+}
 fn builtin_proc() -> u32 {
     static P: OnceLock<u32> = OnceLock::new();
     *P.get_or_init(|| crate::api::host_fn("builtin_proc", |c| def_proc(c, msg_wide()), 16))
@@ -628,6 +647,10 @@ static CTLS: Mutex<Option<HashMap<u32, Ctl>>> = Mutex::new(None);
 
 fn ctl(h: u32) -> Ctl {
     CTLS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).copied().unwrap_or_default()
+}
+/// A button's check state (BM_GETCHECK): BST_CHECKED or indeterminate (SAKE_AUTO looks).
+pub(crate) fn button_checked(h: u32) -> bool {
+    ctl(h).check != 0
 }
 fn set_ctl(h: u32, f: impl FnOnce(&mut Ctl)) {
     f(CTLS.lock().unwrap().get_or_insert_with(HashMap::default).entry(h).or_default());
@@ -1298,7 +1321,7 @@ fn system_classes(s: &mut State) {
     if !s.classes.is_empty() {
         return;
     }
-    for n in ["Button", "Edit", "Static", "ListBox", "ComboBox", "ScrollBar", "#32770", "MDIClient", "ComboLBox", "#32768", "msctls_progress32", "SysListView32", "SysTreeView32", "msctls_statusbar32", "ToolbarWindow32", "tooltips_class32", "RichEdit20A", "RichEdit20W", "RICHEDIT50W", "IME", "SysTabControl32", "msctls_trackbar32", "msctls_updown32"] {
+    for n in ["Button", "Edit", "Static", "ListBox", "ComboBox", "ScrollBar", "#32770", "MDIClient", "ComboLBox", "#32768", "msctls_progress32", "SysListView32", "SysTreeView32", "msctls_statusbar32", "ToolbarWindow32", "tooltips_class32", "RichEdit20A", "RichEdit20W", "RICHEDIT50W", "IME", "SysTabControl32", "msctls_trackbar32", "msctls_updown32", "SysAnimate32"] {
         let atom = crate::k32::atom(n);
         s.classes.push(Class {
             name: n.into(),
@@ -1308,6 +1331,7 @@ fn system_classes(s: &mut State) {
                 "SysTabControl32" => tab_proc(),
                 "ComboBox" => combo_proc(),
                 "ListBox" => listbox_proc(),
+                "SysAnimate32" => animate_proc(),
                 // (the class's own: a CBT hook subclassing a new dialog keeps it as the super proc)
                 "#32770" => dlg_wndproc(),
                 _ => builtin_proc(),
@@ -4581,6 +4605,11 @@ pub(crate) fn box_answer(style: u32) -> u32 {
 }
 fn show_box(text: &str, cap: &str, style: u32) -> u32 {
     eprintln!("sake: MessageBox [{cap}] {text}");
+    if crate::autopilot::on() {
+        if let Some(a) = crate::autopilot::box_answer(text, style) {
+            return a;
+        }
+    }
     box_answer(style)
 }
 fn message_box(c: &mut Ctx, wide: bool) -> u32 {
