@@ -377,3 +377,6 @@ dl_RJ01302433	妹ちゃんとくらそう 体験版	Unity x64 Mono	~2025	https:/
 dl_RJ436887	ニャンコイ～純愛猫娘と同棲生活～ 体験版	Unity x64 Mono	~2023	https://trial.dlsite.com/doujin/RJ437000/RJ436887_trial.zip							title				
 dl_RJ286256	BLACK-MARKET 体験版	Unity 2019.2 x64 Mono	~2020	https://trial.dlsite.com/doujin/RJ287000/RJ286256_trial.zip							title				
 astronauts_0020t	艶嬢学園2 体験版	Unity 2017.3 x64 Mono	2024	https://sample9.dmm.co.jp/digital/pcgame/astronauts_0020/astronauts_0020t.zip			wait:2 click:0.5,0.5 wait:8 click:0.504,0.509 wait:40				title				70
+ggs_0697t	マスクド上海 体験版 (#102: InstallShield 12 Setup Launcher, run in sake)	-	2008	http://sample9.dmm.co.jp/digital/pcgame/ggs_0697/ggs_0697t.zip			wait:3 move:160,443 click:160,443 wait:5				story			
+bas_trial	揺れるバスガイド 体験版 (#177: Visual Studio MSI loader, run in sake)	-	2004	http://kokoron.madoka.org/mirror/y/yurerubusguide/bas_trial.lzh			wait:15 click:320,280 wait:6 move:150,168 wait:1 click:150,168 wait:8				story			
+tengokuhime_trial2	天極姫 体験版第二弾 (#198: InstallShield launcher, cabinet set Data1.cab + Data11.cab)	-	2014	http://dl.redistribution.cc:8008/contents/2014/09/ge-sen18/tengokuhime_trial2.zip							story			

@@ -1499,16 +1499,8 @@ fn D3DXLoadSurfaceFromSurface(c: &mut Ctx) -> u32 {
         return hr;
     }
     let (sw, sh) = (sr - sl, sb - st);
-    let (spitch, sbits) = (r32(slr), r32(slr + 4));
-    // (the source rows as they are, sbpp bytes a texel)
-    let row = sw as usize * sbpp as usize;
-    let mut px = vec![0u8; row * sh as usize];
-    for (y, r) in px.chunks_exact_mut(row).enumerate() {
-        let at = sbits.wrapping_add((y as u32).wrapping_mul(spitch));
-        if mem::accessible(at, row as u32, false, false) >= row as u32 {
-            r.copy_from_slice(mem::slice(at, row as u32));
-        }
-    }
+    // (the locked bits start at the rectangle's corner)
+    let px = rows_at(r32(slr + 4), r32(slr), (0, 0, sw, sh), sbpp);
     com_call(c, ssurf, 14, &[]);
     let hr = com_call(c, dsurf, 13, &[dlr, dst, 0]);
     if hr != 0 {
@@ -1518,6 +1510,67 @@ fn D3DXLoadSurfaceFromSurface(c: &mut Ctx) -> u32 {
     let (dpitch, dbits) = (r32(dlr), r32(dlr + 4));
     let (dw, dh) = (dr - dl, db - dt);
     convert_rows(&px, (sfmt, sbpp, sw, sh), (dfmt, dbpp, dw, dh), key, |y, r| mem::write(dbits.wrapping_add(y.wrapping_mul(dpitch)), r));
+    com_call(c, dsurf, 14, &[]);
+    mem::heap_free(scratch);
+    0
+}
+
+/// The rows of the rectangle (l, t, r, b) of an image at `bits`, `pitch` bytes a row and `bpp`
+/// a texel, as they are; a row the guest cannot read stays zeros.
+fn rows_at(bits: u32, pitch: u32, (l, t, r, b): (u32, u32, u32, u32), bpp: u32) -> Vec<u8> {
+    let row = (r - l) as usize * bpp as usize;
+    let mut px = vec![0u8; row * (b - t) as usize];
+    if row == 0 {
+        return px;
+    }
+    for (y, out) in px.chunks_exact_mut(row).enumerate() {
+        let at = bits.wrapping_add((t + y as u32).wrapping_mul(pitch)).wrapping_add(l * bpp);
+        if mem::accessible(at, row as u32, false, false) >= row as u32 {
+            out.copy_from_slice(mem::slice(at, row as u32));
+        }
+    }
+    px
+}
+
+/// D3DXLoadSurfaceFromMemory(dst surface, dst palette, dst rect, src memory, src format, src
+/// pitch, src palette, src rect, filter, color key): the source rectangle (required) of an image
+/// in memory converted and scaled (nearest) into the destination rectangle, as
+/// D3DXLoadSurfaceFromSurface. 天極姫 puts every glyph of its text into its texture this way
+/// (and drew white boxes while this was E_NOTIMPL).
+fn D3DXLoadSurfaceFromMemory(c: &mut Ctx) -> u32 {
+    let (dsurf, dst, bits, sfmt, pitch, src, key) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5), c.a(7), c.a(9));
+    if dsurf == 0 || bits == 0 || src == 0 {
+        return 0x8876086c; // D3DERR_INVALIDCALL
+    }
+    let g = |k: u32| r32(src + 4 * k) as i32;
+    let (l, t, r, b) = (g(0), g(1), g(2), g(3));
+    if l < 0 || t < 0 || r < l || b < t {
+        return 0x8876086c;
+    }
+    let scratch = mem::heap_alloc(32 + 8, true);
+    let (ddesc, dlr) = (scratch, scratch + 32);
+    com_call(c, dsurf, 12, &[ddesc]);
+    let (dfmt, dw0, dh0) = (r32(ddesc), r32(ddesc + 24), r32(ddesc + 28));
+    let (dl, dt, dr, db) = rect_or(dst, dw0, dh0);
+    let bpp = |fmt: u32| pack(fmt, [0.0; 4]).map(|p| p.1);
+    let (Some(sbpp), Some(dbpp)) = (bpp(sfmt), bpp(dfmt)) else {
+        eprintln!("sake: D3DXLoadSurfaceFromMemory: format {sfmt} -> {dfmt} not handled");
+        mem::heap_free(scratch);
+        return 0x80004001;
+    };
+    let (sw, sh) = ((r - l) as u32, (b - t) as u32);
+    if sw == 0 || sh == 0 || dr <= dl || db <= dt {
+        mem::heap_free(scratch);
+        return 0;
+    }
+    let px = rows_at(bits, pitch, (l as u32, t as u32, r as u32, b as u32), sbpp);
+    let hr = com_call(c, dsurf, 13, &[dlr, dst, 0]);
+    if hr != 0 {
+        mem::heap_free(scratch);
+        return hr;
+    }
+    let (dpitch, dbits) = (r32(dlr), r32(dlr + 4));
+    convert_rows(&px, (sfmt, sbpp, sw, sh), (dfmt, dbpp, dr - dl, db - dt), key, |y, r| mem::write(dbits.wrapping_add(y.wrapping_mul(dpitch)), r));
     com_call(c, dsurf, 14, &[]);
     mem::heap_free(scratch);
     0
@@ -1728,6 +1781,7 @@ pub fn init() {
         ("D3DXLoadSurfaceFromFileA", D3DXLoadSurfaceFromFileA),
         ("D3DXLoadSurfaceFromFileW", D3DXLoadSurfaceFromFileW),
         ("D3DXLoadSurfaceFromSurface", D3DXLoadSurfaceFromSurface),
+        ("D3DXLoadSurfaceFromMemory", D3DXLoadSurfaceFromMemory),
         ("D3DXQuaternionRotationAxis", D3DXQuaternionRotationAxis),
         ("D3DXMatrixRotationQuaternion", D3DXMatrixRotationQuaternion),
     ];
@@ -1863,6 +1917,28 @@ mod surface_quat_tests {
             let v = unpack(fmt, t).unwrap();
             prop_assert_eq!(pack(fmt, v).unwrap().0, t);
             prop_assert!(v.iter().all(|x| (0.0..=1.0).contains(x)));
+        }
+
+        /// D3DXLoadSurfaceFromMemory's source: any pitch, texel size and rectangle gives the
+        /// rectangle's rows, each from its own row of the image, in order
+        #[test]
+        fn rows_at_read_the_rectangle(bpp in prop_oneof![Just(1u32), Just(2), Just(4)], w in 0u32..9, h in 0u32..7, pad in 0u32..13, l in 0u32..4, t in 0u32..3, seed in any::<u64>()) {
+            let _g = enter();
+            let pitch = (l + w) * bpp + pad;
+            let size = (pitch * (t + h)).max(1);
+            let p = mem::heap_alloc(size, true);
+            let mut r = seed;
+            for i in 0..size {
+                r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                mem::w8(p + i, (r >> 56) as u8);
+            }
+            let px = rows_at(p, pitch, (l, t, l + w, t + h), bpp);
+            prop_assert_eq!(px.len() as u32, w * h * bpp);
+            for y in 0..h {
+                let want = mem::slice(p + (t + y) * pitch + l * bpp, w * bpp).to_vec();
+                prop_assert_eq!(&px[(y * w * bpp) as usize..((y + 1) * w * bpp) as usize], &want[..]);
+            }
+            mem::heap_free(p);
         }
 
         /// the same size is a copy; scaling picks source texels in order (nearest), never past
