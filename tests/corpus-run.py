@@ -4,7 +4,7 @@ title (download, extract, pack: tests/corpus-prep.sh) while the current one runs
 
   tests/corpus-run.py TITLES.tsv IDS_FILE OUT_DIR [--steps STEPS.tsv] [--keep]
 
-TITLES.tsv: id, url, exe_rel columns (header row); optional steps, story_at, pre, title_at, args columns.
+TITLES.tsv: id, url, exe_rel columns (header row); optional steps, story_at, pre, title_at, title_still, args columns.
 STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title)<TAB>title_at (seconds:
 the title from then on however few colours it has, a dark menu on black), wins over the columns.
 IDS_FILE "-": every title of TITLES.tsv.
@@ -148,6 +148,7 @@ while True:
         if at: e2['STORY_AT'] = at
         if pre: e2['PRE'] = pre  # launcher/settings dialog button before the title
         if tat: e2['TITLE_AT'] = tat
+        if titles[tid].get('title_still'): e2['TITLE_STILL'] = titles[tid]['title_still']
         t0 = time.time()
         try:
             subprocess.run(['node', f'{HERE}/corpus.mjs', f'http://127.0.0.1:{PORT}/play.html?{qs}', od, st], env=e2,

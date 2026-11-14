@@ -11,7 +11,7 @@ Writes OUT/result.json with the fields corpus.mjs writes. Standard library only 
   python winplay.py accept-driver-prompt SECONDS  answers the unsigned-driver prompt meanwhile
   python winplay.py meta TITLES.tsv ID EXE META.json   (any OS) what `play` needs of titles.tsv
   python winplay.py play GAME OUT                 GAME/meta.json + GAME/x: run with its settings
-  python winplay.py run EXE OUT [STEPS]           env: ARGS, PRE=x,y, STORY_AT=x,y, STORY (30),
+  python winplay.py run EXE OUT [STEPS]           env: ARGS, PRE=x,y, STORY_AT=x,y, TITLE_STILL (2), STORY (30),
                                                   TITLE_MAX (120)
 
 Japanese games on an English Windows: `run` gives the game (and every exe beside it) an external
@@ -51,6 +51,17 @@ def client_xy(x, y, cw, ch):
     if x < 1: x = round(x * cw)
     if y < 1: y = round(y * ch)
     return int(x), int(y)
+
+
+def settled(hashes, need):
+    """whether the title holds still: the frames of the last `need` seconds (one a second) are all
+    the same screen (titles.tsv's title_still, 2 by default), as tests/corpus/story.mjs"""
+    return len(hashes) > need and all(h == hashes[-1] for h in hashes[-need - 1:])
+
+
+def still_max(need):
+    """how long the wait for a still title lasts at most, as tests/corpus/story.mjs's stillMax"""
+    return 25 + max(0, need - 2) * 5
 
 
 def story_shot(s, story):
@@ -104,7 +115,8 @@ def meta(titles, tid, exe):
     for r in csv.DictReader(open(titles, encoding='utf-8'), delimiter='\t'):
         if r['id'] == tid:
             return {'id': tid, 'exe': exe, 'args': r.get('args') or '', 'steps': r.get('steps') or 'key:Return wait:3',
-                    'pre': r.get('pre') or '', 'story_at': r.get('story_at') or ''}
+                    'pre': r.get('pre') or '', 'story_at': r.get('story_at') or '',
+                    'title_still': r.get('title_still') or ''}
     raise SystemExit(f'{tid} is not in {titles}')
 
 
@@ -460,15 +472,13 @@ def run(exe, out, steps):
             res['crashed'] = not alive()
             save()
             return
-        prev, still, t = None, 0, now()
-        while now() - t < 25 and alive():
+        need, hashes, t = int(os.environ.get('TITLE_STILL') or 2), [], now()
+        while now() - t < still_max(need) and alive():
             time.sleep(1)
             f = frame()
             if not f: continue
-            h = stats(*f)[1]
-            still = still + 1 if h == prev else 0
-            prev = h
-            if still >= 2: break
+            hashes.append(stats(*f)[1])
+            if settled(hashes, need): break
         res['titleStill'] = now()
         f = shot('title')
         res['titleHash'] = stats(*f)[1] if f else None
@@ -519,7 +529,7 @@ if __name__ == '__main__':
     elif a[:1] == ['play'] and len(a) == 3:
         # (corpusref.yml: GAME/meta.json from `meta` on the Linux runner, the game in GAME/x)
         m = json.load(open(os.path.join(a[1], 'meta.json'), encoding='utf-8'))
-        for k, e in (('args', 'ARGS'), ('pre', 'PRE'), ('story_at', 'STORY_AT')):
+        for k, e in (('args', 'ARGS'), ('pre', 'PRE'), ('story_at', 'STORY_AT'), ('title_still', 'TITLE_STILL')):
             if m.get(k): os.environ[e] = m[k]
         run(os.path.join(a[1], 'x', *m['exe'].split('/')), a[2], m.get('steps') or 'key:Return wait:3')
     elif a[:1] == ['meta'] and len(a) == 5:

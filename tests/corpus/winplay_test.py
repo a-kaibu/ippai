@@ -213,5 +213,75 @@ class StoryShots(unittest.TestCase):
         self.assertEqual(json.loads(out), [winplay.story_shot(s, t) for s, t in cases])
 
 
+class TitleStill(unittest.TestCase):
+    """when the title counts as still (settled): one frame hash a second, as both harnesses take them"""
+
+    def first(self, frames, need):
+        hs = []
+        for i, h in enumerate(frames):
+            hs.append(h)
+            if winplay.settled(hs, need): return i
+        return None
+
+    def old_rule(self, frames):
+        # (the rule before title_still: still >= 2 of the frames that equal the one before)
+        prev, still = None, 0
+        for i, h in enumerate(frames):
+            still = still + 1 if h == prev else 0
+            prev = h
+            if still >= 2: return i
+        return None
+
+    def test_two_seconds_is_the_old_rule(self):
+        rnd = random.Random(95)
+        for _ in range(3000):
+            frames = [rnd.choice('abc') for _ in range(rnd.randrange(0, 30))]
+            self.assertEqual(self.first(frames, 2), self.old_rule(frames), frames)
+
+    def test_a_still_logo_is_not_the_title_with_title_still(self):
+        # b2023_appetite: the logo holds 3 s, fades, then the menu
+        frames = ['fade1', 'logo', 'logo', 'logo', 'logo', 'fade2', 'fade3'] + ['menu'] * 8
+        self.assertEqual(frames[self.first(frames, 2)], 'logo')
+        self.assertEqual(frames[self.first(frames, 5)], 'menu')
+
+    def test_a_stop_in_the_opening_is_not_the_title_with_title_still(self):
+        # b2007_marmalade: the opening stops 2 s halfway (a slow runner), the menu after it
+        frames = [f'op{i}' for i in range(5)] + ['stop'] * 3 + [f'op{i}' for i in range(5, 19)] + ['menu'] * 7
+        self.assertEqual(frames[self.first(frames, 2)], 'stop')
+        self.assertEqual(frames[self.first(frames, 5)], 'menu')
+        self.assertLessEqual(len(frames), winplay.still_max(5))
+
+    def test_an_animated_title_never_settles(self):
+        self.assertIsNone(self.first(['a', 'b'] * 30, 5))
+
+    def test_settled_means_the_last_need_seconds_are_one_screen(self):
+        rnd = random.Random(55)
+        for _ in range(3000):
+            need = rnd.randrange(1, 8)
+            hs = [rnd.choice('ab') for _ in range(rnd.randrange(0, 12))]
+            want = len(hs) >= need + 1 and len(set(hs[-need - 1:])) == 1
+            self.assertEqual(winplay.settled(hs, need), want, (hs, need))
+        self.assertEqual(winplay.still_max(2), 25)
+        self.assertGreater(winplay.still_max(5), winplay.still_max(2))
+
+    def test_the_same_rule_as_corpus_mjs(self):
+        # (differential: the page's rule, tests/corpus/story.mjs, under node)
+        import json, shutil, subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('no node')
+        rnd = random.Random(108)
+        cases = [([rnd.choice('ab') for _ in range(rnd.randrange(0, 10))], rnd.randrange(1, 7)) for _ in range(2000)]
+        js = ('import { settled, stillMax } from %s; const c = JSON.parse(process.argv[1]);'
+              'console.log(JSON.stringify(c.map(([h, n]) => [settled(h, n), stillMax(n)])));') % json.dumps('file://' + os.path.join(HERE, 'story.mjs'))
+        out = subprocess.run([node, '--input-type=module', '-e', js, json.dumps(cases)], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out), [[winplay.settled(h, n), winplay.still_max(n)] for h, n in cases])
+
+    def test_title_still_is_a_whole_number_of_seconds(self):
+        for r in csv.DictReader(open(os.path.join(HERE, 'titles.tsv'), encoding='utf-8'), delimiter='\t'):
+            if r.get('title_still'):
+                self.assertTrue(r['title_still'].isdigit() and int(r['title_still']) >= 2, r['id'])
+
+
 if __name__ == '__main__':
     unittest.main()

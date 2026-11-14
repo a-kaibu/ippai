@@ -1,4 +1,4 @@
-id	title	engine	year	url	exe_rel	args	steps	story_at	pre	wine	expect	smoke	look
+id	title	engine	year	url	exe_rel	args	steps	story_at	pre	wine	expect	smoke	look	title_still
 s2012_kaguya_sperman	スペルマン（体験版）	-	2012	http://suezou.dyndns.org/dl2012/kaguya/sperman/sperman_trial.zip	sperman_trial.exe.zip/スペルマン（体験版）/GAME_SYS.exe					none			
 s2016_kaguya_idol_pafupafu	アイドルパフパフマネージメント（体験版）	-	2016	http://suezou.dyndns.org/dl2016/kaguya/idol_pafupafu/IdolPafuPafu_trial.zip	アイドルパフパフマネージメント（体験版）/GAME_SYS.exe					title	title		
 s2017_inter_heart_glossy_hitozuma_ntr	人妻寝取り屋 Trial Version: 1.0.0.0 [data ver:1.00]	-	2017	http://suezou.dyndns.org/dl2017/inter-heart_glossy/hitozuma_ntr/tsumanetori-trial.zip	tsumanetori-trial/tsumanetori-trial.exe					title			
@@ -57,7 +57,7 @@ b2026_wendybell	友恵の探偵物語～のぞき魔な私の天職～体験版	
 b2012_fudegaki_soft	つぼい君のスイッチ！体験版	DxLib (MED)	2012	http://suezou.dyndns.org/dl2012/fudegaki-soft/tsuboi/TSUBOIKUN_NO_SWITCH_trial.zip	つぼい君のスイッチ！体験版/TSUBOI_trial.exe					none	title		
 b2012_trois	MonsterParkⅡ	DxLib (MED)	2012	http://suezou.dyndns.org/dl2012/trois/mop2/MOP2_TRIAL.zip	MOP2_TRIAL/MOP2_TRIAL.exe					none			
 b2018_fudegaki_soft	催眠学園１年生体験版	DxLib (MED)	2018	http://suezou.dyndns.org/dl2018/fudegaki-soft/saimin1nen/SG1nensei_trial.zip	催眠学園１年生_体験版/催眠学園１年生体験版.exe					title			
-b2007_marmalade	リリカル♪りりっく体験版	EntisGLS	2007	http://suezou.dyndns.org/dl2007/marmalade/lyric/lyric_trial.zip	リリカル♪りりっく体験版/lyrical.exe					title	title	1	steps
+b2007_marmalade	リリカル♪りりっく体験版	EntisGLS	2007	http://suezou.dyndns.org/dl2007/marmalade/lyric/lyric_trial.zip	リリカル♪りりっく体験版/lyrical.exe					title	title	1	steps	5
 b2009_marmalade	キスと魔王と紅茶（体験版）	EntisGLS	2009	http://suezou.dyndns.org/dl2009/marmalade/kissmao/kissmao_tr.zip	キスと魔王と紅茶_体験版/kisstea.exe					title			
 b2024_syrup_mm	狙われた優等生　身代わりの代償　体験版	EntisGLS	2024	http://suezou.dyndns.org/dl2024/syrup-mm/yutosei/yutosei_taikenban.zip	狙われた優等生体験版/yutosei.exe					title			
 s2025_marmalade_bakaple	バカップル・サプリメント体験版	EntisGLS	2025	http://suezou.dyndns.org/dl2025/marmalade/bakaple/bakaple-trial.rar	バカップルサプリメント体験版/bakaple.exe					title			
@@ -107,7 +107,7 @@ b2021_at_sakura	愛する彼女は画面の中、他の男の上で腰をふる 
 s2021_dualtail_vbhi	VenusBlood HOLLOW International SRPG Trial ENG Ver.	KiriKiri	2021	http://suezou.dyndns.org/dl2021/dualtail/vbhi/VBHI_SRPGTrial_EN.zip	VBHI_SRPGTrial_EN/VBHI.exe		click:500,636 wait:6			title			
 s2021_nanawind_kanade_gram_ch1	花鐘カナデ＊グラム Chapter1 -小桜結- 体験版	KiriKiri	2021	http://suezou.dyndns.org/dl2021/nanawind/kanade-gram_ch1/kanade-gram_ch1-trial.zip	花鐘カナデグラムch1_体験版/KanadeGramC1Trial/kanade_c1trial.exe					title			
 s2022_akabeesoft2_roleplayer_tororo	ROLEPLAYER：とろろ姉妹の粘膜ポトレ ぐりぐちゃLIVE！	KiriKiri	2022	http://suezou.dyndns.org/dl2022/akabeesoft2/roleplayer_tororo/ab2_roleplayer_tororoshimai_webtrial.zip	【Roleplayer：とろろ姉妹の粘膜ポトレ_ぐりぐちゃLIVE！】体験版/rpsisters2.exe					title			
-b2023_appetite	洗脳航路～エイリアンの苗床に導かれるエリート女軍人たち～　体験版　Ver1.00	KiriKiri	2023	http://suezou.dyndns.org/dl2023/appetite/senno_kouro/apt246_tr.zip	apt246_tr/sennokoro_tr.exe		key:Return wait:6			title	title	1	steps
+b2023_appetite	洗脳航路～エイリアンの苗床に導かれるエリート女軍人たち～　体験版　Ver1.00	KiriKiri	2023	http://suezou.dyndns.org/dl2023/appetite/senno_kouro/apt246_tr.zip	apt246_tr/sennokoro_tr.exe		key:Return wait:6			title	title	1	steps	5
 s2026_poison_motion_sxs2_me	姉妹X催眠２ - MOTION EDITION - 体験版	KiriKiri	2026	http://suezou.dyndns.org/dl2026/poison-motion/sxs2-me/sxs2me_trial.zip	sxs2me_trial/xsaimin2_me_tr.exe		click:640,600 wait:6 click:640,600 wait:8			title			
 r1_kag3	KAG3 紹介デモ	KiriKiri2	~2010	https://krkrz.github.io/download/kr2_232r2.zip	kr2_232r2/kirikiri2/krkr.eXe	..\kag3\syoukai\	click:322,121 wait:3 click:322,300 wait:2 click:322,300			none			
 b2006_lilim	とらぶるっ！	Lilim (AOS)	2006	http://suezou.dyndns.org/dl2006/lilim/toraburu/toraburu_trial_pre.lzh	序章ver/sfa9.exe					title			

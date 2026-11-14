@@ -7,14 +7,14 @@
 //
 // STEPS (client-area pixels of the game window, run once the title shows):
 //   "click:x,y wait:3 key:Return wait:5" (move:x,y: the mouse only) ; default: nothing (story clicks start right away)
-// env: PRE=x,y / PRE_KEYS=0 (see below), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title),
+// env: PRE=x,y / PRE_KEYS=0 (see below), TITLE_STILL=2 (seconds the title holds still), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title),
 // TITLE_AT=s (the title from then on even with few colours: 操心術外伝's dark menu on black), STORY_AT=x,y (story clicks,
 // default centre of the bottom fifth), CHROME_ARGS, PLAYWRIGHT
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
-import { storyShot } from "./corpus/story.mjs";
+import { storyShot, settled, stillMax } from "./corpus/story.mjs";
 
 const [url, out, steps = ""] = process.argv.slice(2);
 const STORY = Number(process.env.STORY ?? 60);
@@ -205,16 +205,16 @@ while (now() < TITLE_MAX && !crashed) {
   // (TITLE_AT=s: a title with few colours, a dark menu on black: the title from then on)
   if (TITLE_AT && now() >= TITLE_AT && !small(f)) { res.title = now(); break; }
 }
-// the title is drawn: wait until it holds still (menus fade in), at most 25 s
+// the title is drawn: wait until it holds still for TITLE_STILL s (menus fade in; titles.tsv's
+// title_still, 2 by default), at most stillMax s
 if (res.title !== null) {
-  let prev = null, still = 0;
-  for (const t = now(); now() - t < 25 && !crashed; ) {
+  const need = Number(process.env.TITLE_STILL || 2), hashes = [];
+  for (const t = now(); now() - t < stillMax(need) && !crashed; ) {
     await sleep(1);
     const f = await frame(false);
     if (!f || f.err) continue;
-    still = f.hash === prev ? still + 1 : 0;
-    prev = f.hash;
-    if (still >= 2) break;
+    hashes.push(f.hash);
+    if (settled(hashes, need)) break;
   }
   res.titleStill = now();
 }
