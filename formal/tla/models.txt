@@ -43,3 +43,6 @@ TranslateGate TranslateGateOld.cfg violation
 AfdPoll AfdPoll.cfg ok
 AfdPoll AfdPollNoRecheck.cfg violation
 AfdPoll AfdPollNoHook.cfg violation
+BudgetLock BudgetLock.cfg ok
+BudgetLock BudgetLockForce.cfg violation
+BudgetLock BudgetLockNoGrace.cfg violation

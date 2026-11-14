@@ -42,6 +42,25 @@ Every request to the bucket goes through the network worker:
 
   Every HTTP try takes from it, a retry too. A 429 stops every class, the game's too, for the
   wait the bucket asks (5 s when it names none), and the budget refills from none after it.
+- **The budget's lock.** The buffer starts with a lock word: 0 free, else its holder's tag (the
+  page 1, each network worker the page starts its own). A taker spins a while for it, and if
+  it cannot have it (its holder is not scheduled) it gives up without touching the budget: a
+  take says no and is tried again, a 429 lands a few ms later. Only the holder frees the word.
+  The page frees a worker's word only after it terminated that worker (a second after
+  `terminate()`, `masuFetchDispose`), and the budget then starts again from none. Before the
+  review of 2026-11-14 a taker out of tries wrote the budget anyway and freed the word, which a
+  worker that was only paused still held. Checked by formal/tla/BudgetLock.tla (TLC finds the
+  old way's two writers at once), web/src/budget.test.ts (real threads) and
+  tests/budget-browser.mjs (Chromium, workers and two tabs).
+- **Tabs split it.** The bucket counts requests per address, and every tab of the origin on the
+  device is the same address: tabs say they are there on a BroadcastChannel `masu-budget`
+  every second, each takes 1/(tabs) of the rate, burst and reserves, and a 429 in one tab
+  stops the others too (`shareAcrossTabs`). Other devices on the same line (a phone and a PC
+  at home) are not seen: each takes a whole budget, and the bucket's 429s (which stop all of a
+  device's classes) are what keeps them in. The storage itself stays on the Hugging Face bucket
+  (decided 2026-11-13); a store closer to Japan, measured against it with the same games, would
+  cut the 0.4-2 s of each read nothing predicted, and its per-address limit is one more thing to
+  compare.
 - **Who waits.** A pack's GET and the chunks it brings share one job: a game read of any of them
   makes the GET the game's. A game read that joins a fetch ahead still waiting for the chunk's
   Web Lock (held by the page's save) waits 1 s for it, then fetches the chunk itself.

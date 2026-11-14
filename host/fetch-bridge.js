@@ -488,55 +488,82 @@ var MASU_BURST = 40;
 var MASU_RESERVE = [-MASU_RATE * 5, 0, 8, 16, 16];
 
 /**
- * The shared budget: an Int32 lock word, then [tokens, last refill (Date.now()), blocked until
- * (Date.now())] as Float64, over a SharedArrayBuffer the page makes (web/src/net.ts netBudget:
- * its own save uses it too) or this worker's own.
+ * The shared budget: an Int32 lock word (0 free, else its holder's tag), then [tokens, last
+ * refill (Date.now()), blocked until (Date.now()), share of the line's budget (0, 1], the
+ * page's other tabs having the rest)] as Float64, over a SharedArrayBuffer the page makes
+ * (web/src/budget.ts netBudget: its own save uses it too) or this worker's own. The lock is only
+ * freed by its holder: a taker that cannot have it gives up for now without touching the budget
+ * (masuTake: no; masuDrain: again in a few ms); after the page terminated a worker, the page
+ * frees the lock that worker held (masuBudgetReclaim). formal/tla/BudgetLock.tla.
  */
-var MASU_BUDGET_BYTES = 32;
+var MASU_BUDGET_BYTES = 40;
+var MASU_BUDGET_SPIN = 1 << 14;
 var masuBudgetBuf;
-function masuBudgetInit(buf) {
+/** This context's tag in the lock word: the page's network worker gets its own from the page. */
+var masuBudgetTag = 1;
+function masuBudgetInit(buf, tag) {
   masuBudgetBuf = buf ?? masuBudgetBuf ?? (() => {
     const b = new (typeof SharedArrayBuffer === 'undefined' ? ArrayBuffer : SharedArrayBuffer)(MASU_BUDGET_BYTES);
-    new Float64Array(b, 8, 3).set([MASU_BURST, Date.now(), 0]);
+    new Float64Array(b, 8, 4).set([MASU_BURST, Date.now(), 0, 1]);
     return b;
   })();
+  if (tag) masuBudgetTag = tag;
   return masuBudgetBuf;
 }
-/** `f(values)` with the budget's lock held (a few instructions: spun for). */
+/** `{ v: f(values) }` with the budget's lock held (a few instructions: spun for, a while);
+ * undefined, `f` not run, when it could not be had (its holder not scheduled now). */
 function masuBudgetWith(f) {
   const buf = masuBudgetInit();
   const lock = new Int32Array(buf, 0, 1);
-  const v = new Float64Array(buf, 8, 3);
-  // (bounded, as budget.ts withBudget: a holder that died inside does not hang this thread)
-  for (let n = 0; Atomics.compareExchange(lock, 0, 0, 1) !== 0 && n < 1 << 20; n++);
+  const tag = masuBudgetTag;
+  for (let n = 0; Atomics.compareExchange(lock, 0, 0, tag) !== 0; n++) if (n >= MASU_BUDGET_SPIN) return undefined;
   try {
-    return f(v);
+    return { v: f(new Float64Array(buf, 8, 4)) };
   } finally {
-    Atomics.store(lock, 0, 0);
+    Atomics.compareExchange(lock, 0, tag, 0);
   }
 }
+/** The budget's share as a number in (0, 1]. */
+function masuBudgetShare(v) {
+  return v[3] > 0 && v[3] <= 1 ? v[3] : 1;
+}
 /** Takes one request of class `cls` from the budget (refilled to `now`): whether it may go.
- * While the bucket asked to wait (a 429), no class goes, the game's neither. */
+ * While the bucket asked to wait (a 429), no class goes, the game's neither; nor while the
+ * lock is held elsewhere (masuGate tries again). */
 function masuTake(cls, now = Date.now()) {
   return masuBudgetWith((v) => {
     if (now < v[2]) return false;
+    const s = masuBudgetShare(v);
     const dt = Math.max(0, now - v[1]) / 1000;
-    v[0] = Math.min(MASU_BURST, v[0] + dt * MASU_RATE);
+    v[0] = Math.min(MASU_BURST * s, v[0] + dt * MASU_RATE * s);
     v[1] = Math.max(v[1], now);
-    if (v[0] - 1 < (MASU_RESERVE[cls] ?? 0)) return false;
+    if (v[0] - 1 < (MASU_RESERVE[cls] ?? 0) * s) return false;
     v[0] -= 1;
     return true;
-  });
+  })?.v ?? false;
 }
 /** The bucket said 429: nobody goes for `ms`, and the budget refills only from then on, from
- * none (not a burst of every class at once when the wait ends). */
+ * none (not a burst of every class at once when the wait ends). Lands once the lock is free. */
 function masuDrain(ms, now = Date.now()) {
-  masuBudgetWith((v) => {
-    const until = now + ms;
+  const until = now + ms;
+  const done = masuBudgetWith((v) => {
     v[2] = Math.max(v[2], until);
     v[0] = Math.min(v[0], 0);
     v[1] = Math.max(v[1], until);
   });
+  if (!done) setTimeout(() => masuDrain(ms, now), 5);
+}
+/** On the page, after it terminated the worker tagged `dead` (masuFetchDispose): a lock that
+ * worker still held is freed and the budget starts again from none (its 429 wait kept), as
+ * budget.ts reclaim. Nothing while the lock is free or another's. */
+function masuBudgetReclaim(buf, dead, now = Date.now()) {
+  const lock = new Int32Array(buf, 0, 1);
+  if (!dead || Atomics.compareExchange(lock, 0, dead, 1) !== dead) return false;
+  const v = new Float64Array(buf, 8, 4);
+  const until = Number.isFinite(v[2]) ? v[2] : 0;
+  v.set([0, Math.max(now, until), until, masuBudgetShare(v)]);
+  Atomics.compareExchange(lock, 0, 1, 0);
+  return true;
 }
 /** Waits until `job` (its class read again each time) may make a request of the bucket; past
  * the game's, also until the chunks on their way onto the device are under MASU_SAVING_BYTES. */
@@ -1191,7 +1218,7 @@ function masuFetchWorker(event) {
   const m = event.data;
   // (not a read: chunks the game reads soon, the budget the page shares, a warm or save run)
   if (m.hint) return masuHint(m.hint);
-  if (m.budget) return void masuBudgetInit(m.budget);
+  if (m.budget) return void masuBudgetInit(m.budget, m.tag);
   if (m.warm) return void masuWarmRun(m.warm, (r) => event.target?.postMessage?.(r));
   const { url, shared, from, len, block } = m;
   const cls = m.cls ?? MASU_CLASS.game;
@@ -1236,13 +1263,13 @@ function masuFetchWorker(event) {
 
 /** The network worker's script: the functions above (and `more`), `main` its message handler. */
 function masuFetchWorkerSource(main, more = []) {
-  const vars = { MASU_CHUNKS, MASU_STALL_MS, MASU_GIVE_UP_MS, MASU_RETRY_STATUS, MASU_BAD_CHUNK, MASU_CHECKED, MASU_CACHE_MS, MASU_BRIDGE_HEADER, MASU_BRIDGE_BYTES, MASU_RECENT_BYTES, MASU_DIRECT_KEEP_MS, MASU_DIRECT_ASK_MS, MASU_DIRECT_MANY, MASU_CLASS, MASU_RATE, MASU_BURST, MASU_RESERVE, MASU_HINT_WIDTH, MASU_HINT_MAX, MASU_PACK_SPAN, MASU_PACK_MAX, MASU_CHUNK_DIR, MASU_HANDLE_MS, MASU_HANDLES, MASU_BUDGET_BYTES, MASU_SAVING_BYTES, MASU_LOCK_WAIT_MS, MASU_FOLLOW, MASU_PUT_MS };
-  const fns = [masuIsChunk, masuBlake3, masuChunkOk, masuBackoff, masuPause, masuFetchOnce, masuNetReport, masuCacheStep, masuCache, masuChunkFile, masuOpfsStore, masuRange, masuKeepRecent, masuKeep, masuHeld, masuBlockKey, masuBudgetInit, masuBudgetWith, masuTake, masuDrain, masuGate, masuWhole, masuRobustOnce, masuStartWhole, masuHint, masuHintPump, masuNextAdd, masuFollow, masuReadStart, masuReadEnd, masuDirectFresh, masuDirectValid, masuDirectMany, masuPackValid, masuPackNote, masuPackRun, masuDirect, masuHex, masuOpen, masuZstdSize, masuUnzstd, masuFetchPart, masuFetchRobust, masuWarmRun, masuFetchWorker];
+  const vars = { MASU_CHUNKS, MASU_STALL_MS, MASU_GIVE_UP_MS, MASU_RETRY_STATUS, MASU_BAD_CHUNK, MASU_CHECKED, MASU_CACHE_MS, MASU_BRIDGE_HEADER, MASU_BRIDGE_BYTES, MASU_RECENT_BYTES, MASU_DIRECT_KEEP_MS, MASU_DIRECT_ASK_MS, MASU_DIRECT_MANY, MASU_CLASS, MASU_RATE, MASU_BURST, MASU_RESERVE, MASU_HINT_WIDTH, MASU_HINT_MAX, MASU_PACK_SPAN, MASU_PACK_MAX, MASU_CHUNK_DIR, MASU_HANDLE_MS, MASU_HANDLES, MASU_BUDGET_BYTES, MASU_BUDGET_SPIN, MASU_SAVING_BYTES, MASU_LOCK_WAIT_MS, MASU_FOLLOW, MASU_PUT_MS };
+  const fns = [masuIsChunk, masuBlake3, masuChunkOk, masuBackoff, masuPause, masuFetchOnce, masuNetReport, masuCacheStep, masuCache, masuChunkFile, masuOpfsStore, masuRange, masuKeepRecent, masuKeep, masuHeld, masuBlockKey, masuBudgetInit, masuBudgetWith, masuBudgetShare, masuTake, masuDrain, masuGate, masuWhole, masuRobustOnce, masuStartWhole, masuHint, masuHintPump, masuNextAdd, masuFollow, masuReadStart, masuReadEnd, masuDirectFresh, masuDirectValid, masuDirectMany, masuPackValid, masuPackNote, masuPackRun, masuDirect, masuHex, masuOpen, masuZstdSize, masuUnzstd, masuFetchPart, masuFetchRobust, masuWarmRun, masuFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var masuNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',
     'var masuCacheOpen, masuRecent = new Map(), masuDirectInfo = new Map(), masuDirectOff = false, masuZstd;',
-    'var masuDirectAsking = new Map(), masuDirectManyOff = false, masuBudgetBuf, masuGameWaiting = 0, masuInflight = new Map(), masuRobustInflight = new Map(), masuKeys = new Map();',
+    'var masuDirectAsking = new Map(), masuDirectManyOff = false, masuBudgetBuf, masuBudgetTag = 1, masuGameWaiting = 0, masuInflight = new Map(), masuRobustInflight = new Map(), masuKeys = new Map();',
     'var masuHints = [], masuHintsSeen = new Set(), masuHintsGoing = 0, masuPacks = new Map(), masuSaving = new Map(), masuSavingBytes = 0;',
     "var masuNext = new Map(), masuReadSeen = new Set(), masuReads = { device: [0, 0], saving: [0, 0], coming: [0, 0], none: [0, 0], followed: 0, hinted: 0 };",
     'masuWhole.LATE = {};',
@@ -1326,16 +1353,23 @@ function masuFetchConnect() {
     masuFetchWorkerInstance = new Worker(url);
     URL.revokeObjectURL(url);
     // (the page's budget of bucket requests: its own save takes from it too, web/src/net.ts)
+    // (each worker its own tag in the budget's lock word: the page frees only a terminated one's)
     const budget = typeof Module !== 'undefined' ? Module.masuNetBudget : undefined;
-    if (budget) masuFetchWorkerInstance.postMessage({ budget });
+    if (budget) masuFetchWorkerInstance.postMessage({ budget, tag: (masuFetchWorkerTag = masuFetchTagNext++) });
   }
   const channel = new MessageChannel();
   masuFetchWorkerInstance.postMessage({port:channel.port1}, [channel.port1]);
   return channel.port2;
 }
+var masuFetchTagNext = 2, masuFetchWorkerTag = 0;
 function masuFetchDispose() {
   masuFetchWorkerInstance?.terminate();
   masuFetchWorkerInstance = undefined;
+  // (terminated, so it holds the budget's lock no longer: freed once it surely stopped running)
+  const budget = typeof Module !== 'undefined' ? Module.masuNetBudget : undefined;
+  const dead = masuFetchWorkerTag;
+  masuFetchWorkerTag = 0;
+  if (budget && dead) setTimeout(() => masuBudgetReclaim(budget, dead), 1000);
 }
 
 var masuBridgeBuffer;

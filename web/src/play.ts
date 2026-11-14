@@ -70,7 +70,7 @@ import { savedChunks } from "./offline";
 import { sakeWasmBytes, wasmModuleArg } from "./wasmsource";
 import { deviceChunks } from "./chunkstore";
 import { fetchForesee, handForesee, mountedTrees } from "./foresee";
-import { netBudget, setGameBusy } from "./budget";
+import { netBudget, setGameBusy, shareAcrossTabs } from "./budget";
 import {
   builds,
   getState,
@@ -738,6 +738,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   if (!stateMem) void loaded.then((l) => l && handLate(sake, l.late));
   // (a save to the device going on meanwhile gives way while the game waits: offline.ts)
   setGameBusy(() => !!sake._vnhost_net_busy?.());
+  // (the bucket counts requests per address: other tabs on this device playing take their share)
+  shareAcrossTabs();
   // the rest of the game's files onto the device while it plays: what earlier runs read first,
   // in that order, then the trees' others; fewer at once while it waits for a read (warm.ts)
   if (sake.masuWarm && warmAllowed(conn) && params.get("warm") !== "0")

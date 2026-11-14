@@ -76,6 +76,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
         run: node tests/net-browser.mjs
+      - name: The bucket's request budget across workers and tabs (lock never taken over)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/masu-browser/node_modules/playwright/index.mjs
+        run: (cd web && pnpm install --frozen-lockfile) && node tests/budget-browser.mjs
       - name: Bench report (a failed run stays out of the history)
         run: python3 tests/bench/test_report.py
       - run: tools/ci/rust-key.sh
