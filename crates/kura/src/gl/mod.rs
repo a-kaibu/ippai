@@ -1343,14 +1343,19 @@ pub(crate) fn assemble(mode: u32, n: usize) -> (u32, Vec<usize>) {
 
 /// The current draw framebuffer: (color texture, level, depth texture, width, height)
 pub(crate) fn target(g: &mut Gl, c: &Ctx) -> Option<(u32, u32, u32, u32, u32)> {
-    if c.fbo_draw == 0 {
+    target_of(g, c, c.fbo_draw)
+}
+
+/// `target` of framebuffer `fbo` (0: the window's) of context `c`
+fn target_of(g: &mut Gl, c: &Ctx, fbo: u32) -> Option<(u32, u32, u32, u32, u32)> {
+    if fbo == 0 {
         if c.draw == 0 {
             return None;
         }
         let d = drawable(g, c.draw, c.w.max(1), c.h.max(1));
         return Some((d.color, 0, d.depth, d.w, d.h));
     }
-    let f = g.fbos.get(&c.fbo_draw)?;
+    let f = g.fbos.get(&fbo)?;
     let (color, depth) = (f.color, f.depth);
     let att = |g: &Gl, a: Att| -> Option<(u32, u32, u32, u32)> {
         match a {
@@ -2114,14 +2119,7 @@ extern "C" fn glGenerateMipmap(target: u32) {
 
 /// The read framebuffer's color texture and level.
 fn read_target(g: &mut Gl, c: &Ctx) -> Option<(u32, u32, u32, u32)> {
-    let saved = c.fbo_draw;
-    let mut tmp = Ctx::new();
-    tmp.fbo_draw = c.fbo_read;
-    tmp.draw = c.draw;
-    tmp.w = c.w;
-    tmp.h = c.h;
-    let _ = saved;
-    target(g, &tmp).map(|t| (t.0, t.1, t.3, t.4))
+    target_of(g, c, c.fbo_read).map(|t| (t.0, t.1, t.3, t.4))
 }
 
 extern "C" fn glCopyTexSubImage2D(target: u32, level: i32, xo: i32, yo: i32, x: i32, y: i32, w: i32, h: i32) {

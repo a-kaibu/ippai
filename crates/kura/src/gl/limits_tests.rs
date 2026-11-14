@@ -357,3 +357,108 @@ fn client_arrays_stay_in_guest_memory() {
         assert_eq!(fetch(g, &a, i, def), def, "{:?} {} {:#x} vertex {i}", a.size, a.stride, a.ptr);
     }
 }
+
+/// Where glReadPixels / glCopyTex(Sub)Image2D read from: the framebuffer bound for reading,
+/// apart from the one bound for drawing (GL_READ_FRAMEBUFFER / GL_DRAW_FRAMEBUFFER), against a
+/// model of random renderbuffers and textures (levels too) attached to random framebuffers,
+/// the window's, and names never attached.
+#[test]
+fn reads_come_from_the_read_framebuffer() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    crate::d3d9::trace_tests::attach_page();
+    *GL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let ctx = vngl_context_create(0);
+    vngl_make_current(ctx, 0x1234, 40, 24);
+    let mut r = Rng(0xfb0_5eed);
+    // (the model: what each colour attachment is, as (kind, name, level, w, h))
+    let mut rbs = Vec::new();
+    let mut texs = Vec::new();
+    for k in 0..6 {
+        let (w, h) = (1 + r.below(300) as i32, 1 + r.below(300) as i32);
+        let mut n = 0;
+        unsafe {
+            if k % 2 == 0 {
+                glGenRenderbuffers(1, &mut n);
+                glBindRenderbuffer(0x8D41, n);
+                glRenderbufferStorage(0x8D41, 0x8058, w, h);
+                rbs.push((n, w as u32, h as u32));
+            } else {
+                glGenTextures(1, &mut n);
+                glBindTexture(GL_TEXTURE_2D, n);
+                for l in 0..3 {
+                    glTexImage2D(GL_TEXTURE_2D, l, 0x1908, (w >> l).max(1), (h >> l).max(1), 0, 0x1908, 0x1401, std::ptr::null());
+                }
+                texs.push((n, w as u32, h as u32));
+            }
+        }
+    }
+    let mut fbos: HashMap<u32, Option<(bool, u32, u32)>> = HashMap::new();
+    let (mut read, mut draw) = (0u32, 0u32);
+    for step in 0..400 {
+        match r.below(4) {
+            0 => {
+                let mut f = 0;
+                unsafe { glGenFramebuffers(1, &mut f) };
+                glBindFramebuffer(0x8CA9, f);
+                draw = f;
+                let a = match r.below(3) {
+                    0 => {
+                        let (n, ..) = rbs[r.below(rbs.len())];
+                        glFramebufferRenderbuffer(0x8CA9, GL_COLOR_ATTACHMENT0, 0x8D41, n);
+                        Some((false, n, 0))
+                    }
+                    1 => {
+                        let ((n, ..), l) = (texs[r.below(texs.len())], r.below(3) as u32);
+                        glFramebufferTexture2D(0x8CA9, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, n, l as i32);
+                        Some((true, n, l))
+                    }
+                    _ => None,
+                };
+                fbos.insert(f, a);
+            }
+            1 | 2 => {
+                let names: Vec<u32> = fbos.keys().copied().collect();
+                let f = if names.is_empty() || r.chance(20) { 0 } else { names[r.below(names.len())] };
+                let t = [0x8CA8, 0x8CA9, GL_FRAMEBUFFER][r.below(3)];
+                glBindFramebuffer(t, f);
+                if t != 0x8CA9 {
+                    read = f;
+                }
+                if t != 0x8CA8 {
+                    draw = f;
+                }
+            }
+            _ => {}
+        }
+        let mut lk = GL.lock().unwrap();
+        let g = lk.as_mut().unwrap();
+        let c = g.ctxs.remove(&ctx).unwrap();
+        let got = read_target(g, &c);
+        let want = |g: &Gl, f: u32| -> Option<(u32, u32, u32, u32)> {
+            if f == 0 {
+                return Some((u32::MAX, 0, 40, 24));
+            }
+            let (tex, n, l) = (*fbos.get(&f)?)?;
+            if tex {
+                let t = &g.textures[&n];
+                Some((t.gpu, l, (t.w >> l).max(1), (t.h >> l).max(1)))
+            } else {
+                let rb = rbs.iter().find(|x| x.0 == n).unwrap();
+                Some((g.rbs[&n].gpu, 0, rb.1, rb.2))
+            }
+        };
+        let w = want(g, read);
+        match (got, w) {
+            (Some(a), Some(b)) if b.0 == u32::MAX => assert_eq!((a.1, a.2, a.3), (b.1, b.2, b.3), "step {step}: window"),
+            (a, b) => assert_eq!(a, b, "step {step}: read {read} draw {draw}"),
+        }
+        // (and drawing still goes to the draw binding)
+        let d = target(g, &c).map(|t| (t.0, t.1, t.3, t.4));
+        let wd = want(g, draw);
+        match (d, wd) {
+            (Some(a), Some(b)) if b.0 == u32::MAX => assert_eq!((a.2, a.3), (b.2, b.3), "step {step}: window draw"),
+            (a, b) => assert_eq!(a, b, "step {step}: draw {draw}"),
+        }
+        g.ctxs.insert(ctx, c);
+    }
+}
