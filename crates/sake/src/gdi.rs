@@ -2601,8 +2601,15 @@ fn DeleteObject(c: &mut Ctx) -> u32 {
         if t.solid_h.contains(&h) {
             return 1;
         }
-        if let Some(G::Bitmap(b)) = t.m.remove(&h) {
-            free_bitmap(&b);
+        match t.m.remove(&h) {
+            Some(G::Bitmap(b)) => free_bitmap(&b),
+            // (a DIB pattern brush's own copy of the DIB)
+            Some(G::Brush(b)) if b.style == 5 => {
+                if let Some(G::Bitmap(b)) = t.m.remove(&b.pattern) {
+                    free_bitmap(&b);
+                }
+            }
+            _ => {}
         }
         1
     })
@@ -2715,6 +2722,33 @@ fn CreateHatchBrush(c: &mut Ctx) -> u32 {
 }
 fn CreatePatternBrush(c: &mut Ctx) -> u32 {
     add(G::Brush(Brush { style: 3, color: 0, hatch: 0, pattern: c.a(0) }))
+}
+/// CreateDIBPatternBrushPt / CreateDIBPatternBrush: the packed DIB is copied (the caller may
+/// free it), as a DIB of its own format and color table (BS_DIBPATTERN, style 5), so the pattern
+/// takes part in raster operations as a DIB source does; DeleteObject frees the copy.
+fn dib_pattern_brush(p: u32, usage: u32) -> u32 {
+    if p == 0 {
+        return 0;
+    }
+    let Some(i) = dib_info(p, usage, &default_palette()) else { return 0 };
+    if !matches!(i.compression, 0 | 3) {
+        return 0;
+    }
+    let size = i.stride * i.h as u32;
+    let bits = mem::heap_alloc(size.max(4), true);
+    if bits == 0 {
+        return 0;
+    }
+    mem::copy(bits, p + dib_header_len(p, &i), size);
+    let bm = Bitmap { w: i.w, h: i.h, bpp: i.bpp, bits, stride: i.stride, bottom_up: !i.top_down, pal: i.pal, r565: i.r565, dib: true, own: 1 };
+    let pattern = add(G::Bitmap(bm));
+    add(G::Brush(Brush { style: 5, color: usage, hatch: 0, pattern }))
+}
+fn CreateDIBPatternBrushPt(c: &mut Ctx) -> u32 {
+    dib_pattern_brush(c.a(0), c.a(1))
+}
+fn CreateDIBPatternBrush(c: &mut Ctx) -> u32 {
+    dib_pattern_brush(crate::k32::global_lock(c.a(0)), c.a(1))
 }
 fn CreatePen(c: &mut Ctx) -> u32 {
     add(G::Pen(Pen { style: c.a(0), width: c.i(1).max(1), color: c.a(2) }))
@@ -5286,7 +5320,7 @@ fn register() {
     reg!("gdi32";
         GetStockObject, CreateCompatibleDC, CreateDCA, CreateDCW, CreateICA, CreateICW, DeleteDC, GetObjectType,
         SelectObject, DeleteObject, GetObjectA, GetObjectW, GetCurrentObject,
-        CreateSolidBrush, CreateBrushIndirect, CreateHatchBrush, CreatePatternBrush, CreatePen, CreatePenIndirect,
+        CreateSolidBrush, CreateBrushIndirect, CreateHatchBrush, CreatePatternBrush, CreateDIBPatternBrushPt, CreateDIBPatternBrush, CreatePen, CreatePenIndirect,
         ExtCreatePen, SetDCBrushColor, SetDCPenColor, UnrealizeObject,
         SetTextColor, SetBkColor, SetBkMode, SetROP2, SetStretchBltMode, SetMapMode, SetTextAlign,
         GetTextColor, GetBkColor, GetBkMode, GetROP2, GetStretchBltMode, GetMapMode, GetTextAlign,
