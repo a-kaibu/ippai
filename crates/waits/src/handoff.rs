@@ -27,9 +27,13 @@
 
 #[cfg(loom)]
 use loom::sync::atomic::AtomicU32;
+#[cfg(loom)]
+use loom::sync::{Condvar, Mutex};
 #[cfg(not(loom))]
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering::{Acquire, Release};
+#[cfg(not(loom))]
+use std::sync::{Condvar, Mutex};
+use std::sync::atomic::Ordering::{Acquire, SeqCst};
 use std::time::Duration;
 
 /// The longest a woken waiter waits for a signaler that makes no progress at all (in the
@@ -46,9 +50,17 @@ pub struct Mark {
 
 /// The guest threads' API counters (thread ids share a slot modulo the table's size: a shared
 /// slot only ends a wait early)
+///
+/// A waiter sleeps on a condition variable that a counter's move wakes while anyone waits
+/// (it polled with 20-50 us sleeps for up to the cap before: tens of thousands of wakeups
+/// for one stalled signaler); a call made with nobody waiting costs one more load.
 pub struct Handoff {
     seq: Vec<AtomicU32>,
     work: Vec<AtomicU32>,
+    /// threads in wait_passed / wait_worked
+    waiting: AtomicU32,
+    park: Mutex<()>,
+    cv: Condvar,
 }
 
 /// The longest a sender waits for the one answered before it to reach a call that does
@@ -58,7 +70,51 @@ pub const WORK_CAP: Duration = Duration::from_millis(250);
 impl Handoff {
     pub fn new(slots: usize) -> Self {
         let n = slots.max(1);
-        Handoff { seq: (0..n).map(|_| AtomicU32::new(0)).collect(), work: (0..n).map(|_| AtomicU32::new(0)).collect() }
+        Handoff { seq: (0..n).map(|_| AtomicU32::new(0)).collect(), work: (0..n).map(|_| AtomicU32::new(0)).collect(), waiting: AtomicU32::new(0), park: Mutex::new(()), cv: Condvar::new() }
+    }
+    /// A counter moved: the waiters (if any) look again. (SeqCst against the waiter's count:
+    /// either this sees it and wakes it under the lock, or the waiter sees the move.)
+    fn moved(&self, c: &AtomicU32) {
+        c.fetch_add(1, SeqCst);
+        // (the SeqCst add and load are ordered against the waiter's count and fence already;
+        // loom models only the fence: a call pays no fence)
+        #[cfg(loom)]
+        crate::handshake();
+        if self.waiting.load(SeqCst) != 0 {
+            let _g = self.park.lock().unwrap_or_else(|e| e.into_inner());
+            self.cv.notify_all();
+        }
+    }
+    /// Waits until `done()`, at most `cap` (loom: no cap). Whether it got there.
+    fn wait_until(&self, done: impl Fn() -> bool, cap: Duration) -> bool {
+        if done() {
+            return true;
+        }
+        self.waiting.fetch_add(1, SeqCst);
+        crate::handshake();
+        #[cfg(not(loom))]
+        let start = std::time::Instant::now();
+        let mut g = self.park.lock().unwrap_or_else(|e| e.into_inner());
+        let got = loop {
+            if done() {
+                break true;
+            }
+            #[cfg(loom)]
+            {
+                let _ = cap;
+                g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            #[cfg(not(loom))]
+            {
+                let Some(left) = cap.checked_sub(start.elapsed()).filter(|d| !d.is_zero()) else {
+                    break false;
+                };
+                g = self.cv.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()).0;
+            }
+        };
+        drop(g);
+        self.waiting.fetch_sub(1, SeqCst);
+        got
     }
     fn slot(&self, tid: u32) -> &AtomicU32 {
         // (Windows thread ids are multiples of 4)
@@ -70,7 +126,7 @@ impl Handoff {
     /// Thread `tid` enters a call that does something (or ends): what it stored before is
     /// visible to a sender that sees the counter move
     pub fn worked(&self, tid: u32) {
-        self.work_slot(tid).fetch_add(1, Release);
+        self.moved(self.work_slot(tid));
     }
     /// Thread `tid`'s work counter now (before it goes on from a SendMessage)
     pub fn work_mark(&self, tid: u32) -> Mark {
@@ -86,34 +142,17 @@ impl Handoff {
         if m.tid == me {
             return true;
         }
-        #[cfg(loom)]
-        let _ = cap;
-        #[cfg(not(loom))]
-        let start = std::time::Instant::now();
-        loop {
-            if self.worked_since(m) {
-                return true;
-            }
-            #[cfg(loom)]
-            loom::thread::yield_now();
-            #[cfg(not(loom))]
-            {
-                if start.elapsed() >= cap {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_micros(50));
-            }
-        }
+        self.wait_until(|| self.worked_since(m), cap)
     }
     /// Thread `tid` enters an API call: what it stored before is visible to a waiter that sees
     /// the counter move
     pub fn entered(&self, tid: u32) {
-        self.slot(tid).fetch_add(1, Release);
+        self.moved(self.slot(tid));
     }
     /// Thread `tid` ran a slice of guest code since its last API call or slice: what it stored
     /// is visible as after [`Self::entered`]
     pub fn progressed(&self, tid: u32) {
-        self.slot(tid).fetch_add(1, Release);
+        self.moved(self.slot(tid));
     }
     /// Thread `tid` signals something (in an API call: its counter already counts that call)
     pub fn mark(&self, tid: u32) -> Mark {
@@ -129,22 +168,7 @@ impl Handoff {
         if m.tid == me {
             return true;
         }
-        #[cfg(not(loom))]
-        let start = std::time::Instant::now();
-        loop {
-            if self.passed(m) {
-                return true;
-            }
-            #[cfg(loom)]
-            loom::thread::yield_now();
-            #[cfg(not(loom))]
-            {
-                if start.elapsed() >= CAP {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_micros(20));
-            }
-        }
+        self.wait_until(|| self.passed(m), CAP)
     }
 }
 
@@ -284,6 +308,40 @@ mod tests {
         assert!(start.elapsed() < CAP / 4, "{:?}", start.elapsed());
         stop.store(true, Relaxed);
         t.join().unwrap();
+    }
+
+    /// review b11: a waiter of a stalled signaler sleeps until the signaler's next call (it
+    /// polled every 20 us before: ~50 000 sleeps for the full cap) and wakes right after it
+    #[test]
+    fn a_waiter_sleeps_and_the_next_call_wakes_it() {
+        let h = Arc::new(Handoff::new(64));
+        h.entered(0x24);
+        let m = h.mark(0x24);
+        let h2 = h.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let at = std::time::Instant::now();
+            h2.entered(0x24);
+            at
+        });
+        let cpu0 = cpu_time();
+        assert!(h.wait_passed(m, 0x20));
+        let woke = std::time::Instant::now();
+        let called = t.join().unwrap();
+        assert!(woke.duration_since(called) < Duration::from_millis(50), "{:?}", woke.duration_since(called));
+        // (a sleeping waiter uses almost no CPU over the 150 ms)
+        if let (Some(a), Some(b)) = (cpu0, cpu_time()) {
+            assert!(b - a < Duration::from_millis(60), "{:?}", b - a);
+        }
+        assert_eq!(h.waiting.load(SeqCst), 0);
+    }
+
+    /// this thread's CPU time (Linux), None elsewhere
+    fn cpu_time() -> Option<Duration> {
+        let s = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
+        let f: Vec<&str> = s.rsplit_once(')')?.1.split_whitespace().collect();
+        let ticks: u64 = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
+        Some(Duration::from_millis(ticks * 10))
     }
 
     proptest! {

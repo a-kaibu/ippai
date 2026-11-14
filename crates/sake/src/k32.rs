@@ -1437,7 +1437,7 @@ pub(crate) fn sleep_ms(ms: u32) {
         check_terminate();
     }
 }
-// WaitOnAddress: one generation for all addresses (crates/waits)
+// WaitOnAddress: a generation per parking bucket of addresses (crates/waits)
 static ADDR: waits::Addr = waits::Addr::new();
 
 /// A save state: the waits here stand still where a restored copy calls the API again.
@@ -1478,10 +1478,10 @@ pub(crate) fn wait_on_address(a: u32, cmp: u32, size: u32, ms: u32) -> Result<()
         return Err(87);
     };
     // (the value is looked at under the lock: a waker changes it, then takes it to wake)
-    if ADDR.wait(|| value_at(a, size) == Some(want), ms, &Pause) { Ok(()) } else { Err(1460) }
+    if ADDR.wait(a as usize, || value_at(a, size) == Some(want), ms, &Pause) { Ok(()) } else { Err(1460) }
 }
-fn WakeByAddressAll(_: &mut Ctx) -> u32 {
-    ADDR.wake_all();
+fn WakeByAddressAll(c: &mut Ctx) -> u32 {
+    ADDR.wake(c.a(0) as usize);
     0
 }
 
@@ -2154,8 +2154,8 @@ pub fn cs_leave(cs: u32) {
     CS.leave(atomic(cs + cs_off(OWNER)), atomic(cs + cs_off(SEM)));
 }
 /// Wakes the waiters of `cs` (fast::leave_cs found some after releasing it).
-pub fn cs_wake(_cs: u32) {
-    CS.wake();
+pub fn cs_wake(cs: u32) {
+    CS.wake_at(atomic(cs + cs_off(OWNER)));
 }
 fn InitializeCriticalSection(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));

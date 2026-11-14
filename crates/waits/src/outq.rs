@@ -40,11 +40,22 @@ impl<const N: usize> Ring<N> {
         Ring { buf: [0; N], start: 0, len: 0, dropped: 0 }
     }
 
+    /// (at most two copies: up to the ring's end, then from its start)
     fn put(&mut self, b: &[u8]) {
-        for &x in b {
-            self.buf[(self.start + self.len) % N] = x;
-            self.len += 1;
-        }
+        let at = (self.start + self.len) % N;
+        let first = b.len().min(N - at);
+        self.buf[at..at + first].copy_from_slice(&b[..first]);
+        self.buf[..b.len() - first].copy_from_slice(&b[first..]);
+        self.len += b.len();
+    }
+
+    /// `out.len()` bytes from `at` bytes past the oldest record's start (two copies at most)
+    fn read(&self, at: usize, out: &mut [u8]) {
+        let from = (self.start + at) % N;
+        let first = out.len().min(N - from);
+        out[..first].copy_from_slice(&self.buf[from..from + first]);
+        let rest = out.len() - first;
+        out[first..].copy_from_slice(&self.buf[..rest]);
     }
 
     fn peek(&self, at: usize) -> u8 {
@@ -95,9 +106,7 @@ impl<const N: usize> Ring<N> {
             if out.len() - w < HEAD + n {
                 break;
             }
-            for i in 0..HEAD + n {
-                out[w + i] = self.peek(i);
-            }
+            self.read(0, &mut out[w..w + HEAD + n]);
             w += HEAD + n;
             self.start = (self.start + HEAD + n) % N;
             self.len -= HEAD + n;

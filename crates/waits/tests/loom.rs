@@ -439,13 +439,101 @@ fn wait_on_address_loses_no_wakeup() {
             let (a, v) = (a.clone(), v.clone());
             thread::spawn(move || {
                 v.store(1, SeqCst);
-                a.wake_all();
+                a.wake(0x10);
             })
         };
         while v.load(SeqCst) == 0 {
-            assert!(a.wait(|| v.load(SeqCst) == 0, u32::MAX, &NoPause));
+            assert!(a.wait(0x10, || v.load(SeqCst) == 0, u32::MAX, &NoPause));
         }
         t.join().unwrap();
+    });
+}
+
+/// Two condition variables whose waiters park in the same bucket, or in different ones
+/// (waits::bucket over loom's two): each waiter sees its own wake, none is lost to the other's,
+/// and no entry stays once both are done.
+#[test]
+fn condition_variables_of_two_addresses_lose_no_wakeup() {
+    let a = 0x40u32;
+    let same = (0x44u32..).step_by(4).find(|&b| waits::bucket(b as usize) == waits::bucket(a as usize)).unwrap();
+    let other = (0x44u32..).step_by(4).find(|&b| waits::bucket(b as usize) != waits::bucket(a as usize)).unwrap();
+    for b in [same, other] {
+        model(move || {
+            let sync = Arc::new(Waits::new());
+            let flags = Arc::new(AtomicU32::new(0));
+            // (the flags are guarded by an SRW lock, the condition variables' lock)
+            let word = Arc::new(AtomicU32::new(0));
+            let w = |sync: Arc<Waits>, flags: Arc<AtomicU32>, word: Arc<AtomicU32>, cv: u32, bit: u32| {
+                thread::spawn(move || {
+                    sync.srw_acquire(&word, false, &NoPause);
+                    while flags.load(SeqCst) & bit == 0 {
+                        sync.cv_wait(cv, u32::MAX, || sync.srw_release(&word, false), || sync.srw_acquire(&word, false, &NoPause), &NoPause);
+                    }
+                    sync.srw_release(&word, false);
+                })
+            };
+            let t1 = w(sync.clone(), flags.clone(), word.clone(), a, 1);
+            let t2 = w(sync.clone(), flags.clone(), word.clone(), b, 2);
+            for (bit, cv) in [(1, a), (2, b)] {
+                sync.srw_acquire(&word, false, &NoPause);
+                flags.fetch_or(bit, SeqCst);
+                sync.srw_release(&word, false);
+                sync.cv_wake(cv);
+            }
+            t1.join().unwrap();
+            t2.join().unwrap();
+            assert_eq!(sync.cv_entries(), 0);
+        });
+    }
+}
+
+/// WaitOnAddress at two addresses (one bucket or two): each waiter's wake reaches it.
+#[test]
+fn wait_on_two_addresses_loses_no_wakeup() {
+    let same = (0x14usize..).step_by(4).find(|&b| waits::bucket(b) == waits::bucket(0x10)).unwrap();
+    let other = (0x14usize..).step_by(4).find(|&b| waits::bucket(b) != waits::bucket(0x10)).unwrap();
+    for b in [same, other] {
+        model(move || {
+            let a = Arc::new(waits::Addr::new());
+            let v = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+            let t = {
+                let (a, v) = (a.clone(), v.clone());
+                thread::spawn(move || {
+                    while v[1].load(SeqCst) == 0 {
+                        a.wait(b, || v[1].load(SeqCst) == 0, u32::MAX, &NoPause);
+                    }
+                })
+            };
+            let t2 = {
+                let (a, v) = (a.clone(), v.clone());
+                thread::spawn(move || {
+                    v[0].store(1, SeqCst);
+                    a.wake(0x10);
+                    v[1].store(1, SeqCst);
+                    a.wake(b);
+                })
+            };
+            while v[0].load(SeqCst) == 0 {
+                a.wait(0x10, || v[0].load(SeqCst) == 0, u32::MAX, &NoPause);
+            }
+            t.join().unwrap();
+            t2.join().unwrap();
+        });
+    }
+}
+
+/// Two critical sections: a waiter of one is woken by its own leave whether or not the
+/// other's waiters park in the same bucket (the leave wakes only its bucket now).
+#[test]
+fn critical_sections_in_buckets_lose_no_wakeup() {
+    model(|| {
+        let s1 = Section::new();
+        let s2 = Section::new();
+        let t: Vec<_> = [(s1.clone(), 1), (s1.clone(), 2), (s2.clone(), 3)].into_iter().map(|(s, me)| thread::spawn(move || s.add(me))).collect();
+        s2.add(4);
+        t.into_iter().for_each(|t| t.join().unwrap());
+        assert_eq!(s1.data.with(|d| unsafe { *d }), 2);
+        assert_eq!(s2.data.with(|d| unsafe { *d }), 2);
     });
 }
 

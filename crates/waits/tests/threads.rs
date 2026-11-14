@@ -112,8 +112,8 @@ fn timed_waits_time_out() {
     assert!(!s.cv_wait(9, 30, || {}, || {}, &NoPause));
     assert!(t.elapsed() >= std::time::Duration::from_millis(30));
     let a = waits::Addr::new();
-    assert!(!a.wait(|| true, 20, &NoPause));
-    assert!(a.wait(|| false, 20, &NoPause), "a value that already differs returns at once");
+    assert!(!a.wait(0x1000, || true, 20, &NoPause));
+    assert!(a.wait(0x1000, || false, 20, &NoPause), "a value that already differs returns at once");
 }
 
 #[test]
@@ -178,4 +178,70 @@ fn srw_waiting_writer_is_preferred_over_new_readers() {
     r.join().unwrap();
     assert_eq!(*order.lock().unwrap(), vec!["writer", "reader"]);
     assert_eq!(word.load(SeqCst), 0);
+}
+
+/// review b11: a condition variable's entry goes with its last waiter, and a wake of one
+/// nobody waits on adds none (C++ runtimes put CVs in short-lived heap objects: the map grew
+/// for the whole session).
+#[test]
+fn condition_variables_leave_no_entries() {
+    let s = Arc::new(Waits::new());
+    for cv in (0x10_0000u32..0x10_0000 + 4096 * 4).step_by(4) {
+        s.cv_wake(cv);
+        assert!(!s.cv_wait(cv, 0, || {}, || {}, &NoPause));
+    }
+    assert_eq!(s.cv_entries(), 0);
+    // waiters on many CVs at once, each woken: none left either
+    let word = Arc::new(AtomicU32::new(0));
+    let done = Arc::new(AtomicU64::new(0));
+    let t: Vec<_> = (0..THREADS as u32)
+        .map(|i| {
+            let (s, word, done) = (s.clone(), word.clone(), done.clone());
+            std::thread::spawn(move || {
+                s.srw_acquire(&word, false, &NoPause);
+                while done.load(SeqCst) & (1 << i) == 0 {
+                    s.cv_wait(0x2000 + 4 * i, u32::MAX, || s.srw_release(&word, false), || s.srw_acquire(&word, false, &NoPause), &NoPause);
+                }
+                s.srw_release(&word, false);
+            })
+        })
+        .collect();
+    for i in 0..THREADS as u32 {
+        s.srw_acquire(&word, false, &NoPause);
+        done.fetch_or(1 << i, SeqCst);
+        s.srw_release(&word, false);
+        s.cv_wake(0x2000 + 4 * i);
+    }
+    t.into_iter().for_each(|t| t.join().unwrap());
+    assert_eq!(s.cv_entries(), 0);
+}
+
+/// review b11: an idle waiter sleeps (the untimed waits polled every 50 ms: 20 wakeups a
+/// second per parked worker), and a wake of another condition variable or address in another
+/// bucket does not end its wait early.
+#[test]
+fn waiters_of_other_words_sleep_on() {
+    let s = Arc::new(Waits::new());
+    // two CVs in different buckets
+    let a = 0x3000u32;
+    let b = (0x3004u32..).step_by(4).find(|&b| waits::bucket(b as usize) != waits::bucket(a as usize)).unwrap();
+    let t0 = std::time::Instant::now();
+    let w = {
+        let s = s.clone();
+        std::thread::spawn(move || s.cv_wait(a, 300, || {}, || {}, &NoPause))
+    };
+    for _ in 0..2000 {
+        s.cv_wake(b);
+    }
+    assert!(!w.join().unwrap(), "a wake of another CV ends no wait");
+    assert!(t0.elapsed() >= std::time::Duration::from_millis(300));
+    let addr = waits::Addr::new();
+    let other = (0x5004usize..).step_by(4).find(|&x| waits::bucket(x) != waits::bucket(0x5000)).unwrap();
+    std::thread::scope(|sc| {
+        let h = sc.spawn(|| addr.wait(0x5000, || true, 200, &NoPause));
+        for _ in 0..1000 {
+            addr.wake(other);
+        }
+        assert!(!h.join().unwrap(), "a wake of an address in another bucket ends no wait");
+    });
 }
